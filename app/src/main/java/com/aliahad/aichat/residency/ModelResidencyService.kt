@@ -1,0 +1,158 @@
+package com.aliahad.aichat.residency
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import com.aliahad.aichat.AiChatApplication
+import com.aliahad.aichat.MainActivity
+import com.aliahad.aichat.R
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+
+class ModelResidencyService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val controller by lazy {
+        (application as AiChatApplication).container.residencyController
+    }
+    private lateinit var notificationManager: NotificationManager
+    private var preloadJob: Job? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        notificationManager = getSystemService(NotificationManager::class.java)
+        createChannel()
+        startForeground(
+            NOTIFICATION_ID,
+            notification("Preparing local model", "Starting persistent CPU inference"),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+        )
+        scope.launch {
+            controller.state.collectLatest { state ->
+                notificationManager.notify(NOTIFICATION_ID, notificationFor(state))
+            }
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_UNLOAD -> {
+                preloadJob?.cancel()
+                preloadJob = scope.launch {
+                    controller.unload()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
+            ACTION_RETRY, ACTION_PRELOAD, null -> startPreload()
+        }
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    private fun startPreload() {
+        if (preloadJob?.isActive == true) return
+        preloadJob = scope.launch {
+            runCatching { controller.preloadAfterUnlock() }
+        }
+    }
+
+    private fun notificationFor(state: ModelResidencyState): Notification = when (state) {
+        ModelResidencyState.Idle ->
+            notification("Model unloaded", "Open AIchat or tap Retry to load Gemma")
+        ModelResidencyState.WaitingForUnlock ->
+            notification("Waiting for unlock", "Gemma will load after the phone is unlocked")
+        ModelResidencyState.WaitingForModel ->
+            notification("No active model", "Download or select a GGUF model in AIchat")
+        is ModelResidencyState.Loading ->
+            notification("Loading ${state.modelName}", "Pure CPU model load is in progress")
+        is ModelResidencyState.Ready ->
+            notification(
+                "${state.modelName} loaded",
+                "CPU · ${state.contextSize} context · loaded in ${formatDuration(state.loadMillis)}",
+            )
+        is ModelResidencyState.Error ->
+            notification("Model preload failed", state.message)
+    }
+
+    private fun notification(title: String, text: String): Notification {
+        val openIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val retryIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, ModelResidencyService::class.java).setAction(ACTION_RETRY),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val unloadIntent = PendingIntent.getService(
+            this,
+            2,
+            Intent(this, ModelResidencyService::class.java).setAction(ACTION_UNLOAD),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(0, "Open AIchat", openIntent)
+            .addAction(0, "Retry", retryIntent)
+            .addAction(0, "Unload", unloadIntent)
+            .build()
+    }
+
+    private fun createChannel() {
+        notificationManager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID,
+                "Persistent local model",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "Keeps the selected local LLM loaded for faster replies"
+            },
+        )
+    }
+
+    companion object {
+        private const val CHANNEL_ID = "model_residency"
+        private const val NOTIFICATION_ID = 2001
+        const val ACTION_PRELOAD = "com.aliahad.aichat.action.PRELOAD_MODEL"
+        const val ACTION_RETRY = "com.aliahad.aichat.action.RETRY_MODEL"
+        const val ACTION_UNLOAD = "com.aliahad.aichat.action.UNLOAD_MODEL"
+
+        fun start(context: Context) {
+            context.startForegroundService(
+                Intent(context, ModelResidencyService::class.java).setAction(ACTION_PRELOAD),
+            )
+        }
+    }
+}
+
+private fun formatDuration(millis: Long): String =
+    if (millis >= 1_000) "%.1f s".format(millis / 1_000.0) else "$millis ms"

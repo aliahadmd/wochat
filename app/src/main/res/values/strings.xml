@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">AIchat</string>
+    <string name="model_download_channel">Model downloads</string>
+    <string name="model_download_channel_description">Progress for large local model downloads</string>
+</resources>
