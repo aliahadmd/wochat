@@ -14,7 +14,10 @@ interface ChatRepository {
     val conversations: Flow<List<Conversation>>
     fun messages(conversationId: String): Flow<List<ChatMessage>>
     suspend fun getMessages(conversationId: String): List<ChatMessage>
-    suspend fun createConversation(qualityMode: ChatQualityMode = ChatQualityMode.FAST): Conversation
+    suspend fun createConversation(
+        qualityMode: ChatQualityMode = ChatQualityMode.FAST,
+        temporary: Boolean = false,
+    ): Conversation
     suspend fun setQualityMode(id: String, mode: ChatQualityMode)
     suspend fun addMessage(
         conversationId: String,
@@ -42,7 +45,10 @@ class RoomChatRepository(
     override suspend fun getMessages(conversationId: String): List<ChatMessage> =
         messagesDao.getForConversation(conversationId).map(MessageEntity::toDomain)
 
-    override suspend fun createConversation(qualityMode: ChatQualityMode): Conversation {
+    override suspend fun createConversation(
+        qualityMode: ChatQualityMode,
+        temporary: Boolean,
+    ): Conversation {
         val now = System.currentTimeMillis()
         return Conversation(
             id = UUID.randomUUID().toString(),
@@ -50,6 +56,7 @@ class RoomChatRepository(
             createdAt = now,
             updatedAt = now,
             qualityMode = qualityMode,
+            temporary = temporary,
         ).also { conversationsDao.upsert(it.toEntity()) }
     }
 
@@ -104,7 +111,34 @@ class RoomChatRepository(
         content.trim().replace(Regex("\\s+"), " ").take(48).ifEmpty { "New chat" }
 }
 
-private fun ConversationEntity.toDomain() = Conversation(id, title, createdAt, updatedAt, qualityMode)
-private fun Conversation.toEntity() = ConversationEntity(id, title, createdAt, updatedAt, qualityMode)
-private fun MessageEntity.toDomain() = ChatMessage(id, conversationId, role, content, createdAt, status)
-private fun ChatMessage.toEntity() = MessageEntity(id, conversationId, role, content, createdAt, status)
+private fun ConversationEntity.toDomain() =
+    Conversation(id, title, createdAt, updatedAt, qualityMode, temporary)
+
+private fun Conversation.toEntity() =
+    ConversationEntity(id, title, createdAt, updatedAt, qualityMode, temporary)
+
+private fun MessageEntity.toDomain() = ChatMessage(
+    id = id,
+    conversationId = conversationId,
+    role = role,
+    content = content,
+    createdAt = createdAt,
+    status = status,
+    stopReason = stopReason,
+    continuationCount = continuationCount,
+    promptTokens = promptTokens,
+    generatedTokens = generatedTokens,
+)
+
+private fun ChatMessage.toEntity() = MessageEntity(
+    id = id,
+    conversationId = conversationId,
+    role = role,
+    content = content,
+    createdAt = createdAt,
+    status = status,
+    stopReason = stopReason,
+    continuationCount = continuationCount,
+    promptTokens = promptTokens,
+    generatedTokens = generatedTokens,
+)

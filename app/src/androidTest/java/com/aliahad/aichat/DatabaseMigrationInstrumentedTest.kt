@@ -22,7 +22,7 @@ class DatabaseMigrationInstrumentedTest {
     )
 
     @Test
-    fun migrationOneToTwoPreservesChatsAndAddsMultimodalTables() {
+    fun migrationOneToFourPreservesChatsAndAddsContextProfiles() {
         helper.createDatabase(DATABASE_NAME, 1).apply {
             execSQL(
                 "INSERT INTO conversations(id, title, createdAt, updatedAt) " +
@@ -37,7 +37,11 @@ class DatabaseMigrationInstrumentedTest {
 
         val context = ApplicationProvider.getApplicationContext<Context>()
         val database = Room.databaseBuilder(context, AppDatabase::class.java, DATABASE_NAME)
-            .addMigrations(AppDatabase.MIGRATION_1_2)
+            .addMigrations(
+                AppDatabase.MIGRATION_1_2,
+                AppDatabase.MIGRATION_2_3,
+                AppDatabase.MIGRATION_3_4,
+            )
             .build()
         try {
             database.openHelper.writableDatabase
@@ -50,6 +54,24 @@ class DatabaseMigrationInstrumentedTest {
                 1,
                 kotlinx.coroutines.runBlocking {
                     database.messageDao().getForConversation("chat").size
+                },
+            )
+            assertEquals(
+                0,
+                database.openHelper.writableDatabase.query(
+                    "SELECT count(*) FROM memory_items",
+                ).use {
+                    it.moveToFirst()
+                    it.getInt(0)
+                },
+            )
+            assertEquals(
+                0,
+                database.openHelper.writableDatabase.query(
+                    "SELECT count(*) FROM model_context_profiles",
+                ).use {
+                    it.moveToFirst()
+                    it.getInt(0)
                 },
             )
         } finally {

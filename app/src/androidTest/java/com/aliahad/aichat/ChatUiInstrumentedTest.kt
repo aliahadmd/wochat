@@ -7,6 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -79,6 +80,42 @@ class ChatUiInstrumentedTest {
             composeRule.onAllNodesWithContentDescription("Jump to latest message")
                 .fetchSemanticsNodes().isEmpty()
         }
+    }
+
+    @Test
+    fun completedThoughtIsCollapsibleAndDoesNotReplaceAnswer() {
+        var thinking by mutableStateOf(
+            ThinkingUiState(
+                messageId = "message-0",
+                text = "Private intermediate reasoning",
+                complete = true,
+            ),
+        )
+        composeRule.setContent {
+            AichatTheme {
+                MessageList(
+                    messages = listOf(message(0, "**Final answer**")),
+                    conversationId = "thinking",
+                    thinking = thinking,
+                    onToggleThinking = {
+                        thinking = thinking.copy(expanded = !thinking.expanded)
+                    },
+                    modifier = Modifier,
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Final answer", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Show thought").assertIsDisplayed()
+        assertTrue(composeRule.onAllNodesWithTag("thinking-content").fetchSemanticsNodes().isEmpty())
+
+        composeRule.onNodeWithContentDescription("Show thought").performClick()
+        composeRule.onNodeWithTag("thinking-content").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Hide thought").assertIsDisplayed()
+
+        composeRule.onNodeWithContentDescription("Hide thought").performClick()
+        assertTrue(composeRule.onAllNodesWithTag("thinking-content").fetchSemanticsNodes().isEmpty())
+        composeRule.onNodeWithText("Final answer", substring = true).assertIsDisplayed()
     }
 
     private fun message(index: Int, content: String = "Message $index\n\nSupporting text for scrolling.") =

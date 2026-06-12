@@ -10,6 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.ChatQualityMode
+import com.aliahad.aichat.core.ActivitySource
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -22,12 +23,16 @@ class AppSettingsRepository(
     private object Keys {
         val backend = stringPreferencesKey("backend")
         val chosenAutoBackend = stringPreferencesKey("chosen_auto_backend")
-        val contextSize = intPreferencesKey("context_size")
         val maxNewTokens = intPreferencesKey("max_new_tokens")
+        val maxAnswerTokens = intPreferencesKey("max_answer_tokens")
         val temperature = floatPreferencesKey("temperature")
         val thinking = booleanPreferencesKey("thinking")
         val systemPrompt = stringPreferencesKey("system_prompt")
         val lastQualityMode = stringPreferencesKey("last_quality_mode")
+        val memoryEnabled = booleanPreferencesKey("memory_enabled")
+        val collectionPaused = booleanPreferencesKey("collection_paused")
+        val enabledCollectionSources = stringPreferencesKey("enabled_collection_sources")
+        val actionAllowlist = stringPreferencesKey("action_allowlist")
     }
 
     val backendMode: Flow<BackendMode> = context.settingsDataStore.data.map {
@@ -40,8 +45,8 @@ class AppSettingsRepository(
 
     val generationSettings: Flow<GenerationSettings> = context.settingsDataStore.data.map {
         GenerationSettings(
-            contextSize = it[Keys.contextSize] ?: 4096,
-            maxNewTokens = it[Keys.maxNewTokens] ?: 512,
+            maxNewTokens = it[Keys.maxNewTokens] ?: 1024,
+            maxAnswerTokens = it[Keys.maxAnswerTokens] ?: 8192,
             temperature = it[Keys.temperature] ?: 0.3f,
             thinkingEnabled = it[Keys.thinking] ?: false,
             systemPrompt = it[Keys.systemPrompt] ?: "You are a helpful, concise assistant.",
@@ -52,6 +57,31 @@ class AppSettingsRepository(
         it[Keys.lastQualityMode]?.let { value ->
             runCatching { ChatQualityMode.valueOf(value) }.getOrNull()
         } ?: ChatQualityMode.FAST
+    }
+
+    val memoryEnabled: Flow<Boolean> = context.settingsDataStore.data.map {
+        it[Keys.memoryEnabled] ?: true
+    }
+
+    val collectionPaused: Flow<Boolean> = context.settingsDataStore.data.map {
+        it[Keys.collectionPaused] ?: false
+    }
+
+    val enabledCollectionSources: Flow<Set<ActivitySource>> = context.settingsDataStore.data.map {
+        it[Keys.enabledCollectionSources]
+            ?.split(',')
+            ?.mapNotNull { value -> runCatching { ActivitySource.valueOf(value) }.getOrNull() }
+            ?.toSet()
+            .orEmpty()
+    }
+
+    val actionAllowlist: Flow<Set<String>> = context.settingsDataStore.data.map {
+        it[Keys.actionAllowlist]
+            ?.split(',')
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.toSet()
+            .orEmpty()
     }
 
     suspend fun setBackend(mode: BackendMode) {
@@ -66,8 +96,8 @@ class AppSettingsRepository(
     suspend fun updateGeneration(settings: GenerationSettings) {
         val value = settings.normalized()
         context.settingsDataStore.edit {
-            it[Keys.contextSize] = value.contextSize
             it[Keys.maxNewTokens] = value.maxNewTokens
+            it[Keys.maxAnswerTokens] = value.maxAnswerTokens
             it[Keys.temperature] = value.temperature
             it[Keys.thinking] = value.thinkingEnabled
             it[Keys.systemPrompt] = value.systemPrompt
@@ -76,6 +106,35 @@ class AppSettingsRepository(
 
     suspend fun setLastQualityMode(mode: ChatQualityMode) {
         context.settingsDataStore.edit { it[Keys.lastQualityMode] = mode.name }
+    }
+
+    suspend fun setMemoryEnabled(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.memoryEnabled] = enabled }
+    }
+
+    suspend fun setCollectionPaused(paused: Boolean) {
+        context.settingsDataStore.edit { it[Keys.collectionPaused] = paused }
+    }
+
+    suspend fun setCollectionSourceEnabled(source: ActivitySource, enabled: Boolean) {
+        context.settingsDataStore.edit { preferences ->
+            val current = preferences[Keys.enabledCollectionSources]
+                ?.split(',')
+                ?.mapNotNull { value ->
+                    runCatching { ActivitySource.valueOf(value) }.getOrNull()
+                }
+                ?.toMutableSet()
+                ?: mutableSetOf()
+            if (enabled) current += source else current -= source
+            preferences[Keys.enabledCollectionSources] =
+                current.sortedBy(ActivitySource::name).joinToString(",") { it.name }
+        }
+    }
+
+    suspend fun setActionAllowlist(packages: Set<String>) {
+        context.settingsDataStore.edit {
+            it[Keys.actionAllowlist] = packages.sorted().joinToString(",")
+        }
     }
 
     fun hasToken(): Boolean = tokenCipher.hasToken()

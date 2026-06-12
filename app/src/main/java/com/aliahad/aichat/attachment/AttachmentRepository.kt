@@ -28,12 +28,18 @@ interface AttachmentRepository {
     suspend fun retry(id: String)
     suspend fun remove(id: String)
     suspend fun selectPages(id: String, pages: Set<Int>)
-    suspend fun bind(messageId: String, conversationId: String, attachmentIds: List<String>)
+    suspend fun bind(
+        messageId: String,
+        conversationId: String,
+        attachmentIds: List<String>,
+        imageTokenBudget: Int?,
+    )
     suspend fun contextsForMessage(messageId: String, prompt: String = ""): List<AttachmentContext>
     suspend fun contexts(ids: List<String>, prompt: String): List<AttachmentContext>
     suspend fun attachmentsForMessage(messageId: String): List<Attachment>
     suspend fun cleanupAbandonedDrafts()
     suspend fun markInterrupted()
+    suspend fun hasActiveProcessing(): Boolean
 }
 
 class DefaultAttachmentRepository(
@@ -116,10 +122,16 @@ class DefaultAttachmentRepository(
         }
     }
 
-    override suspend fun bind(messageId: String, conversationId: String, attachmentIds: List<String>) {
+    override suspend fun bind(
+        messageId: String,
+        conversationId: String,
+        attachmentIds: List<String>,
+        imageTokenBudget: Int?,
+    ) {
         if (attachmentIds.isEmpty()) return
         database.withTransaction {
             dao.assignToConversation(attachmentIds, conversationId)
+            imageTokenBudget?.let { dao.updateImageTokenBudget(attachmentIds, it) }
             dao.bind(attachmentIds.mapIndexed { index, id -> MessageAttachmentEntity(messageId, id, index) })
         }
     }
@@ -145,6 +157,8 @@ class DefaultAttachmentRepository(
     }
 
     override suspend fun markInterrupted() = dao.markInterrupted()
+
+    override suspend fun hasActiveProcessing(): Boolean = dao.activeProcessingCount() > 0
 
     private suspend fun contextFor(entity: AttachmentEntity, prompt: String): AttachmentContext {
         require(entity.state == AttachmentProcessingState.READY) {

@@ -1,14 +1,17 @@
 package com.aliahad.aichat.inference
 
 import android.content.Context
+import android.os.PowerManager
 import com.aliahad.aichat.core.BackendMode
-import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.ChatTurn
 import com.aliahad.aichat.core.GenerationSettings
+import com.aliahad.aichat.core.GenerationEvent
+import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.InferenceMetrics
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.ModelCapabilities
+import com.aliahad.aichat.core.ModelLoadConfiguration
 import com.aliahad.aichat.core.UserTurn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -32,10 +35,22 @@ class NativeInferenceEngine(
     private val _metrics = MutableStateFlow(InferenceMetrics())
     override val metrics: StateFlow<InferenceMetrics> = _metrics.asStateFlow()
 
+    // HyperOS freezes the process shortly after the screen turns off, even with the
+    // residency foreground service running, which stalls long restores and
+    // generations until the app is foregrounded again. Hold the CPU only while
+    // native work runs, with a timeout so a wedged call cannot drain the battery.
+    private val wakeLock = context.getSystemService(PowerManager::class.java)
+        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Aichat:inference")
+        .apply { setReferenceCounted(false) }
+
     @Volatile private var cancelled = false
     override var loadedModelPath: String? = null
         private set
     override var loadedProjectorPath: String? = null
+        private set
+    override var modelContextLimit: Int = 0
+        private set
+    override var activeContextSize: Int = 0
         private set
     private var loadedModelName: String? = null
     private var loadedBackend = BackendMode.CPU
@@ -47,21 +62,33 @@ class NativeInferenceEngine(
         _state.value = InferenceState.Idle
     }
 
+    private fun holdCpu() {
+        if (!wakeLock.isHeld) wakeLock.acquire(30 * 60 * 1000L)
+    }
+
+    private fun releaseCpu() {
+        if (wakeLock.isHeld) wakeLock.release()
+    }
+
     override suspend fun loadModel(
         path: String,
         displayName: String,
-        backend: BackendMode,
-        settings: GenerationSettings,
+        configuration: ModelLoadConfiguration,
     ) = withContext(dispatcher) {
         val selected = BackendMode.CPU
         _state.value = InferenceState.Loading(displayName)
         val mark = TimeSource.Monotonic.markNow()
-        val error = nativeLoad(
-            path,
-            selected.nativeCode,
-            settings.contextSize,
-            settings.temperature,
-        )
+        holdCpu()
+        val error = try {
+            nativeLoad(
+                path,
+                selected.nativeCode,
+                configuration.contextTokens,
+                configuration.temperature,
+            )
+        } finally {
+            releaseCpu()
+        }
         if (error != null) {
             _state.value = InferenceState.Error(error)
             error(error)
@@ -69,6 +96,8 @@ class NativeInferenceEngine(
         loadedBackend = selected
         loadedModelPath = path
         loadedModelName = displayName
+        modelContextLimit = nativeModelContextLimit()
+        activeContextSize = nativeCurrentContextSize()
         loadedProjectorPath = null
         activeConversationId = null
         _metrics.value = _metrics.value.copy(
@@ -81,10 +110,19 @@ class NativeInferenceEngine(
         path: String,
         imageTokenBudget: Int,
     ): ModelCapabilities = withContext(dispatcher) {
-        nativeLoadProjector(path, imageTokenBudget)?.let { error(it) }
+        holdCpu()
+        try {
+            nativeLoadProjector(path, imageTokenBudget)?.let { error(it) }
+        } finally {
+            releaseCpu()
+        }
         loadedProjectorPath = path
         val flags = nativeCapabilities()
-        ModelCapabilities(vision = flags and 1 != 0, audio = flags and 2 != 0)
+        ModelCapabilities(
+            vision = flags and 1 != 0,
+            audio = flags and 2 != 0,
+            contextLimit = modelContextLimit,
+        )
     }
 
     override suspend fun unloadProjector() = withContext(dispatcher) {
@@ -100,32 +138,38 @@ class NativeInferenceEngine(
     ) = withContext(dispatcher) {
         check(loadedModelPath != null) { "Load a model first" }
         if (activeConversationId == conversationId) return@withContext
+        // The native session is cleared below; a failed restore must not leave the
+        // previous conversation marked active against the new conversation's KV cache.
+        activeConversationId = null
         _state.value = InferenceState.PreparingHistory
+        holdCpu()
         val mark = TimeSource.Monotonic.markNow()
-        val trimmedMessages = HistoryTrimmer.trim(history.map(ChatTurn::message), settings.contextSize)
-        val retainedIds = trimmedMessages.map(ChatMessage::id).toSet()
-        val trimmed = history.filter { it.message.id in retainedIds }
         val prompt = if (settings.thinkingEnabled) {
             "${settings.systemPrompt}\nUse your internal reasoning before answering."
         } else {
             "${settings.systemPrompt}\nAnswer directly without displaying hidden reasoning."
         }
-        nativeRestore(prompt, emptyArray(), emptyArray(), settings.thinkingEnabled)?.let {
-            _state.value = InferenceState.Error(it)
-            error(it)
-        }
-        trimmed.forEach { turn ->
-            val mediaPaths = turn.attachments.flatMap { it.imagePaths }
-            val content = turn.withAttachmentText()
-            val error = if (turn.message.role == MessageRole.USER && mediaPaths.isNotEmpty()) {
-                nativeAppendHistoryMedia(turn.message.role.nativeRole, content, mediaPaths.toTypedArray())
-            } else {
-                nativeAppendHistoryText(turn.message.role.nativeRole, content)
-            }
-            error?.let {
+        try {
+            nativeRestore(prompt, emptyArray(), emptyArray(), settings.thinkingEnabled)?.let {
                 _state.value = InferenceState.Error(it)
                 error(it)
             }
+            history.forEach { turn ->
+                val mediaPaths = turn.attachments.flatMap { it.imagePaths }
+                val content = turn.withAttachmentText()
+                val error = if (turn.message.role == MessageRole.USER && mediaPaths.isNotEmpty()) {
+                    nativeAppendHistoryMedia(turn.message.role.nativeRole, content, mediaPaths.toTypedArray())
+                } else {
+                    nativeAppendHistoryText(turn.message.role.nativeRole, content)
+                }
+                error?.let {
+                    _state.value = InferenceState.Error(it)
+                    error(it)
+                }
+            }
+        } finally {
+            nativeReleaseModelPages()
+            releaseCpu()
         }
         activeConversationId = conversationId
         _metrics.value = _metrics.value.copy(
@@ -134,57 +178,104 @@ class NativeInferenceEngine(
         _state.value = InferenceState.Ready(requireNotNull(loadedModelName), loadedBackend)
     }
 
-    override fun generate(turn: UserTurn, settings: GenerationSettings): Flow<String> = flow {
+    override fun generate(turn: UserTurn, settings: GenerationSettings): Flow<GenerationEvent> = flow {
         check(state.value is InferenceState.Ready) { "Model is not ready" }
         check(activeConversationId == turn.conversationId) { "Restore this conversation before generating" }
         cancelled = false
-        val mediaPaths = turn.attachments.flatMap { it.imagePaths }
-        _state.value = if (mediaPaths.isEmpty()) {
-            InferenceState.EvaluatingPrompt
-        } else {
-            InferenceState.EncodingMedia
-        }
-        val promptMark = TimeSource.Monotonic.markNow()
-        val preparedPrompt = turn.withAttachmentText()
-        val beginError = if (mediaPaths.isEmpty()) {
-            nativeBeginUserPrompt(preparedPrompt, settings.maxNewTokens)
-        } else {
-            nativeBeginUserTurn(preparedPrompt, mediaPaths.toTypedArray(), settings.maxNewTokens)
-        }
-        beginError?.let { error(it) }
-        _metrics.value = _metrics.value.copy(
-            promptEvaluationMillis = promptMark.elapsedNow().inWholeMilliseconds,
-            firstTokenMillis = null,
-        )
-        _state.value = InferenceState.Generating
-        val firstTokenMark = TimeSource.Monotonic.markNow()
-        var emittedFirstToken = false
+        holdCpu()
         try {
-            while (!cancelled) {
-                val token = nativeNextToken() ?: break
-                if (token.isNotEmpty()) {
-                    if (!emittedFirstToken) {
-                        emittedFirstToken = true
-                        _metrics.value = _metrics.value.copy(
-                            firstTokenMillis = firstTokenMark.elapsedNow().inWholeMilliseconds,
-                        )
+            val mediaPaths = turn.attachments.flatMap { it.imagePaths }
+            _state.value = if (mediaPaths.isEmpty()) {
+                InferenceState.EvaluatingPrompt
+            } else {
+                InferenceState.EncodingMedia
+            }
+            emit(GenerationEvent.Phase(_state.value))
+            val promptMark = TimeSource.Monotonic.markNow()
+            val preparedPrompt = turn.withAttachmentText()
+            val beginError = if (mediaPaths.isEmpty()) {
+                nativeBeginUserPrompt(preparedPrompt, settings.maxNewTokens)
+            } else {
+                nativeBeginUserTurn(preparedPrompt, mediaPaths.toTypedArray(), settings.maxNewTokens)
+            }
+            beginError?.let {
+                _state.value = InferenceState.Error(it)
+                error(it)
+            }
+            _metrics.value = _metrics.value.copy(
+                promptEvaluationMillis = promptMark.elapsedNow().inWholeMilliseconds,
+                firstTokenMillis = null,
+            )
+            _state.value = InferenceState.Generating
+            emit(GenerationEvent.Phase(InferenceState.Generating))
+            val firstTokenMark = TimeSource.Monotonic.markNow()
+            var emittedFirstToken = false
+            var continuationCount = 0
+            var stopReason = GenerationStopReason.ERROR
+            val repetitionGuard = RepetitionGuard()
+            try {
+                while (!cancelled) {
+                    val token = nativeNextToken()
+                    if (token == null) {
+                        stopReason = nativeLastStopReason().toStopReason()
+                        val answerTokens = nativeGeneratedAnswerTokens().coerceAtLeast(0)
+                        if (stopReason == GenerationStopReason.TOKEN_LIMIT &&
+                            answerTokens < settings.maxAnswerTokens &&
+                            continuationCount < MAX_CONTINUATIONS
+                        ) {
+                            val remaining = settings.maxAnswerTokens - answerTokens
+                            nativeContinueGeneration(minOf(settings.maxNewTokens, remaining))
+                            continuationCount++
+                            continue
+                        }
+                        break
                     }
-                    emit(token)
+                    if (token.isNotEmpty()) {
+                        if (!emittedFirstToken) {
+                            emittedFirstToken = true
+                            _metrics.value = _metrics.value.copy(
+                                firstTokenMillis = firstTokenMark.elapsedNow().inWholeMilliseconds,
+                            )
+                        }
+                        when (nativeLastTokenChannel()) {
+                            TOKEN_CHANNEL_THOUGHT -> emit(GenerationEvent.ThoughtDelta(token))
+                            TOKEN_CHANNEL_ANSWER -> {
+                                if (!repetitionGuard.accept(token)) {
+                                    stopReason = GenerationStopReason.TOKEN_LIMIT
+                                    cancelled = true
+                                    break
+                                }
+                                emit(GenerationEvent.AnswerDelta(token))
+                            }
+                        }
+                    }
+                }
+                if (cancelled && stopReason == GenerationStopReason.ERROR) {
+                    stopReason = GenerationStopReason.CANCELLED
+                }
+                emit(
+                    GenerationEvent.Completed(
+                        reason = stopReason,
+                        answerTokens = nativeGeneratedAnswerTokens().coerceAtLeast(0),
+                        continuationCount = continuationCount,
+                    ),
+                )
+            } catch (cancel: CancellationException) {
+                cancelled = true
+                throw cancel
+            } catch (error: Throwable) {
+                activeConversationId = null
+                _state.value = InferenceState.Error(error.message ?: "Generation failed")
+                throw error
+            } finally {
+                nativeFinishGeneration()
+                nativeReleaseModelPages()
+                if (_state.value !is InferenceState.Error) {
+                    _state.value = InferenceState.Ready(requireNotNull(loadedModelName), loadedBackend)
                 }
             }
-        } catch (cancel: CancellationException) {
-            cancelled = true
-            throw cancel
-        } catch (error: Throwable) {
-            activeConversationId = null
-            _state.value = InferenceState.Error(error.message ?: "Generation failed")
-            throw error
         } finally {
-            nativeFinishGeneration()
-            nativeReleaseModelPages()
-            if (_state.value !is InferenceState.Error) {
-                _state.value = InferenceState.Ready(requireNotNull(loadedModelName), loadedBackend)
-            }
+            releaseCpu()
         }
     }.flowOn(dispatcher)
 
@@ -198,6 +289,8 @@ class NativeInferenceEngine(
         loadedModelPath = null
         loadedModelName = null
         loadedProjectorPath = null
+        modelContextLimit = 0
+        activeContextSize = 0
         activeConversationId = null
         _metrics.value = InferenceMetrics()
         _state.value = InferenceState.Idle
@@ -209,18 +302,28 @@ class NativeInferenceEngine(
         settings: GenerationSettings,
     ): Map<BackendMode, Double> = withContext(dispatcher) {
         val results = linkedMapOf<BackendMode, Double>()
-        for (backend in listOf(BackendMode.CPU, BackendMode.VULKAN)) {
-            val error = nativeLoad(path, backend.nativeCode, 1024, settings.temperature)
-            if (error != null) continue
-            nativeRestore("Answer briefly.", emptyArray(), emptyArray(), false)
-            nativeBeginUserPrompt("Reply with one word.", 8)
-            val mark = TimeSource.Monotonic.markNow()
-            var tokens = 0
-            while (nativeNextToken() != null) tokens++
-            val seconds = mark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1) / 1000.0
-            results[backend] = tokens / seconds
-            nativeUnload()
+        holdCpu()
+        try {
+            for (backend in listOf(BackendMode.CPU)) {
+                val error = nativeLoad(path, backend.nativeCode, 1024, settings.temperature)
+                if (error != null) continue
+                nativeRestore("Answer briefly.", emptyArray(), emptyArray(), false)
+                nativeBeginUserPrompt("Reply with one word.", 8)
+                val mark = TimeSource.Monotonic.markNow()
+                var tokens = 0
+                while (nativeNextToken() != null) tokens++
+                val seconds = mark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1) / 1000.0
+                results[backend] = tokens / seconds
+                nativeUnload()
+            }
+        } finally {
+            releaseCpu()
         }
+        loadedModelPath = null
+        loadedModelName = null
+        loadedProjectorPath = null
+        activeConversationId = null
+        activeContextSize = 0
         _state.value = InferenceState.Idle
         results
     }
@@ -229,6 +332,43 @@ class NativeInferenceEngine(
 
     override suspend fun countTokens(text: String): Int = withContext(dispatcher) {
         nativeCountTokens(text).coerceAtLeast(0)
+    }
+
+    override suspend fun verifyLoadedContext(): Int = withContext(dispatcher) {
+        check(loadedModelPath != null) { "Load a model before verifying context" }
+        holdCpu()
+        try {
+            nativeRestore(
+                "You are verifying a local inference context. Answer directly.",
+                emptyArray(),
+                emptyArray(),
+                false,
+            )?.let { error(it) }
+            nativeBeginUserPrompt(
+                "Reply with exactly the word verified.",
+                VERIFICATION_TOKEN_LIMIT,
+            )?.let { error(it) }
+            var generated = 0
+            while (true) {
+                val token = nativeNextToken() ?: break
+                if (token.isNotEmpty() && nativeLastTokenChannel() == TOKEN_CHANNEL_ANSWER) {
+                    generated++
+                }
+            }
+            val stop = nativeLastStopReason().toStopReason()
+            check(
+                generated > 0 &&
+                    stop in setOf(GenerationStopReason.EOG, GenerationStopReason.TOKEN_LIMIT),
+            ) {
+                "Context verification did not complete a valid decode"
+            }
+            generated
+        } finally {
+            nativeFinishGeneration()
+            nativeReleaseModelPages()
+            activeConversationId = null
+            releaseCpu()
+        }
     }
 
     override fun destroy() {
@@ -266,6 +406,12 @@ class NativeInferenceEngine(
     ): String?
     private external fun nativeCountTokens(text: String): Int
     private external fun nativeNextToken(): String?
+    private external fun nativeContinueGeneration(maxTokens: Int)
+    private external fun nativeLastStopReason(): Int
+    private external fun nativeLastTokenChannel(): Int
+    private external fun nativeGeneratedAnswerTokens(): Int
+    private external fun nativeModelContextLimit(): Int
+    private external fun nativeCurrentContextSize(): Int
     private external fun nativeFinishGeneration()
     private external fun nativeUnload()
     private external fun nativeReleaseModelPages()
@@ -273,6 +419,34 @@ class NativeInferenceEngine(
     private external fun nativeShutdown()
 
 }
+
+private class RepetitionGuard {
+    private val answer = StringBuilder()
+
+    fun accept(delta: String): Boolean {
+        answer.append(delta)
+        if (answer.length < 480) return true
+        val tail = answer.takeLast(160)
+        val preceding = answer.substring(
+            (answer.length - 480).coerceAtLeast(0),
+            answer.length - 160,
+        )
+        return tail !in preceding
+    }
+}
+
+private fun Int.toStopReason(): GenerationStopReason = when (this) {
+    1 -> GenerationStopReason.EOG
+    2 -> GenerationStopReason.TOKEN_LIMIT
+    3 -> GenerationStopReason.CONTEXT_LIMIT
+    4, 5 -> GenerationStopReason.DECODE_ERROR
+    else -> GenerationStopReason.ERROR
+}
+
+private const val TOKEN_CHANNEL_THOUGHT = 1
+private const val TOKEN_CHANNEL_ANSWER = 2
+private const val MAX_CONTINUATIONS = 16
+private const val VERIFICATION_TOKEN_LIMIT = 12
 
 private fun UserTurn.withAttachmentText(): String = buildString {
     attachments.filter { it.extractedText.isNotBlank() }.forEach {

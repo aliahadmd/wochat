@@ -19,6 +19,11 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+        buildConfigField(
+            "String",
+            "LLAMA_RUNTIME_REVISION",
+            "\"ad857250ff2f75bcb7ea94d17c67a609c2ec103b-aichat-context-v1\"",
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -41,7 +46,7 @@ android {
                     "-DGGML_LLAMAFILE=OFF",
                     "-DGGML_NATIVE=OFF",
                     "-DGGML_OPENMP=ON",
-                    "-DGGML_VULKAN=ON"
+                    "-DGGML_VULKAN=OFF"
                 )
             }
         }
@@ -83,6 +88,10 @@ android {
             useLegacyPackaging = true
         }
     }
+
+    sourceSets {
+        getByName("androidTest").assets.directories.add("$projectDir/schemas")
+    }
 }
 
 ksp {
@@ -105,11 +114,14 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.room.ktx)
     implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.sqlite)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.markdown.renderer.m3)
+    implementation(files("libs/sqlcipher-android-4.16.0.aar"))
     ksp(libs.androidx.room.compiler)
 
     testImplementation(libs.junit)

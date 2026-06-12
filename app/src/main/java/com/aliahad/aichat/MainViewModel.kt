@@ -4,24 +4,32 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aliahad.aichat.core.BackendMode
+import com.aliahad.aichat.core.BackupPreview
 import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
+import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.ChatQualityMode
 import com.aliahad.aichat.core.ChatTurn
 import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.Conversation
 import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.GenerationSettings
+import com.aliahad.aichat.core.GenerationEvent
+import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.InferenceMetrics
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
 import com.aliahad.aichat.core.ModelRecord
+import com.aliahad.aichat.core.MemoryItem
+import com.aliahad.aichat.core.ModelContextProfile
+import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.ProjectorRecord
 import com.aliahad.aichat.core.UserTurn
+import com.aliahad.aichat.activity.OfficeWorkScheduler
 import com.aliahad.aichat.residency.ModelResidencyState
-import com.aliahad.aichat.inference.HistoryTrimmer
+import com.aliahad.aichat.inference.VisionBudgetPlanner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -36,8 +44,44 @@ import java.util.UUID
 
 enum class AppPage {
     CHAT,
+    MEMORY,
     SETTINGS,
 }
+
+private fun GenerationStopReason.toMessageStatus(): MessageStatus = when (this) {
+    GenerationStopReason.EOG -> MessageStatus.COMPLETE
+    GenerationStopReason.TOKEN_LIMIT,
+    GenerationStopReason.CONTEXT_LIMIT,
+    GenerationStopReason.PROCESS_DEATH -> MessageStatus.CONTINUABLE
+    GenerationStopReason.CANCELLED -> MessageStatus.CANCELLED
+    GenerationStopReason.DECODE_ERROR,
+    GenerationStopReason.ERROR -> MessageStatus.ERROR
+}
+
+private fun mergeContinuation(existing: String, continuation: String): String {
+    if (existing.isEmpty() || continuation.isEmpty()) return existing + continuation
+    val maximum = minOf(existing.length, continuation.length, 320)
+    for (overlap in maximum downTo 12) {
+        if (existing.regionMatches(
+                existing.length - overlap,
+                continuation,
+                0,
+                overlap,
+                ignoreCase = false,
+            )
+        ) {
+            return existing + continuation.drop(overlap)
+        }
+    }
+    return existing + continuation
+}
+
+data class ThinkingUiState(
+    val messageId: String,
+    val text: String = "",
+    val complete: Boolean = false,
+    val expanded: Boolean = false,
+)
 
 data class MainUiState(
     val conversations: List<Conversation> = emptyList(),
@@ -54,11 +98,21 @@ data class MainUiState(
     val inferenceState: InferenceState = InferenceState.Uninitialized,
     val inferenceMetrics: InferenceMetrics = InferenceMetrics(),
     val residencyState: ModelResidencyState = ModelResidencyState.Idle,
+    val memories: List<MemoryItem> = emptyList(),
+    val contextProfiles: List<ModelContextProfile> = emptyList(),
+    val memoryEnabled: Boolean = true,
+    val collectionPaused: Boolean = false,
+    val enabledCollectionSources: Set<ActivitySource> = emptySet(),
+    val thinking: ThinkingUiState? = null,
+    val usedMemoryCount: Int = 0,
     val isSending: Boolean = false,
     val tokenMasked: String? = null,
     val tokenTesting: Boolean = false,
     val error: String? = null,
     val pendingProjectorId: String? = null,
+    val pendingBackupImportUri: Uri? = null,
+    val backupPreview: BackupPreview? = null,
+    val backupBusy: Boolean = false,
 )
 
 class MainViewModel(
@@ -122,6 +176,31 @@ class MainViewModel(
                 _uiState.update { it.copy(residencyState = state) }
             }
         }
+        viewModelScope.launch {
+            container.memoryRepository.memories.collectLatest { memories ->
+                _uiState.update { it.copy(memories = memories) }
+            }
+        }
+        viewModelScope.launch {
+            container.contextProfileRepository.profiles.collectLatest { profiles ->
+                _uiState.update { it.copy(contextProfiles = profiles) }
+            }
+        }
+        viewModelScope.launch {
+            container.settings.memoryEnabled.collectLatest { enabled ->
+                _uiState.update { it.copy(memoryEnabled = enabled) }
+            }
+        }
+        viewModelScope.launch {
+            container.settings.collectionPaused.collectLatest { paused ->
+                _uiState.update { it.copy(collectionPaused = paused) }
+            }
+        }
+        viewModelScope.launch {
+            container.settings.enabledCollectionSources.collectLatest { sources ->
+                _uiState.update { it.copy(enabledCollectionSources = sources) }
+            }
+        }
     }
 
     fun setPage(page: AppPage) {
@@ -144,6 +223,18 @@ class MainViewModel(
         }
     }
 
+    fun newTemporaryConversation() {
+        viewModelScope.launch {
+            val mode = container.settings.lastQualityMode.first()
+            runCatching { container.chatRepository.createConversation(mode, temporary = true) }
+                .onSuccess {
+                    selectConversation(it.id)
+                    setPage(AppPage.CHAT)
+                }
+                .onFailure(::showError)
+        }
+    }
+
     fun selectConversation(id: String) {
         if (_uiState.value.selectedConversationId == id) return
         generationJob?.cancel()
@@ -152,7 +243,14 @@ class MainViewModel(
     }
 
     private fun observeConversation(id: String) {
-        _uiState.update { it.copy(selectedConversationId = id, page = AppPage.CHAT, messages = emptyList()) }
+        _uiState.update {
+            it.copy(
+                selectedConversationId = id,
+                page = AppPage.CHAT,
+                messages = emptyList(),
+                thinking = null,
+            )
+        }
         messagesJob?.cancel()
         messagesJob = viewModelScope.launch {
             container.chatRepository.messages(id).collectLatest { messages ->
@@ -182,8 +280,22 @@ class MainViewModel(
             }
                 .onFailure(::showError)
             if (_uiState.value.selectedConversationId == id) {
-                _uiState.update { it.copy(selectedConversationId = null, messages = emptyList()) }
+                _uiState.update {
+                    it.copy(
+                        selectedConversationId = null,
+                        messages = emptyList(),
+                        thinking = null,
+                    )
+                }
             }
+        }
+    }
+
+    fun toggleThinking(messageId: String) {
+        _uiState.update { state ->
+            val thinking = state.thinking?.takeIf { it.messageId == messageId }
+                ?: return@update state
+            state.copy(thinking = thinking.copy(expanded = !thinking.expanded))
         }
     }
 
@@ -202,8 +314,7 @@ class MainViewModel(
             val settings = _uiState.value.generationSettings.normalized()
             val previous = container.chatRepository.getMessages(conversationId)
                 .filter { it.status != MessageStatus.STREAMING }
-            val retainedIds = HistoryTrimmer.trim(previous, settings.contextSize).map { it.id }.toSet()
-            val previousTurns = previous.filter { it.id in retainedIds }.map { message ->
+            val previousTurns = previous.map { message ->
                 ChatTurn(
                     message = message,
                     attachments = container.attachmentRepository.contextsForMessage(message.id, message.content),
@@ -211,37 +322,62 @@ class MainViewModel(
             }
             val contexts = container.attachmentRepository.contexts(draft.map { it.id }, prompt)
             val visualCount = contexts.sumOf { it.imagePaths.size }
+            // Restoring this conversation re-encodes history images, so the projector
+            // must be loaded (at a budget no smaller than history was encoded with)
+            // even when the new message itself has no attachments.
+            val allHistoryImageBudget = previousTurns.maxOfOrNull { turn ->
+                turn.attachments.filter { it.imagePaths.isNotEmpty() }
+                    .maxOfOrNull { it.imageTokenBudget } ?: 0
+            } ?: 0
             val userText = prompt.ifEmpty { attachmentOnlyPrompt(draft) }
             var assistant: ChatMessage? = null
+            var keepThinking = false
+            container.residencyController.beginInferenceUse()
             try {
                 _uiState.update { it.copy(isSending = true, error = null) }
-                val initialVisualBudget = allocateVisualBudget(
+                val provisionalContext =
+                    (_uiState.value.residencyState as? ModelResidencyState.Ready)?.contextSize
+                        ?: 4_096
+                val initialVisualBudget = VisionBudgetPlanner.allocate(
                     mode,
-                    visualCount,
-                    settings.contextSize - settings.maxNewTokens - 256,
+                    contexts,
+                    userText,
+                    provisionalContext - settings.maxNewTokens - 256,
                 )
-                container.residencyController.ensureLoaded(
+                val loadConfiguration = container.residencyController.ensureLoaded(
                     qualityMode = mode,
-                    requireVision = visualCount > 0,
-                    imageTokenBudget = initialVisualBudget,
+                    requireVision = visualCount > 0 || allHistoryImageBudget > 0,
+                    imageTokenBudget = maxOf(initialVisualBudget, allHistoryImageBudget),
                 )
-                var historyTokens = 0
-                previousTurns.forEach { turn ->
-                    historyTokens += container.inferenceEngine.countTokens(
-                        turn.message.content + turn.attachments.joinToString { it.extractedText },
-                    ) + turn.attachments.sumOf { it.imagePaths.size * it.imageTokenBudget }
-                }
-                val currentTextTokens = container.inferenceEngine.countTokens(
-                    userText + contexts.joinToString { it.extractedText },
+                val contextPlan = container.promptContextPlanner.plan(
+                    conversationId = conversationId,
+                    history = previousTurns,
+                    currentText = userText + contexts.joinToString { it.extractedText },
+                    settings = settings,
+                    contextTokens = loadConfiguration.contextTokens,
+                    memoryEnabled = _uiState.value.memoryEnabled &&
+                        _uiState.value.conversations.firstOrNull { it.id == conversationId }?.temporary != true,
                 )
-                val availableVisualTokens = settings.contextSize - settings.maxNewTokens -
-                    historyTokens - currentTextTokens - 256
-                val visualBudget = allocateVisualBudget(mode, visualCount, availableVisualTokens)
+                val plannedTurns = contextPlan.history
+                val historyImageBudget = plannedTurns.maxOfOrNull { turn ->
+                    turn.attachments.filter { it.imagePaths.isNotEmpty() }
+                        .maxOfOrNull { it.imageTokenBudget } ?: 0
+                } ?: 0
+                val availableVisualTokens = loadConfiguration.contextTokens -
+                    contextPlan.estimatedTokens -
+                    contextPlan.outputReserveTokens -
+                    192
+                val visualBudget = VisionBudgetPlanner.allocate(
+                    mode,
+                    contexts,
+                    userText,
+                    availableVisualTokens,
+                )
                 if (visualCount > 0 && visualBudget != initialVisualBudget) {
                     container.residencyController.ensureLoaded(
                         qualityMode = mode,
                         requireVision = true,
-                        imageTokenBudget = visualBudget,
+                        imageTokenBudget = maxOf(visualBudget, historyImageBudget),
                     )
                 }
                 val adjustedContexts = contexts.map { it.copy(imageTokenBudget = visualBudget) }
@@ -250,7 +386,18 @@ class MainViewModel(
                     MessageRole.USER,
                     userText,
                 )
-                container.attachmentRepository.bind(user.id, conversationId, draft.map { it.id })
+                container.memoryRepository.rememberMessage(
+                    message = user,
+                    conversationTemporary = _uiState.value.conversations
+                        .firstOrNull { it.id == conversationId }
+                        ?.temporary == true,
+                )
+                container.attachmentRepository.bind(
+                    user.id,
+                    conversationId,
+                    draft.map { it.id },
+                    visualBudget.takeIf { visualCount > 0 },
+                )
                 _uiState.update {
                     it.copy(
                         messageAttachments = it.messageAttachments + (user.id to draft),
@@ -263,37 +410,118 @@ class MainViewModel(
                     "",
                     MessageStatus.STREAMING,
                 )
-                container.inferenceEngine.restoreSession(conversationId, previousTurns, settings)
+                _uiState.update {
+                    it.copy(
+                        thinking = ThinkingUiState(requireNotNull(assistant).id),
+                        usedMemoryCount = contextPlan.memories.size,
+                    )
+                }
+                val plannedSettings = settings.copy(systemPrompt = contextPlan.systemPrompt)
+                container.inferenceEngine.restoreSession(conversationId, plannedTurns, plannedSettings)
+                if (visualCount > 0 && historyImageBudget > visualBudget) {
+                    // History must be reconstructed at its original detail. Once its
+                    // KV state is restored, reload only the projector at this turn's
+                    // lower budget so Fast descriptions stay fast.
+                    container.residencyController.ensureLoaded(
+                        qualityMode = mode,
+                        requireVision = true,
+                        imageTokenBudget = visualBudget,
+                    )
+                }
                 val content = StringBuilder()
                 var lastSavedAt = 0L
+                var completion: GenerationEvent.Completed? = null
                 container.inferenceEngine.generate(
                     UserTurn(
                         conversationId = conversationId,
                         text = user.content,
                         attachments = adjustedContexts,
                     ),
-                    settings,
-                ).collect { token ->
-                    content.append(token)
-                    val now = System.currentTimeMillis()
-                    if (now - lastSavedAt >= 250 || content.length < 40) {
-                        assistant?.copy(content = content.toString())?.let { updated ->
-                            assistant = updated
-                            container.chatRepository.updateMessage(updated)
+                    plannedSettings,
+                ).collect { event ->
+                    when (event) {
+                        is GenerationEvent.ThoughtDelta -> {
+                            val messageId = assistant?.id ?: return@collect
+                            _uiState.update { state ->
+                                val thinking = state.thinking
+                                    ?.takeIf { it.messageId == messageId }
+                                    ?: ThinkingUiState(messageId)
+                                state.copy(
+                                    thinking = thinking.copy(
+                                        text = thinking.text + event.text,
+                                        complete = false,
+                                    ),
+                                )
+                            }
                         }
-                        lastSavedAt = now
+                        is GenerationEvent.AnswerDelta -> {
+                            content.append(event.text)
+                            _uiState.update { state ->
+                                val thinking = state.thinking
+                                if (thinking == null || thinking.text.isEmpty()) {
+                                    state
+                                } else {
+                                    keepThinking = true
+                                    state.copy(
+                                        thinking = thinking.copy(
+                                            complete = true,
+                                            expanded = false,
+                                        ),
+                                    )
+                                }
+                            }
+                            val now = System.currentTimeMillis()
+                            if (now - lastSavedAt >= 250 || content.length < 40) {
+                                assistant?.copy(content = content.toString())?.let { updated ->
+                                    assistant = updated
+                                    container.chatRepository.updateMessage(updated)
+                                }
+                                lastSavedAt = now
+                            }
+                        }
+                        is GenerationEvent.Completed -> completion = event
+                        is GenerationEvent.Phase -> Unit
                     }
                 }
+                val result = completion ?: GenerationEvent.Completed(
+                    reason = GenerationStopReason.ERROR,
+                    answerTokens = 0,
+                    continuationCount = 0,
+                )
                 assistant?.copy(
-                    content = content.toString(),
-                    status = MessageStatus.COMPLETE,
+                    content = content.toString().ifEmpty {
+                        if (plannedSettings.thinkingEnabled &&
+                            result.reason == GenerationStopReason.EOG
+                        ) {
+                            "The model finished thinking without producing a final answer."
+                        } else {
+                            ""
+                        }
+                    },
+                    status = if (content.isEmpty() &&
+                        plannedSettings.thinkingEnabled &&
+                        result.reason == GenerationStopReason.EOG
+                    ) {
+                        MessageStatus.ERROR
+                    } else {
+                        result.reason.toMessageStatus()
+                    },
+                    stopReason = result.reason,
+                    continuationCount = result.continuationCount,
+                    promptTokens = contextPlan.estimatedTokens,
+                    generatedTokens = result.answerTokens,
                 )?.let { completed ->
                     assistant = completed
                     container.chatRepository.updateMessage(completed)
                 }
             } catch (cancelled: CancellationException) {
                 assistant?.let {
-                    container.chatRepository.updateMessage(it.copy(status = MessageStatus.CANCELLED))
+                    container.chatRepository.updateMessage(
+                        it.copy(
+                            status = MessageStatus.CANCELLED,
+                            stopReason = GenerationStopReason.CANCELLED,
+                        ),
+                    )
                 }
             } catch (error: Throwable) {
                 assistant?.let {
@@ -306,14 +534,288 @@ class MainViewModel(
                 }
                 showError(error)
             } finally {
-                _uiState.update { it.copy(isSending = false) }
+                _uiState.update { state ->
+                    state.copy(
+                        isSending = false,
+                        thinking = if (keepThinking) {
+                            state.thinking?.copy(complete = true, expanded = false)
+                        } else {
+                            null
+                        },
+                    )
+                }
+                container.residencyController.endInferenceUse()
             }
         }
     }
 
     fun stopGeneration() {
         container.inferenceEngine.cancel()
-        generationJob?.cancel()
+    }
+
+    fun continueResponse() {
+        if (generationJob?.isActive == true) return
+        val conversationId = _uiState.value.selectedConversationId ?: return
+        val target = _uiState.value.messages.lastOrNull {
+            it.role == MessageRole.ASSISTANT && it.status == MessageStatus.CONTINUABLE
+        } ?: return
+        generationJob = viewModelScope.launch {
+            val settings = _uiState.value.generationSettings.normalized()
+            val mode = currentQualityMode()
+            resolveQualityModel(mode) ?: return@launch
+            var assistant = target.copy(status = MessageStatus.STREAMING)
+            var keepThinking = false
+            container.residencyController.beginInferenceUse()
+            try {
+                _uiState.update {
+                    it.copy(
+                        isSending = true,
+                        thinking = ThinkingUiState(target.id),
+                        error = null,
+                    )
+                }
+                container.chatRepository.updateMessage(assistant)
+                val messages = container.chatRepository.getMessages(conversationId)
+                    .filter { it.id != target.id && it.status != MessageStatus.STREAMING }
+                val turns = messages.map { message ->
+                    ChatTurn(
+                        message = message,
+                        attachments = container.attachmentRepository.contextsForMessage(
+                            message.id,
+                            message.content,
+                        ),
+                    )
+                } + ChatTurn(target.copy(status = MessageStatus.COMPLETE))
+                val historyImageBudget = turns.maxOfOrNull { turn ->
+                    turn.attachments.filter { it.imagePaths.isNotEmpty() }
+                        .maxOfOrNull { it.imageTokenBudget } ?: 0
+                } ?: 0
+                val loadConfiguration = container.residencyController.ensureLoaded(
+                    qualityMode = mode,
+                    requireVision = historyImageBudget > 0,
+                    imageTokenBudget = historyImageBudget.coerceAtLeast(70),
+                )
+                val hiddenPrompt =
+                    "Continue the immediately preceding assistant answer from exactly where it stopped. " +
+                        "Do not repeat the existing text and do not add a preamble."
+                val contextPlan = container.promptContextPlanner.plan(
+                    conversationId = conversationId,
+                    history = turns,
+                    currentText = hiddenPrompt,
+                    settings = settings,
+                    contextTokens = loadConfiguration.contextTokens,
+                    memoryEnabled = _uiState.value.memoryEnabled,
+                )
+                val plannedSettings = settings.copy(systemPrompt = contextPlan.systemPrompt)
+                container.inferenceEngine.restoreSession(
+                    conversationId,
+                    contextPlan.history,
+                    plannedSettings,
+                )
+                val continuation = StringBuilder()
+                var completion: GenerationEvent.Completed? = null
+                var lastSavedAt = 0L
+                container.inferenceEngine.generate(
+                    UserTurn(conversationId, hiddenPrompt),
+                    plannedSettings,
+                ).collect { event ->
+                    when (event) {
+                        is GenerationEvent.ThoughtDelta -> _uiState.update { state ->
+                            val thinking = state.thinking
+                                ?.takeIf { it.messageId == target.id }
+                                ?: ThinkingUiState(target.id)
+                            state.copy(
+                                thinking = thinking.copy(
+                                    text = thinking.text + event.text,
+                                    complete = false,
+                                ),
+                            )
+                        }
+                        is GenerationEvent.AnswerDelta -> {
+                            continuation.append(event.text)
+                            _uiState.update { state ->
+                                val thinking = state.thinking
+                                if (thinking == null || thinking.text.isEmpty()) {
+                                    state
+                                } else {
+                                    keepThinking = true
+                                    state.copy(
+                                        thinking = thinking.copy(
+                                            complete = true,
+                                            expanded = false,
+                                        ),
+                                    )
+                                }
+                            }
+                            val merged = mergeContinuation(target.content, continuation.toString())
+                            val now = System.currentTimeMillis()
+                            if (now - lastSavedAt >= 250 || continuation.length < 40) {
+                                assistant = assistant.copy(content = merged)
+                                container.chatRepository.updateMessage(assistant)
+                                lastSavedAt = now
+                            }
+                        }
+                        is GenerationEvent.Completed -> completion = event
+                        is GenerationEvent.Phase -> Unit
+                    }
+                }
+                val result = completion ?: GenerationEvent.Completed(
+                    GenerationStopReason.ERROR,
+                    0,
+                    0,
+                )
+                assistant = assistant.copy(
+                    content = mergeContinuation(target.content, continuation.toString()),
+                    status = result.reason.toMessageStatus(),
+                    stopReason = result.reason,
+                    continuationCount = target.continuationCount + result.continuationCount + 1,
+                    generatedTokens = (target.generatedTokens ?: 0) + result.answerTokens,
+                )
+                container.chatRepository.updateMessage(assistant)
+            } catch (error: Throwable) {
+                container.chatRepository.updateMessage(
+                    assistant.copy(
+                        status = MessageStatus.CONTINUABLE,
+                        stopReason = GenerationStopReason.ERROR,
+                    ),
+                )
+                if (error !is CancellationException) showError(error)
+            } finally {
+                _uiState.update { state ->
+                    state.copy(
+                        isSending = false,
+                        thinking = if (keepThinking) {
+                            state.thinking?.copy(complete = true, expanded = false)
+                        } else {
+                            null
+                        },
+                    )
+                }
+                container.residencyController.endInferenceUse()
+            }
+        }
+    }
+
+    fun setMemoryEnabled(enabled: Boolean) {
+        viewModelScope.launch { container.settings.setMemoryEnabled(enabled) }
+    }
+
+    fun setCollectionPaused(paused: Boolean) {
+        viewModelScope.launch { container.settings.setCollectionPaused(paused) }
+    }
+
+    fun setCollectionSourceEnabled(source: ActivitySource, enabled: Boolean) {
+        viewModelScope.launch {
+            container.settings.setCollectionSourceEnabled(source, enabled)
+            if (enabled) OfficeWorkScheduler.collectNow(container.application, source)
+        }
+    }
+
+    fun clearCollectedSource(source: ActivitySource) {
+        viewModelScope.launch {
+            runCatching {
+                container.memoryRepository.forgetActivitySource(source)
+                container.activityRepository.deleteSource(source)
+            }
+                .onFailure(::showError)
+        }
+    }
+
+    fun addMemory(content: String) {
+        viewModelScope.launch {
+            runCatching {
+                container.memoryRepository.remember(
+                    type = MemoryType.FACT,
+                    title = content,
+                    content = content,
+                )
+            }.onFailure(::showError)
+        }
+    }
+
+    fun correctMemory(id: String, content: String) {
+        viewModelScope.launch {
+            runCatching { container.memoryRepository.correct(id, content) }.onFailure(::showError)
+        }
+    }
+
+    fun pinMemory(id: String, pinned: Boolean) {
+        viewModelScope.launch {
+            runCatching { container.memoryRepository.setPinned(id, pinned) }.onFailure(::showError)
+        }
+    }
+
+    fun forgetMemory(id: String) {
+        viewModelScope.launch {
+            runCatching { container.memoryRepository.forget(id) }.onFailure(::showError)
+        }
+    }
+
+    fun exportOfficeBackup(uri: Uri, passphrase: String) {
+        if (_uiState.value.backupBusy) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(backupBusy = true, error = null) }
+            runCatching {
+                container.officeBackupRepository.export(uri, passphrase.toCharArray())
+            }.onFailure(::showError)
+            _uiState.update { it.copy(backupBusy = false) }
+        }
+    }
+
+    fun selectOfficeBackup(uri: Uri?) {
+        if (_uiState.value.backupBusy) return
+        _uiState.update { it.copy(pendingBackupImportUri = uri, backupPreview = null) }
+    }
+
+    fun prepareOfficeImport(passphrase: String) {
+        val uri = _uiState.value.pendingBackupImportUri ?: return
+        if (_uiState.value.backupBusy) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(backupBusy = true, error = null) }
+            runCatching {
+                container.officeBackupRepository.prepareImport(uri, passphrase.toCharArray())
+            }.onSuccess { preview ->
+                _uiState.update {
+                    it.copy(
+                        pendingBackupImportUri = null,
+                        backupPreview = preview,
+                    )
+                }
+            }.onFailure(::showError)
+            _uiState.update { it.copy(backupBusy = false) }
+        }
+    }
+
+    fun commitOfficeImport() {
+        val preview = _uiState.value.backupPreview ?: return
+        if (_uiState.value.backupBusy) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(backupBusy = true, error = null) }
+            runCatching {
+                container.officeBackupRepository.commitImport(preview)
+                runCatching {
+                    container.memoryIndexer.rebuild(container.memoryRepository.memories.first())
+                }
+            }.onSuccess {
+                _uiState.update { it.copy(backupPreview = null) }
+            }.onFailure(::showError)
+            _uiState.update { it.copy(backupBusy = false) }
+        }
+    }
+
+    fun discardOfficeImport() {
+        val preview = _uiState.value.backupPreview
+        _uiState.update {
+            it.copy(
+                pendingBackupImportUri = null,
+                backupPreview = null,
+            )
+        }
+        if (preview != null) {
+            viewModelScope.launch {
+                runCatching { container.officeBackupRepository.discardImport(preview) }
+            }
+        }
     }
 
     fun startDownload(id: String) {
@@ -433,6 +935,7 @@ class MainViewModel(
                     container.residencyController.unload()
                 }
                 container.modelRepository.deleteModel(id)
+                container.contextProfileRepository.deleteForModel(id)
             }.onFailure(::showError)
         }
     }
@@ -448,9 +951,7 @@ class MainViewModel(
         val previous = _uiState.value.generationSettings
         viewModelScope.launch {
             container.settings.updateGeneration(settings)
-            if (previous.contextSize != settings.normalized().contextSize ||
-                previous.temperature != settings.normalized().temperature
-            ) {
+            if (previous.temperature != settings.normalized().temperature) {
                 configurationReloadJob?.cancel()
                 configurationReloadJob = viewModelScope.launch {
                     delay(750)
@@ -464,6 +965,13 @@ class MainViewModel(
     fun retryPreload() {
         viewModelScope.launch {
             runCatching { container.residencyController.ensureLoaded() }.onFailure(::showError)
+        }
+    }
+
+    fun reverifyContext() {
+        viewModelScope.launch {
+            runCatching { container.residencyController.reverifySelectedModel() }
+                .onFailure(::showError)
         }
     }
 
@@ -566,20 +1074,6 @@ class MainViewModel(
         observeDraft(key)
     }
 
-    private fun allocateVisualBudget(
-        mode: ChatQualityMode,
-        imageCount: Int,
-        availableTokens: Int,
-    ): Int {
-        if (imageCount <= 0) return 70
-        require(availableTokens >= imageCount * 70) {
-            "All current attachments cannot fit. Increase context or remove an attachment."
-        }
-        val preferred = if (mode == ChatQualityMode.FAST) 560 else 1120
-        val availablePerImage = (availableTokens / imageCount).coerceAtLeast(70)
-        return SUPPORTED_VISUAL_BUDGETS.lastOrNull { it <= minOf(preferred, availablePerImage) } ?: 70
-    }
-
     private fun attachmentOnlyPrompt(attachments: List<Attachment>): String =
         "Describe and analyze ${attachments.joinToString { it.displayName }}."
 
@@ -595,7 +1089,6 @@ class MainViewModel(
     private companion object {
         const val MAX_ATTACHMENTS = 20
         const val MAX_ATTACHMENT_BYTES = 500L * 1024 * 1024
-        val SUPPORTED_VISUAL_BUDGETS = listOf(70, 140, 280, 560, 1120)
     }
 
 }

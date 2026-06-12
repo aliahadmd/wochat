@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <deque>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -32,15 +33,31 @@ mtmd_context * vision_context = nullptr;
 std::vector<common_chat_msg> chat_messages;
 std::string assistant_text;
 std::string utf8_cache;
+std::string generated_raw_text;
+common_chat_parser_params generation_parser_params;
+common_chat_msg parsed_assistant_message;
+std::deque<std::pair<int, std::string>> pending_generation_output;
+// Gemma vision chunks decode with non-causal attention, so a whole image must fit
+// in one ubatch (llama_context::decode asserts n_ubatch >= n_tokens). Batch capacity
+// must therefore stay >= the largest image budget used by the active model.
+constexpr int max_image_tokens_ceiling = 1120;
+constexpr int fast_batch_capacity = 576;
+constexpr int best_batch_capacity = 1152;
+int batch_capacity = fast_batch_capacity;
 int context_size = 4096;
 int current_position = 0;
 int generated_tokens = 0;
+int generated_answer_tokens = 0;
 int max_generated_tokens = 512;
 int consecutive_unused_tokens = 0;
 float sampling_temperature = 0.8f;
 bool thinking_enabled = false;
-bool inside_thinking = false;
 bool batch_initialized = false;
+bool generation_parser_active = false;
+bool generation_finished = false;
+int last_stop_reason = 0;
+int last_token_channel = 0;
+int model_context_limit = 0;
 std::string model_file_name;
 std::string projector_file_name;
 std::string projector_path;
@@ -118,10 +135,17 @@ void clear_session() {
     chat_messages.clear();
     assistant_text.clear();
     utf8_cache.clear();
+    generated_raw_text.clear();
+    parsed_assistant_message = {};
+    pending_generation_output.clear();
     current_position = 0;
     generated_tokens = 0;
+    generated_answer_tokens = 0;
     consecutive_unused_tokens = 0;
-    inside_thinking = false;
+    generation_parser_active = false;
+    generation_finished = false;
+    last_stop_reason = 0;
+    last_token_channel = 0;
     if (context != nullptr) llama_memory_clear(llama_get_memory(context), false);
     if (sampler != nullptr) common_sampler_reset(sampler);
 }
@@ -151,18 +175,26 @@ void unload_model() {
 
 std::string load_projector(const std::string & path, int max_image_tokens) {
     if (model == nullptr) return "Load the language model before its vision projector";
+    if (max_image_tokens > batch_capacity) {
+        return "Image detail exceeds the loaded model's supported vision budget";
+    }
     unload_projector();
+    // Projector initialization and model weights otherwise compete for the same
+    // HyperOS PSS budget. The model remains mapped and is faulted back for decode.
+    release_model_file_pages();
     mtmd_context_params params = mtmd_context_params_default();
+    // The Adreno 830 driver loses the device (vk::Queue::submit: ErrorDeviceLost)
+    // under the encoder's long shader dispatches — clip must stay on the CPU.
     params.use_gpu = false;
     params.print_timings = true;
     params.n_threads = std::clamp(
-        static_cast<int>(std::thread::hardware_concurrency()) - 2,
-        2,
-        6
+        static_cast<int>(std::thread::hardware_concurrency()) - 1,
+        4,
+        7
     );
     params.warmup = false;
     params.image_min_tokens = 70;
-    params.image_max_tokens = std::clamp(max_image_tokens, 70, 1120);
+    params.image_max_tokens = std::clamp(max_image_tokens, 70, max_image_tokens_ceiling);
     vision_context = mtmd_init_from_file(path.c_str(), model, params);
     if (vision_context == nullptr) return "Unable to load the Gemma vision projector";
     if (!mtmd_support_vision(vision_context)) {
@@ -173,7 +205,7 @@ std::string load_projector(const std::string & path, int max_image_tokens) {
     projector_max_tokens = params.image_max_tokens;
     const size_t separator = path.find_last_of('/');
     projector_file_name = separator == std::string::npos ? path : path.substr(separator + 1);
-    release_file_pages(projector_file_name);
+    LOGI("Vision projector ready (CPU, %d threads)", params.n_threads);
     return {};
 }
 
@@ -210,9 +242,15 @@ std::string load_model(const std::string & path, int backend, int requested_cont
     if (model == nullptr) return backend == 2 ? "Unable to load model with Vulkan" : "Unable to load model";
     const size_t separator = path.find_last_of('/');
     model_file_name = separator == std::string::npos ? path : path.substr(separator + 1);
+    batch_capacity =
+        model_file_name.find("E4B") != std::string::npos ||
+        model_file_name.find("e4b") != std::string::npos
+            ? fast_batch_capacity
+            : best_batch_capacity;
     LOGI("Model weights loaded with backend=%d in %lld ms", backend, elapsed_ms(start));
 
-    context_size = std::clamp(requested_context, 1024, 8192);
+    model_context_limit = std::max(1024, llama_model_n_ctx_train(model));
+    context_size = std::clamp(requested_context, 1024, model_context_limit);
     const int threads = std::clamp(
         static_cast<int>(std::thread::hardware_concurrency()) - 2,
         2,
@@ -220,8 +258,8 @@ std::string load_model(const std::string & path, int backend, int requested_cont
     );
     llama_context_params context_params = llama_context_default_params();
     context_params.n_ctx = context_size;
-    context_params.n_batch = 128;
-    context_params.n_ubatch = 64;
+    context_params.n_batch = batch_capacity;
+    context_params.n_ubatch = batch_capacity;
     context_params.n_threads = threads;
     context_params.n_threads_batch = threads;
     context = llama_init_from_model(model, context_params);
@@ -230,7 +268,7 @@ std::string load_model(const std::string & path, int backend, int requested_cont
         return "Unable to allocate the model context";
     }
 
-    batch = llama_batch_init(128, 0, 1);
+    batch = llama_batch_init(batch_capacity, 0, 1);
     batch_initialized = true;
     chat_templates = common_chat_templates_init(model, "");
     sampling_temperature = std::clamp(temperature, 0.0f, 2.0f);
@@ -242,8 +280,29 @@ std::string load_model(const std::string & path, int backend, int requested_cont
         return "Unable to initialize sampling";
     }
     clear_session();
-    LOGI("Model and context ready with backend=%d in %lld ms", backend, elapsed_ms(start));
+    // Build the decode graph during preload, then release clean file-backed pages.
+    // The model and context stay loaded while HyperOS gets room for projector work.
+    const auto warmup_start = std::chrono::steady_clock::now();
+    const auto * vocab = llama_model_get_vocab(model);
+    std::vector<llama_token> warmup_tokens;
+    if (llama_vocab_bos(vocab) != LLAMA_TOKEN_NULL) warmup_tokens.push_back(llama_vocab_bos(vocab));
+    if (llama_vocab_eos(vocab) != LLAMA_TOKEN_NULL) warmup_tokens.push_back(llama_vocab_eos(vocab));
+    if (!warmup_tokens.empty()) {
+        common_batch_clear(batch);
+        for (size_t index = 0; index < warmup_tokens.size(); ++index) {
+            common_batch_add(batch, warmup_tokens[index], static_cast<llama_pos>(index), {0}, false);
+        }
+        llama_decode(context, batch);
+        llama_memory_clear(llama_get_memory(context), true);
+        LOGI("Warmup decode finished in %lld ms", elapsed_ms(warmup_start));
+    }
     release_model_file_pages();
+    LOGI(
+        "Model and context ready with backend=%d, batch=%d in %lld ms",
+        backend,
+        batch_capacity,
+        elapsed_ms(start)
+    );
     return {};
 }
 
@@ -257,8 +316,8 @@ int decode_text(const std::string & text, bool add_special, bool parse_special, 
         logits_last
     );
     if (current_position + static_cast<int>(tokens.size()) >= context_size - 8) return 1;
-    for (size_t offset = 0; offset < tokens.size(); offset += 128) {
-        const int count = std::min<int>(128, tokens.size() - offset);
+    for (size_t offset = 0; offset < tokens.size(); offset += batch_capacity) {
+        const int count = std::min<int>(batch_capacity, tokens.size() - offset);
         common_batch_clear(batch);
         for (int index = 0; index < count; ++index) {
             const bool logits = logits_last && offset + index == tokens.size() - 1;
@@ -279,6 +338,7 @@ common_chat_templates_inputs chat_inputs(
     inputs.messages = messages;
     inputs.add_generation_prompt = add_generation_prompt;
     inputs.enable_thinking = thinking_enabled;
+    inputs.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
     inputs.chat_template_kwargs["enable_thinking"] = thinking_enabled ? "true" : "false";
     return inputs;
 }
@@ -350,6 +410,7 @@ std::string eval_media_message(
     common_chat_params * output_params
 ) {
     if (vision_context == nullptr) return "Install and load the matching vision projector";
+    const auto media_start = std::chrono::steady_clock::now();
     std::string content;
     for (size_t index = 0; index < media_paths.size(); ++index) {
         content += mtmd_default_marker();
@@ -363,6 +424,7 @@ std::string eval_media_message(
         auto wrapper = mtmd_helper_bitmap_init_from_file(vision_context, path.c_str(), false);
         if (wrapper.bitmap == nullptr) {
             for (auto * bitmap : owned_bitmaps) mtmd_bitmap_free(bitmap);
+            release_file_pages(projector_file_name);
             return "Unable to decode an attached image";
         }
         owned_bitmaps.push_back(wrapper.bitmap);
@@ -382,9 +444,19 @@ std::string eval_media_message(
         bitmaps.size()
     );
     for (auto * bitmap : owned_bitmaps) mtmd_bitmap_free(bitmap);
-    if (tokenize_result != 0) return "Unable to prepare multimodal prompt";
+    if (tokenize_result != 0) {
+        release_file_pages(projector_file_name);
+        return "Unable to prepare multimodal prompt";
+    }
     const llama_pos positions = mtmd_helper_get_n_pos(chunks.ptr.get());
+    LOGI(
+        "Prepared %zu media item(s) with %d positions in %lld ms",
+        media_paths.size(),
+        positions,
+        elapsed_ms(media_start)
+    );
     if (current_position + positions >= context_size - 8) {
+        release_file_pages(projector_file_name);
         return "Attachments and conversation do not fit the configured context";
     }
     llama_pos new_position = current_position;
@@ -394,14 +466,19 @@ std::string eval_media_message(
         chunks.ptr.get(),
         current_position,
         0,
-        128,
+        batch_capacity,
         add_assistant,
         &new_position
     );
+    release_file_pages(projector_file_name);
     if (eval_result != 0) return "Model failed while encoding attached media";
     current_position = new_position;
     chat_messages.push_back({role, content});
-    release_file_pages(projector_file_name);
+    LOGI(
+        "Encoded %zu media item(s) in %lld ms",
+        media_paths.size(),
+        elapsed_ms(media_start)
+    );
     return {};
 }
 
@@ -415,7 +492,12 @@ std::string configure_sampler(const common_chat_params & chat_params) {
     params.generation_prompt = chat_params.generation_prompt;
     if (!chat_params.thinking_end_tag.empty()) {
         const auto * vocab = llama_model_get_vocab(model);
-        params.reasoning_budget_tokens = thinking_enabled ? -1 : 0;
+        // Leave room in every generation segment for a visible answer. An
+        // unlimited reasoning budget can consume the whole segment before
+        // Gemma reaches its final channel.
+        params.reasoning_budget_tokens = thinking_enabled
+            ? std::max(32, std::min(1024, max_generated_tokens / 2))
+            : 0;
         if (!chat_params.thinking_start_tag.empty()) {
             params.reasoning_budget_start =
                 common_tokenize(vocab, chat_params.thinking_start_tag, false, true);
@@ -426,7 +508,20 @@ std::string configure_sampler(const common_chat_params & chat_params) {
             common_tokenize(vocab, chat_params.thinking_end_tag, false, true);
     }
     sampler = common_sampler_init(model, params);
-    return sampler == nullptr ? "Unable to initialize sampling" : "";
+    if (sampler == nullptr) return "Unable to initialize sampling";
+
+    generation_parser_params = common_chat_parser_params(chat_params);
+    generation_parser_params.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
+    generation_parser_params.parse_tool_calls = false;
+    if (!chat_params.parser.empty()) {
+        generation_parser_params.parser.load(chat_params.parser);
+    }
+    generation_parser_active = !chat_params.parser.empty();
+    generation_finished = false;
+    generated_raw_text.clear();
+    parsed_assistant_message = {};
+    pending_generation_output.clear();
+    return "";
 }
 
 void commit_assistant_message() {
@@ -434,6 +529,44 @@ void commit_assistant_message() {
         chat_messages.push_back({"assistant", assistant_text});
         assistant_text.clear();
     }
+}
+
+void queue_parsed_generation_output(bool partial) {
+    if (!generation_parser_active) return;
+    const auto parsed = common_chat_parse(
+        generated_raw_text,
+        partial,
+        generation_parser_params
+    );
+    const auto diffs = common_chat_msg_diff::compute_diffs(
+        parsed_assistant_message,
+        parsed
+    );
+    for (const auto & diff : diffs) {
+        if (thinking_enabled && !diff.reasoning_content_delta.empty()) {
+            pending_generation_output.emplace_back(1, diff.reasoning_content_delta);
+        }
+        if (!diff.content_delta.empty()) {
+            pending_generation_output.emplace_back(2, diff.content_delta);
+            const auto tokens = common_tokenize(
+                context,
+                diff.content_delta,
+                false,
+                true
+            );
+            generated_answer_tokens += std::max<int>(1, tokens.size());
+        }
+    }
+    parsed_assistant_message = parsed;
+    assistant_text = parsed.content;
+}
+
+jstring pop_generation_output(JNIEnv * env) {
+    if (pending_generation_output.empty()) return nullptr;
+    auto output = std::move(pending_generation_output.front());
+    pending_generation_output.pop_front();
+    last_token_channel = output.first;
+    return to_jstring(env, output.second);
 }
 }  // namespace
 
@@ -551,10 +684,16 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeBeginUserPrompt(
         if (model == nullptr || context == nullptr) return to_jstring(env, "No model is loaded");
         assistant_text.clear();
         utf8_cache.clear();
+        generated_raw_text.clear();
+        parsed_assistant_message = {};
+        pending_generation_output.clear();
         generated_tokens = 0;
+        generated_answer_tokens = 0;
         consecutive_unused_tokens = 0;
-        inside_thinking = false;
-        max_generated_tokens = std::clamp<int>(max_tokens, 1, 2048);
+        generation_finished = false;
+        last_stop_reason = 0;
+        last_token_channel = 0;
+        max_generated_tokens = std::clamp<int>(max_tokens, 1, 8192);
         common_chat_params chat_params;
         std::string error = append_message(
             "user",
@@ -636,10 +775,16 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeBeginUserTurn(
         if (model == nullptr || context == nullptr) return to_jstring(env, "No model is loaded");
         assistant_text.clear();
         utf8_cache.clear();
+        generated_raw_text.clear();
+        parsed_assistant_message = {};
+        pending_generation_output.clear();
         generated_tokens = 0;
+        generated_answer_tokens = 0;
         consecutive_unused_tokens = 0;
-        inside_thinking = false;
-        max_generated_tokens = std::clamp<int>(max_tokens, 1, 2048);
+        generation_finished = false;
+        last_stop_reason = 0;
+        last_token_channel = 0;
+        max_generated_tokens = std::clamp<int>(max_tokens, 1, 8192);
         common_chat_params chat_params;
         std::string error = eval_media_message(
             "user",
@@ -666,9 +811,30 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeCountTokens(
     return static_cast<jint>(common_tokenize(context, from_jstring(env, text), false, true).size());
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeCurrentContextSize(
+    JNIEnv *,
+    jobject
+) {
+    return context == nullptr ? 0 : context_size;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeFinishGeneration(JNIEnv *, jobject) {
     commit_assistant_message();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeContinueGeneration(
+    JNIEnv *,
+    jobject,
+    jint max_tokens
+) {
+    generated_tokens = 0;
+    max_generated_tokens = std::clamp<int>(max_tokens, 1, 8192);
+    last_stop_reason = 0;
+    last_token_channel = 0;
+    generation_finished = false;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -678,19 +844,34 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeNextToken(
 ) {
     try {
         const auto start = std::chrono::steady_clock::now();
-        if (generated_tokens >= max_generated_tokens || current_position >= context_size - 8) {
-            commit_assistant_message();
+        last_token_channel = 0;
+        if (!pending_generation_output.empty()) {
+            return pop_generation_output(env);
+        }
+        if (generation_finished) return nullptr;
+        if (generated_tokens >= max_generated_tokens) {
+            last_stop_reason = 2;
+            return nullptr;
+        }
+        if (current_position >= context_size - 8) {
+            last_stop_reason = 3;
             return nullptr;
         }
         const llama_token token = common_sampler_sample(sampler, context, -1);
         common_sampler_accept(sampler, token, true);
         if (llama_vocab_is_eog(llama_model_get_vocab(model), token)) {
+            last_stop_reason = 1;
+            generation_finished = true;
+            queue_parsed_generation_output(false);
             commit_assistant_message();
-            return nullptr;
+            return pop_generation_output(env);
         }
         common_batch_clear(batch);
         common_batch_add(batch, token, current_position, {0}, true);
-        if (llama_decode(context, batch) != 0) return nullptr;
+        if (llama_decode(context, batch) != 0) {
+            last_stop_reason = 4;
+            return nullptr;
+        }
         current_position++;
         generated_tokens++;
         if (generated_tokens == 1 || generated_tokens % 32 == 0) {
@@ -718,28 +899,50 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeNextToken(
         } else {
             consecutive_unused_tokens = 0;
         }
-        if (piece.find("<|channel>thought") != std::string::npos) {
-            inside_thinking = true;
-            return to_jstring(env, "");
-        }
-        if (piece.find("<channel|>") != std::string::npos) {
-            inside_thinking = false;
-            return to_jstring(env, "");
-        }
-        if ((!thinking_enabled && inside_thinking) ||
-            (piece.size() >= 2 && piece.front() == '<' && piece.back() == '>')) {
-            return to_jstring(env, "");
-        }
         utf8_cache += piece;
         if (!valid_utf8(utf8_cache)) return to_jstring(env, "");
         const std::string result = utf8_cache;
-        assistant_text += result;
         utf8_cache.clear();
+        if (generation_parser_active) {
+            generated_raw_text += result;
+            queue_parsed_generation_output(true);
+            if (!pending_generation_output.empty()) {
+                return pop_generation_output(env);
+            }
+            return to_jstring(env, "");
+        }
+        if (result.size() >= 2 && result.front() == '<' && result.back() == '>') {
+            return to_jstring(env, "");
+        }
+        last_token_channel = 2;
+        generated_answer_tokens++;
+        assistant_text += result;
         return to_jstring(env, result);
     } catch (const std::exception & error) {
         LOGE("Token generation failed: %s", error.what());
+        last_stop_reason = 5;
         return nullptr;
     }
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeLastStopReason(JNIEnv *, jobject) {
+    return last_stop_reason;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeLastTokenChannel(JNIEnv *, jobject) {
+    return last_token_channel;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeGeneratedAnswerTokens(JNIEnv *, jobject) {
+    return generated_answer_tokens;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeModelContextLimit(JNIEnv *, jobject) {
+    return model_context_limit;
 }
 
 extern "C" JNIEXPORT void JNICALL

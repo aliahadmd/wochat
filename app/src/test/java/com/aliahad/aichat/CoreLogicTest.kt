@@ -9,7 +9,14 @@ import com.aliahad.aichat.model.GgufValidator
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.attachment.AttachmentTypeDetector
 import com.aliahad.aichat.core.AttachmentKind
+import com.aliahad.aichat.core.BackendMode
+import com.aliahad.aichat.core.ContextVerificationState
+import com.aliahad.aichat.core.ModelContextProfile
+import com.aliahad.aichat.context.ContextCandidates
+import com.aliahad.aichat.context.ContextMemoryPolicy
 import com.aliahad.aichat.residency.ModelLoadSignature
+import com.aliahad.aichat.residency.ModelResidencyState
+import com.aliahad.aichat.residency.residencyContextDescription
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,16 +24,41 @@ import java.io.File
 
 class CoreLogicTest {
     @Test
-    fun generationSettingsAreBoundedForPhoneMemory() {
+    fun residencyNotificationDistinguishesFallbackFromVerifiedContext() {
+        val failed = ModelResidencyState.Ready(
+            modelName = "Gemma",
+            contextSize = 4_096,
+            declaredContextSize = 262_144,
+            loadMillis = 1,
+            verifiedContextSize = 0,
+            contextVerificationState = ContextVerificationState.FAILED,
+        )
+        assertEquals(
+            "CPU · 4K active fallback · baseline verification failed · 256K model maximum",
+            residencyContextDescription(failed),
+        )
+
+        val limited = failed.copy(
+            contextSize = 16_384,
+            verifiedContextSize = 16_384,
+            contextVerificationState = ContextVerificationState.LIMITED,
+        )
+        assertEquals(
+            "CPU · 16K verified · 256K model maximum",
+            residencyContextDescription(limited),
+        )
+    }
+
+    @Test
+    fun generationSettingsOnlyContainUserControlledGenerationPreferences() {
         val settings = GenerationSettings(
-            contextSize = 100_000,
             maxNewTokens = 50_000,
             temperature = 9f,
             systemPrompt = " ",
         ).normalized()
 
-        assertEquals(8192, settings.contextSize)
         assertEquals(2048, settings.maxNewTokens)
+        assertEquals(8192, settings.maxAnswerTokens)
         assertEquals(2f, settings.temperature)
         assertTrue(settings.systemPrompt.isNotBlank())
     }
@@ -90,6 +122,51 @@ class CoreLogicTest {
     }
 
     @Test
+    fun automaticContextCandidatesContinueAboveLargestVerifiedSize() {
+        val profile = contextProfile(
+            declared = 131_072,
+            verified = 8_192,
+            state = ContextVerificationState.VERIFIED,
+        )
+
+        assertEquals(
+            listOf(16_384, 32_768, 65_536, 131_072),
+            ContextCandidates.remaining(profile),
+        )
+        assertTrue(
+            ContextCandidates.remaining(
+                profile.copy(state = ContextVerificationState.LIMITED),
+            ).isEmpty(),
+        )
+    }
+
+    @Test
+    fun automaticContextCandidatesRespectSmallDeclaredLimit() {
+        val profile = contextProfile(
+            declared = 2_048,
+            verified = 0,
+            state = ContextVerificationState.UNVERIFIED,
+        )
+
+        assertEquals(listOf(2_048), ContextCandidates.remaining(profile))
+    }
+
+    @Test
+    fun contextMemoryPolicyKeepsHyperOsBelowItsProcessPssGuard() {
+        val gib = 1_024L * 1_024 * 1_024
+        val mib = 1_024L * 1_024
+
+        assertEquals(
+            6L * gib - 128L * mib,
+            ContextMemoryPolicy.stablePssCeilingBytes("Xiaomi", 16L * gib),
+        )
+        assertEquals(
+            16L * gib * 4 / 5,
+            ContextMemoryPolicy.stablePssCeilingBytes("Google", 16L * gib),
+        )
+    }
+
+    @Test
     fun officialModelCatalogContainsIndependentVerifiedArtifacts() {
         val models = ModelConstants.OFFICIAL_MODELS
 
@@ -128,4 +205,29 @@ class CoreLogicTest {
         assertEquals(null, AttachmentTypeDetector.detect("legacy.doc", "application/msword"))
         assertEquals(null, AttachmentTypeDetector.detect("archive.zip", "application/zip"))
     }
+
+    private fun contextProfile(
+        declared: Int,
+        verified: Int,
+        state: ContextVerificationState,
+    ) = ModelContextProfile(
+        id = "profile",
+        modelId = "model",
+        modelSha256 = "sha",
+        deviceFingerprint = "device",
+        physicalRamBytes = 16L * 1024 * 1024 * 1024,
+        swapBytes = 16L * 1024 * 1024 * 1024,
+        backend = BackendMode.CPU,
+        llamaRevision = "revision",
+        declaredContextTokens = declared,
+        verifiedContextTokens = verified,
+        lastAttemptedTokens = verified.takeIf { it > 0 },
+        state = state,
+        peakPssBytes = null,
+        peakRssBytes = null,
+        peakSwapBytes = null,
+        failureReason = null,
+        verifiedAt = null,
+        updatedAt = 1,
+    )
 }

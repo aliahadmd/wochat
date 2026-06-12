@@ -18,8 +18,10 @@ class AttachmentProcessingWorker(
     context: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
-    private val app = context as AiChatApplication
-    private val dao = app.container.database.attachmentDao()
+    private val app: AiChatApplication
+        get() = applicationContext as AiChatApplication
+    private val dao
+        get() = app.container.database.attachmentDao()
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val id = inputData.getString(ATTACHMENT_ID) ?: return@withContext Result.failure()

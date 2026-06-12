@@ -23,6 +23,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import java.util.UUID
 
 interface ModelRepository {
@@ -35,6 +36,8 @@ interface ModelRepository {
     suspend fun importModel(uri: Uri): ModelRecord
     suspend fun selectModel(id: String)
     suspend fun selectedModel(): ModelRecord?
+    suspend fun ensureSha256(model: ModelRecord): ModelRecord
+    suspend fun hasActiveTransfers(): Boolean
     suspend fun deleteModel(id: String)
     suspend fun testHuggingFaceToken(token: String): Result<Unit>
     suspend fun modelForQuality(mode: ChatQualityMode): ModelRecord?
@@ -203,7 +206,7 @@ class DefaultModelRepository(
                 localPath = destination.absolutePath,
                 sourceRepo = null,
                 expectedBytes = destination.length(),
-                sha256 = null,
+                sha256 = sha256(destination),
                 downloadedBytes = destination.length(),
                 status = DownloadStatus.READY,
                 error = null,
@@ -223,6 +226,17 @@ class DefaultModelRepository(
     }
 
     override suspend fun selectedModel(): ModelRecord? = dao.getSelected()?.toDomain()
+
+    override suspend fun ensureSha256(model: ModelRecord): ModelRecord = withContext(Dispatchers.IO) {
+        model.sha256?.takeIf(String::isNotBlank)?.let { return@withContext model }
+        val path = requireNotNull(model.localPath) { "The model file is unavailable" }
+        val digest = sha256(File(path))
+        dao.updateSha256(model.id, digest)
+        model.copy(sha256 = digest)
+    }
+
+    override suspend fun hasActiveTransfers(): Boolean =
+        dao.activeTransferCount() > 0 || projectorDao.activeTransferCount() > 0
 
     override suspend fun deleteModel(id: String) {
         val model = requireNotNull(dao.get(id)) { "Model not found" }
@@ -365,4 +379,17 @@ internal fun ProjectorRecordEntity.toDomain() = ProjectorRecord(
 fun formatBytes(bytes: Long): String {
     val gib = bytes.toDouble() / (1024 * 1024 * 1024)
     return if (gib >= 1) "%.2f GB".format(gib) else "%.1f MB".format(bytes.toDouble() / (1024 * 1024))
+}
+
+private fun sha256(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().buffered().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE * 16)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
 }

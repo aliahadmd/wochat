@@ -1,0 +1,178 @@
+package com.aliahad.aichat.data
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Update
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface ConversationSummaryDao {
+    @Query("SELECT * FROM conversation_summaries WHERE conversationId = :conversationId")
+    suspend fun get(conversationId: String): ConversationSummaryEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(summary: ConversationSummaryEntity)
+
+    @Query("SELECT * FROM conversation_summaries")
+    suspend fun all(): List<ConversationSummaryEntity>
+}
+
+@Dao
+interface MemoryDao {
+    @Query(
+        "SELECT * FROM memory_items WHERE status = 'ACTIVE' " +
+            "ORDER BY pinned DESC, importance DESC, updatedAt DESC",
+    )
+    fun observeActive(): Flow<List<MemoryItemEntity>>
+
+    @Query("SELECT * FROM memory_items WHERE id = :id")
+    suspend fun get(id: String): MemoryItemEntity?
+
+    @Query(
+        "SELECT * FROM memory_items " +
+            "WHERE contentHash = :contentHash AND status = 'ACTIVE' LIMIT 1",
+    )
+    suspend fun getByHash(contentHash: String): MemoryItemEntity?
+
+    @Query(
+        "SELECT * FROM memory_items WHERE status = 'ACTIVE' " +
+            "AND (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
+            "AND (normalizedContent LIKE '%' || :query || '%' OR lower(title) LIKE '%' || :query || '%') " +
+            "ORDER BY pinned DESC, importance DESC, updatedAt DESC LIMIT :limit",
+    )
+    suspend fun search(query: String, includePrivate: Boolean, limit: Int): List<MemoryItemEntity>
+
+    @Query(
+        "SELECT * FROM memory_items WHERE status = 'ACTIVE' " +
+            "AND (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
+            "ORDER BY pinned DESC, importance DESC, updatedAt DESC LIMIT :limit",
+    )
+    suspend fun recent(includePrivate: Boolean, limit: Int): List<MemoryItemEntity>
+
+    @Query(
+        "SELECT * FROM memory_items WHERE status = 'ACTIVE' " +
+            "AND (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
+            "ORDER BY pinned DESC, importance DESC, updatedAt DESC LIMIT :limit",
+    )
+    suspend fun candidates(includePrivate: Boolean, limit: Int): List<MemoryItemEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(memory: MemoryItemEntity): Long
+
+    @Update
+    suspend fun update(memory: MemoryItemEntity)
+
+    @Query(
+        "UPDATE memory_items SET status = 'SUPERSEDED', updatedAt = :updatedAt " +
+            "WHERE id = :id AND status != 'DELETED'",
+    )
+    suspend fun markSuperseded(id: String, updatedAt: Long)
+
+    @Query("UPDATE memory_items SET status = 'DELETED', updatedAt = :updatedAt WHERE id = :id")
+    suspend fun markDeleted(id: String, updatedAt: Long)
+
+    @Query("UPDATE memory_items SET pinned = :pinned, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun setPinned(id: String, pinned: Boolean, updatedAt: Long)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertSource(source: MemorySourceEntity): Long
+
+    @Query("SELECT * FROM memory_sources WHERE memoryId = :memoryId ORDER BY createdAt")
+    suspend fun sources(memoryId: String): List<MemorySourceEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCorrection(correction: MemoryCorrectionEntity)
+
+    @Query("SELECT * FROM memory_items")
+    suspend fun allItems(): List<MemoryItemEntity>
+
+    @Query("SELECT * FROM memory_sources")
+    suspend fun allSources(): List<MemorySourceEntity>
+
+    @Query("SELECT * FROM memory_corrections")
+    suspend fun allCorrections(): List<MemoryCorrectionEntity>
+
+    @Query(
+        "SELECT DISTINCT memoryId FROM memory_sources " +
+            "WHERE kind = 'ACTIVITY' AND label = :sourceLabel",
+    )
+    suspend fun activityMemoryIds(sourceLabel: String): List<String>
+
+    @Query(
+        "UPDATE memory_items SET status = 'DELETED', updatedAt = :updatedAt " +
+            "WHERE id IN (" +
+            "SELECT memoryId FROM memory_sources WHERE kind = 'ACTIVITY' AND label = :sourceLabel" +
+            ")",
+    )
+    suspend fun markActivitySourceDeleted(sourceLabel: String, updatedAt: Long)
+}
+
+@Dao
+interface ActivityDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(event: ActivityEventEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSummary(summary: MemorySummaryEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCheckpoint(checkpoint: CollectorCheckpointEntity)
+
+    @Query("SELECT * FROM collector_checkpoints WHERE collector = :collector")
+    suspend fun checkpoint(collector: String): CollectorCheckpointEntity?
+
+    @Query("SELECT * FROM activity_events ORDER BY startedAt DESC LIMIT :limit")
+    fun observeRecent(limit: Int): Flow<List<ActivityEventEntity>>
+
+    @Query(
+        "SELECT * FROM activity_events " +
+            "WHERE (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
+            "ORDER BY pinned DESC, startedAt DESC LIMIT :limit",
+    )
+    suspend fun retrievalCandidates(
+        includePrivate: Boolean,
+        limit: Int,
+    ): List<ActivityEventEntity>
+
+    @Query(
+        "SELECT * FROM activity_events WHERE source = :source AND startedAt < :before " +
+            "AND compactedIntoId IS NULL AND pinned = 0 ORDER BY startedAt LIMIT :limit",
+    )
+    suspend fun uncompactedBefore(
+        source: com.aliahad.aichat.core.ActivitySource,
+        before: Long,
+        limit: Int,
+    ): List<ActivityEventEntity>
+
+    @Query("UPDATE activity_events SET compactedIntoId = :summaryId WHERE id IN (:ids)")
+    suspend fun markCompacted(ids: List<String>, summaryId: String)
+
+    @Query("DELETE FROM activity_events WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
+
+    @Query("DELETE FROM activity_events WHERE source = :source")
+    suspend fun deleteSource(source: com.aliahad.aichat.core.ActivitySource)
+
+    @Query("DELETE FROM memory_summaries WHERE source = :source")
+    suspend fun deleteSummaries(source: com.aliahad.aichat.core.ActivitySource)
+
+    @Query("SELECT * FROM activity_events")
+    suspend fun allEvents(): List<ActivityEventEntity>
+
+    @Query("SELECT * FROM memory_summaries")
+    suspend fun allSummaries(): List<MemorySummaryEntity>
+}
+
+@Dao
+interface ActionAuditDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(audit: ActionAuditEntity)
+
+    @Query("SELECT * FROM action_audits ORDER BY createdAt DESC")
+    fun observeAll(): Flow<List<ActionAuditEntity>>
+
+    @Query("SELECT * FROM action_audits")
+    suspend fun all(): List<ActionAuditEntity>
+}

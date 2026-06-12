@@ -9,8 +9,30 @@ enum class MessageRole {
 enum class MessageStatus {
     COMPLETE,
     STREAMING,
+    CONTINUABLE,
     CANCELLED,
     ERROR,
+}
+
+enum class GenerationStopReason {
+    EOG,
+    TOKEN_LIMIT,
+    CONTEXT_LIMIT,
+    CANCELLED,
+    PROCESS_DEATH,
+    DECODE_ERROR,
+    ERROR,
+}
+
+sealed interface GenerationEvent {
+    data class Phase(val state: InferenceState) : GenerationEvent
+    data class ThoughtDelta(val text: String) : GenerationEvent
+    data class AnswerDelta(val text: String) : GenerationEvent
+    data class Completed(
+        val reason: GenerationStopReason,
+        val answerTokens: Int,
+        val continuationCount: Int,
+    ) : GenerationEvent
 }
 
 enum class BackendMode {
@@ -22,6 +44,74 @@ enum class BackendMode {
 enum class ChatQualityMode {
     FAST,
     BEST,
+}
+
+enum class MemoryType {
+    FACT,
+    PREFERENCE,
+    PERSON,
+    PLACE,
+    PROJECT,
+    GOAL,
+    PROCEDURE,
+    EPISODE,
+}
+
+enum class MemorySensitivity {
+    NORMAL,
+    PRIVATE,
+    SECRET,
+}
+
+enum class MemoryStatus {
+    ACTIVE,
+    SUPERSEDED,
+    DELETED,
+}
+
+enum class MemorySourceKind {
+    CHAT_MESSAGE,
+    ATTACHMENT,
+    ACTIVITY,
+    MANUAL,
+    IMPORT,
+}
+
+enum class ActivitySource {
+    APP_USAGE,
+    APP_INSTALL,
+    NOTIFICATION,
+    ACCESSIBILITY,
+    LOCATION,
+    SENSOR,
+    HEALTH,
+    CONTACT,
+    CALENDAR,
+    DOCUMENT,
+    SMS,
+    CALL,
+}
+
+enum class ActionRisk {
+    LOW,
+    SENSITIVE,
+    BLOCKED,
+}
+
+enum class DeviceActionKind {
+    OPEN_APP,
+    OPEN_URI,
+    TAP_NODE,
+    SET_TEXT,
+    SCROLL,
+    BACK,
+    HOME,
+    SEND,
+    DELETE,
+    PURCHASE,
+    CHANGE_PERMISSION,
+    CHANGE_ACCOUNT,
+    HEALTH_WRITE,
 }
 
 enum class AttachmentKind {
@@ -78,6 +168,7 @@ data class AttachmentContext(
 data class ModelCapabilities(
     val vision: Boolean,
     val audio: Boolean,
+    val contextLimit: Int = 0,
 )
 
 data class MultimodalSettings(
@@ -97,19 +188,66 @@ data class ChatTurn(
 )
 
 data class GenerationSettings(
-    val contextSize: Int = 4096,
-    val maxNewTokens: Int = 512,
+    val maxNewTokens: Int = 1024,
+    val maxAnswerTokens: Int = 8192,
     val temperature: Float = 0.3f,
     val thinkingEnabled: Boolean = false,
     val systemPrompt: String = "You are a helpful, concise assistant.",
 ) {
-    fun normalized(): GenerationSettings = copy(
-        contextSize = contextSize.coerceIn(1024, 8192),
-        maxNewTokens = maxNewTokens.coerceIn(64, 2048),
-        temperature = temperature.coerceIn(0f, 2f),
-        systemPrompt = systemPrompt.trim().ifEmpty { "You are a helpful, concise assistant." },
-    )
+    fun normalized(): GenerationSettings {
+        val segmentLimit = maxNewTokens.coerceIn(64, 2048)
+        return copy(
+            maxNewTokens = segmentLimit,
+            maxAnswerTokens = maxAnswerTokens.coerceIn(segmentLimit, 8192),
+            temperature = temperature.coerceIn(0f, 2f),
+            systemPrompt = systemPrompt.trim().ifEmpty { "You are a helpful, concise assistant." },
+        )
+    }
+
 }
+
+data class ModelLoadConfiguration(
+    val contextTokens: Int,
+    val declaredContextTokens: Int,
+    val backend: BackendMode = BackendMode.CPU,
+    val temperature: Float,
+)
+
+enum class ContextVerificationState {
+    UNVERIFIED,
+    VERIFYING,
+    VERIFIED,
+    LIMITED,
+    FAILED,
+}
+
+data class ModelContextProfile(
+    val id: String,
+    val modelId: String,
+    val modelSha256: String,
+    val deviceFingerprint: String,
+    val physicalRamBytes: Long,
+    val swapBytes: Long,
+    val backend: BackendMode,
+    val llamaRevision: String,
+    val declaredContextTokens: Int,
+    val verifiedContextTokens: Int,
+    val lastAttemptedTokens: Int?,
+    val state: ContextVerificationState,
+    val peakPssBytes: Long?,
+    val peakRssBytes: Long?,
+    val peakSwapBytes: Long?,
+    val failureReason: String?,
+    val verifiedAt: Long?,
+    val updatedAt: Long,
+)
+
+data class ContextVerificationMetrics(
+    val generatedTokens: Int,
+    val pssBytes: Long,
+    val rssBytes: Long,
+    val swapBytes: Long,
+)
 
 data class ChatMessage(
     val id: String,
@@ -118,6 +256,10 @@ data class ChatMessage(
     val content: String,
     val createdAt: Long,
     val status: MessageStatus,
+    val stopReason: GenerationStopReason? = null,
+    val continuationCount: Int = 0,
+    val promptTokens: Int? = null,
+    val generatedTokens: Int? = null,
 )
 
 data class Conversation(
@@ -126,6 +268,90 @@ data class Conversation(
     val createdAt: Long,
     val updatedAt: Long,
     val qualityMode: ChatQualityMode = ChatQualityMode.FAST,
+    val temporary: Boolean = false,
+)
+
+data class ConversationSummary(
+    val conversationId: String,
+    val throughMessageId: String?,
+    val content: String,
+    val tokenCount: Int,
+    val updatedAt: Long,
+)
+
+data class MemoryItem(
+    val id: String,
+    val type: MemoryType,
+    val title: String,
+    val content: String,
+    val confidence: Float,
+    val importance: Float,
+    val sensitivity: MemorySensitivity,
+    val status: MemoryStatus,
+    val pinned: Boolean,
+    val validFrom: Long?,
+    val validTo: Long?,
+    val supersedesId: String?,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+data class MemorySource(
+    val id: String,
+    val memoryId: String,
+    val kind: MemorySourceKind,
+    val sourceId: String?,
+    val label: String?,
+    val createdAt: Long,
+)
+
+data class MemoryQuery(
+    val text: String,
+    val limit: Int = 8,
+    val includePrivate: Boolean = true,
+)
+
+data class MemoryHit(
+    val memory: MemoryItem,
+    val score: Float,
+    val sources: List<MemorySource>,
+    val reason: String,
+)
+
+data class ContextPlan(
+    val systemPrompt: String,
+    val summary: ConversationSummary?,
+    val history: List<ChatTurn>,
+    val memories: List<MemoryHit>,
+    val estimatedTokens: Int,
+    val outputReserveTokens: Int,
+)
+
+data class DeviceAction(
+    val id: String,
+    val kind: DeviceActionKind,
+    val packageName: String?,
+    val target: String?,
+    val value: String?,
+    val risk: ActionRisk,
+)
+
+data class BackupManifest(
+    val formatVersion: Int,
+    val createdAt: Long,
+    val appVersion: String,
+    val databaseVersion: Int,
+    val recordCounts: Map<String, Long>,
+)
+
+data class BackupPreview(
+    val stagingPath: String,
+    val createdAt: Long,
+    val conversations: Long,
+    val messages: Long,
+    val memories: Long,
+    val activities: Long,
+    val attachments: Long,
 )
 
 enum class DownloadStatus {

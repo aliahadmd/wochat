@@ -6,7 +6,9 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -26,5 +28,12 @@ class AppInstrumentedTest {
         }
         composeRule.onNodeWithText("Gemma 4 E4B IT Q4").assertIsDisplayed()
         composeRule.onNodeWithText("Import local GGUF").assertIsDisplayed()
+        composeRule.onNodeWithText("Automatic context").performScrollTo().assertIsDisplayed()
+        assertTrue(composeRule.onAllNodesWithText("Context mode").fetchSemanticsNodes().isEmpty())
+        assertTrue(
+            composeRule.onAllNodesWithText("Context", substring = false)
+                .fetchSemanticsNodes()
+                .isEmpty(),
+        )
     }
 }

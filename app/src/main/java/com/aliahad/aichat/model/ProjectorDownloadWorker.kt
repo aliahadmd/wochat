@@ -25,9 +25,12 @@ class ProjectorDownloadWorker(
     context: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
-    private val app = context as AiChatApplication
-    private val dao = app.container.database.projectorDao()
-    private val directory = app.container.modelRepository.modelsDirectory()
+    private val app: AiChatApplication
+        get() = applicationContext as AiChatApplication
+    private val dao
+        get() = app.container.database.projectorDao()
+    private val directory: File
+        get() = app.container.modelRepository.modelsDirectory()
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val id = inputData.getString(ModelConstants.WORK_INPUT_PROJECTOR_ID)

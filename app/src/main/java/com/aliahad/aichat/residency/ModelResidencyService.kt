@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.aliahad.aichat.AiChatApplication
@@ -33,11 +34,19 @@ class ModelResidencyService : Service() {
         super.onCreate()
         notificationManager = getSystemService(NotificationManager::class.java)
         createChannel()
-        startForeground(
-            NOTIFICATION_ID,
-            notification("Preparing local model", "Starting persistent CPU inference"),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+        val notification = notification(
+            "Preparing local model",
+            "Starting persistent CPU inference",
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
         scope.launch {
             controller.state.collectLatest { state ->
                 notificationManager.notify(NOTIFICATION_ID, notificationFor(state))
@@ -86,7 +95,7 @@ class ModelResidencyService : Service() {
         is ModelResidencyState.Ready ->
             notification(
                 "${state.modelName} loaded",
-                "CPU · ${state.contextSize} context · loaded in ${formatDuration(state.loadMillis)}",
+                residencyContextDescription(state),
             )
         is ModelResidencyState.Error ->
             notification("Model preload failed", state.message)
@@ -154,5 +163,24 @@ class ModelResidencyService : Service() {
     }
 }
 
-private fun formatDuration(millis: Long): String =
-    if (millis >= 1_000) "%.1f s".format(millis / 1_000.0) else "$millis ms"
+private fun formatContext(tokens: Int): String = when {
+    tokens >= 1_024 && tokens % 1_024 == 0 -> "${tokens / 1_024}K"
+    else -> tokens.toString()
+}
+
+internal fun residencyContextDescription(state: ModelResidencyState.Ready): String {
+    val active = formatContext(state.contextSize)
+    val contextStatus = when {
+        state.verifiedContextSize >= state.contextSize ->
+            "$active verified"
+        state.contextVerificationState ==
+            com.aliahad.aichat.core.ContextVerificationState.FAILED ->
+            "$active active fallback · baseline verification failed"
+        state.contextVerificationState ==
+            com.aliahad.aichat.core.ContextVerificationState.VERIFYING ->
+            "$active active · verification in progress"
+        else ->
+            "$active active · verification pending"
+    }
+    return "CPU · $contextStatus · ${formatContext(state.declaredContextSize)} model maximum"
+}

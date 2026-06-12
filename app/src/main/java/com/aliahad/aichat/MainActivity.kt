@@ -14,6 +14,8 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModel
@@ -46,6 +48,21 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenDocument(),
                 ) { uri ->
                     uri?.let(viewModel::importModel)
+                }
+                var pendingExportPassphrase by remember { mutableStateOf<String?>(null) }
+                val officeExportLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("application/octet-stream"),
+                ) { uri ->
+                    val passphrase = pendingExportPassphrase
+                    pendingExportPassphrase = null
+                    if (uri != null && passphrase != null) {
+                        viewModel.exportOfficeBackup(uri, passphrase)
+                    }
+                }
+                val officeImportLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocument(),
+                ) { uri ->
+                    viewModel.selectOfficeBackup(uri)
                 }
                 val fileLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenMultipleDocuments(),
@@ -104,9 +121,34 @@ class MainActivity : ComponentActivity() {
                             pendingCameraUri = uri
                             cameraLauncher.launch(uri)
                         },
+                        onExportOffice = { passphrase ->
+                            pendingExportPassphrase = passphrase
+                            officeExportLauncher.launch(
+                                "AIchat-office-${System.currentTimeMillis()}.aichatoffice",
+                            )
+                        },
+                        onImportOffice = {
+                            officeImportLauncher.launch(
+                                arrayOf(
+                                    "application/octet-stream",
+                                    "application/zip",
+                                    "*/*",
+                                ),
+                            )
+                        },
                     )
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        (application as AiChatApplication).container.residencyController.setUiForeground(true)
+    }
+
+    override fun onStop() {
+        (application as AiChatApplication).container.residencyController.setUiForeground(false)
+        super.onStop()
     }
 }

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "skills": {
+    "android-jetpack-compose": {
+      "source": "thebushidocollective/han",
+      "sourceType": "github",
+      "skillPath": "plugins/specialized/android/skills/jetpack-compose/SKILL.md",
+      "computedHash": "7c17e8d8ecfc7159fa18a4359cc0e53868134b6bfd28e825b5c5473d52987853"
+    },
+    "edge-to-edge": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "system/edge-to-edge/SKILL.md",
+      "computedHash": "28bedc928e6ca09caf03c36b926dd3cc4ba27010690c5518c2cc80b0f321f1dd"
+    },
+    "gemma-dev": {
+      "source": "google-gemma/gemma-skills",
+      "sourceType": "github",
+      "skillPath": "skills/gemma-dev/SKILL.md",
+      "computedHash": "10757d92338c09ea1c8972eba516e6ca7a5a433e48c2103c4193f6a9d33613d2"
+    },
+    "perfetto-sql": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "profilers/perfetto-sql/SKILL.md",
+      "computedHash": "63497d743c80edd89a0d98df22dea74abd1d45e4b8bf81c05708d35d219c8bf3"
+    },
+    "perfetto-trace-analysis": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "profilers/perfetto-trace-analysis/SKILL.md",
+      "computedHash": "66540572d23a47ad9785f707793433e90b2da94a53a792821b117ca34de30a05"
+    },
+    "r8-analyzer": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "performance/r8-analyzer/SKILL.md",
+      "computedHash": "e8f7a507a49c709e58a89d55b229f036356cfdba7c3d89c6a0dd7a41b7f746dd"
+    },
+    "testing-setup": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "testing/testing-setup/SKILL.md",
+      "computedHash": "e644055648d166ce1ca797f78604ddfeb50b9a7bfb725a0e3f251e802e9f86f3"
+    }
+  }
+}

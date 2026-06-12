@@ -1,10 +1,13 @@
 package com.aliahad.aichat.ui
 
+import android.animation.ValueAnimator
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -32,6 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
@@ -41,9 +46,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureAsPdf
@@ -94,6 +99,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -103,17 +110,22 @@ import androidx.compose.ui.unit.dp
 import com.aliahad.aichat.AppPage
 import com.aliahad.aichat.MainUiState
 import com.aliahad.aichat.MainViewModel
+import com.aliahad.aichat.ThinkingUiState
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
+import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.ChatQualityMode
 import com.aliahad.aichat.core.ChatMessage
+import com.aliahad.aichat.core.ContextVerificationState
 import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
+import com.aliahad.aichat.core.MemoryItem
+import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.core.ProjectorRecord
 import com.aliahad.aichat.model.ModelConstants
@@ -126,6 +138,8 @@ import com.mikepenz.markdown.model.rememberMarkdownState
 import kotlinx.coroutines.launch
 import coil3.compose.AsyncImage
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -136,6 +150,8 @@ fun AiChatApp(
     onAddPhotos: () -> Unit,
     onAddFiles: () -> Unit,
     onTakePhoto: () -> Unit,
+    onExportOffice: (String) -> Unit,
+    onImportOffice: () -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -157,11 +173,19 @@ fun AiChatApp(
                     actions.newConversation()
                     scope.launch { drawerState.close() }
                 },
+                onNewTemporaryChat = {
+                    actions.newTemporaryConversation()
+                    scope.launch { drawerState.close() }
+                },
                 onSelect = {
                     actions.selectConversation(it)
                     scope.launch { drawerState.close() }
                 },
                 onDelete = actions::deleteConversation,
+                onMemory = {
+                    actions.setPage(AppPage.MEMORY)
+                    scope.launch { drawerState.close() }
+                },
                 onSettings = {
                     actions.setPage(AppPage.SETTINGS)
                     scope.launch { drawerState.close() }
@@ -179,9 +203,10 @@ fun AiChatApp(
                         }
                     },
                     title = {
-                        if (state.page == AppPage.SETTINGS) {
-                            Text("Settings")
-                        } else {
+                        when (state.page) {
+                            AppPage.SETTINGS -> Text("Settings")
+                            AppPage.MEMORY -> Text("Office Memory")
+                            AppPage.CHAT -> {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     state.conversations.firstOrNull {
@@ -197,6 +222,7 @@ fun AiChatApp(
                                     enabled = !state.isSending,
                                     onChange = actions::updateQualityMode,
                                 )
+                            }
                             }
                         }
                     },
@@ -219,6 +245,8 @@ fun AiChatApp(
                     state = state,
                     onSend = actions::sendMessage,
                     onStop = actions::stopGeneration,
+                    onContinue = actions::continueResponse,
+                    onToggleThinking = actions::toggleThinking,
                     onOpenSettings = { actions.setPage(AppPage.SETTINGS) },
                     onAddPhotos = onAddPhotos,
                     onAddFiles = onAddFiles,
@@ -226,6 +254,13 @@ fun AiChatApp(
                     onRemoveAttachment = actions::removeAttachment,
                     onRetryAttachment = actions::retryAttachment,
                     onSelectPages = actions::selectAttachmentPages,
+                    modifier = Modifier.padding(padding),
+                )
+                AppPage.MEMORY -> MemoryCenter(
+                    state = state,
+                    actions = actions,
+                    onExportOffice = onExportOffice,
+                    onImportOffice = onImportOffice,
                     modifier = Modifier.padding(padding),
                 )
                 AppPage.SETTINGS -> SettingsScreen(
@@ -290,8 +325,10 @@ private fun QualityModePill(
 private fun ConversationDrawer(
     state: MainUiState,
     onNewChat: () -> Unit,
+    onNewTemporaryChat: () -> Unit,
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onMemory: () -> Unit,
     onSettings: () -> Unit,
 ) {
     ModalDrawerSheet(modifier = Modifier.width(320.dp)) {
@@ -305,6 +342,9 @@ private fun ConversationDrawer(
                 Icon(Icons.Default.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("New chat")
+            }
+            TextButton(onClick = onNewTemporaryChat, modifier = Modifier.fillMaxWidth()) {
+                Text("Temporary chat")
             }
             Spacer(Modifier.height(12.dp))
             Text(
@@ -341,6 +381,11 @@ private fun ConversationDrawer(
                 }
             }
             HorizontalDivider()
+            TextButton(onClick = onMemory, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Storage, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Office Memory")
+            }
             TextButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.Settings, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -355,6 +400,8 @@ private fun ChatScreen(
     state: MainUiState,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
+    onContinue: () -> Unit,
+    onToggleThinking: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onAddPhotos: () -> Unit,
     onAddFiles: () -> Unit,
@@ -395,8 +442,18 @@ private fun ChatScreen(
                 messages = state.messages,
                 conversationId = state.selectedConversationId,
                 attachments = state.messageAttachments,
+                thinking = state.thinking,
+                onToggleThinking = onToggleThinking,
+                onContinue = onContinue,
                 onPreviewAttachment = { previewAttachment = it },
                 modifier = Modifier.weight(1f),
+            )
+        }
+        AnimatedVisibility(visible = state.usedMemoryCount > 0 && state.isSending) {
+            AssistChip(
+                onClick = {},
+                label = { Text("Using ${state.usedMemoryCount} memories") },
+                modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
         Composer(
@@ -526,6 +583,9 @@ internal fun MessageList(
     messages: List<ChatMessage>,
     conversationId: String?,
     attachments: Map<String, List<Attachment>> = emptyMap(),
+    thinking: ThinkingUiState? = null,
+    onToggleThinking: (String) -> Unit = {},
+    onContinue: () -> Unit = {},
     onPreviewAttachment: (Attachment) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -556,6 +616,8 @@ internal fun MessageList(
     LaunchedEffect(
         messages.size,
         lastMessage?.content?.length,
+        thinking?.text?.length,
+        thinking?.expanded,
         lastMessageHeight,
         lastMessageRenderRevision,
         followLatest,
@@ -579,7 +641,11 @@ internal fun MessageList(
                     role = message.role,
                     content = message.content,
                     status = message.status,
+                    stopReason = message.stopReason,
                     attachments = attachments[message.id].orEmpty(),
+                    thinking = thinking?.takeIf { message.id == it.messageId },
+                    onToggleThinking = { onToggleThinking(message.id) },
+                    onContinue = onContinue,
                     onPreviewAttachment = onPreviewAttachment,
                     modifier = if (message.id == lastMessage?.id) {
                         Modifier.onSizeChanged { lastMessageHeight = it.height }
@@ -625,7 +691,11 @@ internal fun MessageBubble(
     role: MessageRole,
     content: String,
     status: MessageStatus,
+    stopReason: com.aliahad.aichat.core.GenerationStopReason? = null,
     attachments: List<Attachment> = emptyList(),
+    thinking: ThinkingUiState? = null,
+    onToggleThinking: () -> Unit = {},
+    onContinue: () -> Unit = {},
     onPreviewAttachment: (Attachment) -> Unit = {},
     modifier: Modifier = Modifier,
     onMarkdownRendered: () -> Unit = {},
@@ -650,7 +720,21 @@ internal fun MessageBubble(
                     MessageAttachmentGrid(attachments, onPreviewAttachment)
                     if (content.isNotEmpty()) Spacer(Modifier.height(10.dp))
                 }
-            if (content.isEmpty() && status == MessageStatus.STREAMING) {
+            if (!isUser) {
+                AnimatedVisibility(
+                    visible = thinking != null &&
+                        (thinking.text.isNotEmpty() || status == MessageStatus.STREAMING),
+                    enter = fadeIn(tween(160)),
+                    exit = fadeOut(tween(200)) + shrinkVertically(tween(200)),
+                ) {
+                    ThinkingPanel(
+                        thinking = requireNotNull(thinking),
+                        onToggle = onToggleThinking,
+                    )
+                }
+            }
+            if (thinking != null && content.isNotEmpty()) Spacer(Modifier.height(8.dp))
+            if (content.isEmpty() && status == MessageStatus.STREAMING && thinking == null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
@@ -676,7 +760,26 @@ internal fun MessageBubble(
             }
             }
         }
-        if (status == MessageStatus.CANCELLED || status == MessageStatus.ERROR) {
+        if (status == MessageStatus.CONTINUABLE) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    when (stopReason) {
+                        com.aliahad.aichat.core.GenerationStopReason.CONTEXT_LIMIT ->
+                            "Context filled before the answer finished"
+                        com.aliahad.aichat.core.GenerationStopReason.PROCESS_DEATH ->
+                            "Interrupted when the app stopped"
+                        else -> "Answer can continue"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onContinue) { Text("Continue") }
+            }
+        } else if (status == MessageStatus.CANCELLED || status == MessageStatus.ERROR) {
             Text(
                 if (status == MessageStatus.CANCELLED) "Stopped" else "Error",
                 style = MaterialTheme.typography.labelSmall,
@@ -687,6 +790,96 @@ internal fun MessageBubble(
         }
     }
 }
+
+@Composable
+private fun ThinkingPanel(
+    thinking: ThinkingUiState,
+    onToggle: () -> Unit,
+) {
+    val animationsEnabled = ValueAnimator.areAnimatorsEnabled()
+    val displayText = remember(thinking.text) { formatThoughtForDisplay(thinking.text) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("thinking-panel")
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .animateContentSize(
+                animationSpec = tween(if (animationsEnabled) 180 else 0),
+            ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!thinking.complete) {
+                CircularProgressIndicator(
+                    Modifier.size(15.dp),
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                if (thinking.complete) "Thought" else "Thinking…",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Icon(
+                if (thinking.expanded) Icons.Default.KeyboardArrowUp
+                else Icons.Default.KeyboardArrowDown,
+                contentDescription = if (thinking.expanded) "Hide thought" else "Show thought",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (!thinking.expanded && !thinking.complete && displayText.isNotBlank()) {
+            Text(
+                displayText.replace(Regex("\\s+"), " ").trim(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
+                    .clearAndSetSemantics {},
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        AnimatedVisibility(
+            visible = thinking.expanded && displayText.isNotBlank(),
+            enter = fadeIn(tween(if (animationsEnabled) 160 else 0)),
+            exit = fadeOut(tween(if (animationsEnabled) 120 else 0)),
+        ) {
+            Text(
+                displayText,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                    .clearAndSetSemantics {}
+                    .testTag("thinking-content"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun formatThoughtForDisplay(text: String): String =
+    text
+        .replace("<|channel>thought", "")
+        .replace("<|channel>", "")
+        .replace("<channel|>", "")
+        .lineSequence()
+        .joinToString("\n") { line ->
+            line.replace(Regex("""^(\s*)[*-]\s+""")) { match ->
+                "${match.groupValues[1]}• "
+            }
+        }
+        .trim()
 
 @Composable
 private fun Composer(
@@ -896,7 +1089,7 @@ private fun AttachmentThumbnail(attachment: Attachment, modifier: Modifier = Mod
         ) {
             Icon(
                 if (attachment.kind == AttachmentKind.PDF) Icons.Default.PictureAsPdf
-                else Icons.Default.InsertDriveFile,
+                else Icons.AutoMirrored.Filled.InsertDriveFile,
                 contentDescription = null,
             )
         }
@@ -1047,6 +1240,503 @@ private fun currentQualityMode(state: MainUiState): ChatQualityMode =
         ?: ChatQualityMode.FAST
 
 @Composable
+private fun MemoryCenter(
+    state: MainUiState,
+    actions: MainViewModel,
+    onExportOffice: (String) -> Unit,
+    onImportOffice: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    var query by remember { mutableStateOf("") }
+    var editing by remember { mutableStateOf<MemoryItem?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf(false) }
+    var clearingSource by remember { mutableStateOf<ActivitySource?>(null) }
+    val visible = remember(state.memories, query) {
+        val value = query.trim()
+        if (value.isEmpty()) state.memories else state.memories.filter {
+            it.title.contains(value, ignoreCase = true) ||
+                it.content.contains(value, ignoreCase = true) ||
+                it.type.name.contains(value, ignoreCase = true)
+        }
+    }
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Card {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Personal memory", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Portable context shared by every local model",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = state.memoryEnabled,
+                            onCheckedChange = actions::setMemoryEnabled,
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Phone collection",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        FilterChip(
+                            selected = state.collectionPaused,
+                            onClick = { actions.setCollectionPaused(!state.collectionPaused) },
+                            label = { Text(if (state.collectionPaused) "Paused" else "Active") },
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            Card {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Portable Office", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Encrypted export includes chats, memories, retained activity, settings, " +
+                            "and original attachments. Models, tokens, indexes, and keys stay out.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { exporting = true },
+                            enabled = !state.backupBusy,
+                        ) {
+                            Text("Export")
+                        }
+                        OutlinedButton(
+                            onClick = onImportOffice,
+                            enabled = !state.backupBusy,
+                        ) {
+                            Text("Import")
+                        }
+                        if (state.backupBusy) {
+                            CircularProgressIndicator(Modifier.size(32.dp))
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Phone sources", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Every source remains off until you enable it here. Android access is " +
+                            "also required where applicable. " +
+                            "Passwords, OTPs, keyboards, and secure windows are excluded.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    CollectorSourceRow(
+                        label = "App usage",
+                        description = "Foreground app sessions and duration",
+                        checked = ActivitySource.APP_USAGE in state.enabledCollectionSources,
+                        paused = state.collectionPaused,
+                        onCheckedChange = {
+                            actions.setCollectionSourceEnabled(ActivitySource.APP_USAGE, it)
+                        },
+                        onAccess = { DeviceSettingsNavigator.openUsageAccess(context) },
+                        onClear = { clearingSource = ActivitySource.APP_USAGE },
+                    )
+                    CollectorSourceRow(
+                        label = "Installed apps",
+                        description = "App inventory and package changes",
+                        checked = ActivitySource.APP_INSTALL in state.enabledCollectionSources,
+                        paused = state.collectionPaused,
+                        onCheckedChange = {
+                            actions.setCollectionSourceEnabled(ActivitySource.APP_INSTALL, it)
+                        },
+                        onClear = { clearingSource = ActivitySource.APP_INSTALL },
+                    )
+                    CollectorSourceRow(
+                        label = "Notifications",
+                        description = "Redacted title and visible notification text",
+                        checked = ActivitySource.NOTIFICATION in state.enabledCollectionSources,
+                        paused = state.collectionPaused,
+                        onCheckedChange = {
+                            actions.setCollectionSourceEnabled(ActivitySource.NOTIFICATION, it)
+                        },
+                        onAccess = { DeviceSettingsNavigator.openNotificationAccess(context) },
+                        onClear = { clearingSource = ActivitySource.NOTIFICATION },
+                    )
+                    CollectorSourceRow(
+                        label = "Screen context",
+                        description = "Visible non-secure UI text and optional actions",
+                        checked = ActivitySource.ACCESSIBILITY in state.enabledCollectionSources,
+                        paused = state.collectionPaused,
+                        onCheckedChange = {
+                            actions.setCollectionSourceEnabled(ActivitySource.ACCESSIBILITY, it)
+                        },
+                        onAccess = { DeviceSettingsNavigator.openAccessibility(context) },
+                        onClear = { clearingSource = ActivitySource.ACCESSIBILITY },
+                    )
+                    CollectorSourceRow(
+                        label = "Location",
+                        description = "Periodic passive location snapshots",
+                        checked = ActivitySource.LOCATION in state.enabledCollectionSources,
+                        paused = state.collectionPaused,
+                        onCheckedChange = {
+                            actions.setCollectionSourceEnabled(ActivitySource.LOCATION, it)
+                        },
+                        onAccess = { DeviceSettingsNavigator.openAppPermissions(context) },
+                        onClear = { clearingSource = ActivitySource.LOCATION },
+                    )
+                    CollectorSourceRow(
+                        label = "Sensors",
+                        description = "Low-frequency environment and step snapshots",
+                        checked = ActivitySource.SENSOR in state.enabledCollectionSources,
+                        paused = state.collectionPaused,
+                        onCheckedChange = {
+                            actions.setCollectionSourceEnabled(ActivitySource.SENSOR, it)
+                        },
+                        onAccess = { DeviceSettingsNavigator.openAppPermissions(context) },
+                        onClear = { clearingSource = ActivitySource.SENSOR },
+                    )
+                    CollectorSourceRow(
+                        label = "Contacts",
+                        description = "Contact names and update timestamps",
+                        checked = ActivitySource.CONTACT in state.enabledCollectionSources,
+                        paused = state.collectionPaused,
+                        onCheckedChange = {
+                            actions.setCollectionSourceEnabled(ActivitySource.CONTACT, it)
+                        },
+                        onAccess = { DeviceSettingsNavigator.openAppPermissions(context) },
+                        onClear = { clearingSource = ActivitySource.CONTACT },
+                    )
+                    CollectorSourceRow(
+                        label = "Calendar",
+                        description = "Past month and upcoming year of events",
+                        checked = ActivitySource.CALENDAR in state.enabledCollectionSources,
+                        paused = state.collectionPaused,
+                        onCheckedChange = {
+                            actions.setCollectionSourceEnabled(ActivitySource.CALENDAR, it)
+                        },
+                        onAccess = { DeviceSettingsNavigator.openAppPermissions(context) },
+                        onClear = { clearingSource = ActivitySource.CALENDAR },
+                    )
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Health Connect", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Permission setup is available; local record ingestion is not enabled yet.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(
+                            onClick = { DeviceSettingsNavigator.openHealthConnect(context) },
+                        ) { Text("Access") }
+                    }
+                }
+            }
+        }
+        item {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("Search memory") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            Button(onClick = { creating = true }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Add memory")
+            }
+        }
+        if (visible.isEmpty()) {
+            item {
+                Text(
+                    if (query.isBlank()) "No memories yet. Chat normally or add one manually."
+                    else "No matching memories.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+        }
+        items(visible, key = { it.id }) { memory ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { editing = memory },
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            memory.type.name.lowercase().replaceFirstChar(Char::uppercase),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (memory.pinned) {
+                            AssistChip(onClick = {}, label = { Text("Pinned") })
+                        }
+                    }
+                    Text(memory.content, maxLines = 5, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { actions.pinMemory(memory.id, !memory.pinned) }) {
+                            Text(if (memory.pinned) "Unpin" else "Pin")
+                        }
+                        TextButton(onClick = { editing = memory }) { Text("Edit") }
+                        TextButton(onClick = { actions.forgetMemory(memory.id) }) {
+                            Text("Forget", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (creating) {
+        MemoryEditorDialog(
+            title = "Add memory",
+            initial = "",
+            onDismiss = { creating = false },
+            onSave = {
+                actions.addMemory(it)
+                creating = false
+            },
+        )
+    }
+    editing?.let { memory ->
+        MemoryEditorDialog(
+            title = "Correct memory",
+            initial = memory.content,
+            onDismiss = { editing = null },
+            onSave = {
+                actions.correctMemory(memory.id, it)
+                editing = null
+            },
+        )
+    }
+    if (exporting) {
+        BackupPassphraseDialog(
+            title = "Encrypt Office backup",
+            confirmationLabel = "Choose destination",
+            busy = false,
+            onDismiss = { exporting = false },
+            onConfirm = {
+                exporting = false
+                onExportOffice(it)
+            },
+        )
+    }
+    if (state.pendingBackupImportUri != null) {
+        BackupPassphraseDialog(
+            title = "Unlock Office backup",
+            confirmationLabel = "Validate",
+            busy = state.backupBusy,
+            onDismiss = actions::discardOfficeImport,
+            onConfirm = actions::prepareOfficeImport,
+        )
+    }
+    state.backupPreview?.let { preview ->
+        AlertDialog(
+            onDismissRequest = {
+                if (!state.backupBusy) actions.discardOfficeImport()
+            },
+            title = { Text("Import this Office?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("${preview.conversations} conversations")
+                    Text("${preview.messages} messages")
+                    Text("${preview.memories} memories")
+                    Text("${preview.activities} retained activities")
+                    Text("${preview.attachments} attachments")
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Existing local data is preserved. Matching IDs and memory content are merged.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = actions::commitOfficeImport,
+                    enabled = !state.backupBusy,
+                ) {
+                    if (state.backupBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Text("Import")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = actions::discardOfficeImport,
+                    enabled = !state.backupBusy,
+                ) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+    clearingSource?.let { source ->
+        AlertDialog(
+            onDismissRequest = { clearingSource = null },
+            title = { Text("Clear collected data?") },
+            text = {
+                Text(
+                    "This permanently removes retained ${source.name.lowercase().replace('_', ' ')} " +
+                        "activity from Office Memory. It does not revoke Android access.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        actions.clearCollectedSource(source)
+                        clearingSource = null
+                    },
+                ) {
+                    Text("Clear", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { clearingSource = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun CollectorSourceRow(
+    label: String,
+    description: String,
+    checked: Boolean,
+    paused: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    onAccess: (() -> Unit)? = null,
+    onClear: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                if (paused && checked) "$description. Paused by master control." else description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        onAccess?.let { action ->
+            TextButton(onClick = action) { Text("Access") }
+        }
+        TextButton(onClick = onClear) { Text("Clear") }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
+    }
+}
+
+@Composable
+private fun BackupPassphraseDialog(
+    title: String,
+    confirmationLabel: String,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var passphrase by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(title) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = passphrase,
+                    onValueChange = { passphrase = it },
+                    label = { Text("Passphrase") },
+                    supportingText = { Text("At least 8 characters. It cannot be recovered.") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (busy) {
+                    Spacer(Modifier.height(12.dp))
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(passphrase) },
+                enabled = passphrase.length >= 8 && !busy,
+            ) {
+                Text(confirmationLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun MemoryEditorDialog(
+    title: String,
+    initial: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var value by remember(initial) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it },
+                label = { Text("What should AIchat remember?") },
+                minLines = 4,
+                maxLines = 10,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(value.trim()) },
+                enabled = value.isNotBlank(),
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
 private fun SettingsScreen(
     state: MainUiState,
     actions: MainViewModel,
@@ -1055,6 +1745,12 @@ private fun SettingsScreen(
 ) {
     var pendingDownload by remember { mutableStateOf<ModelRecord?>(null) }
     var showTokenDialog by remember { mutableStateOf(false) }
+    val selectedModel = state.models.firstOrNull(ModelRecord::selected)
+    val selectedProfile = selectedModel?.let { model ->
+        state.contextProfiles
+            .filter { it.modelId == model.id }
+            .maxByOrNull(ModelContextProfile::updatedAt)
+    }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -1066,6 +1762,9 @@ private fun SettingsScreen(
         items(state.models, key = { it.id }) { model ->
             ModelCard(
                 model = model,
+                contextProfile = state.contextProfiles
+                    .filter { it.modelId == model.id }
+                    .maxByOrNull(ModelContextProfile::updatedAt),
                 onDownload = { pendingDownload = model },
                 onPause = { actions.pauseDownload(model.id) },
                 onSelect = { actions.selectModel(model.id) },
@@ -1103,8 +1802,9 @@ private fun SettingsScreen(
                 },
             )
             Text(
-                "Uses the configured context and output limits. The 16 GB memory extension is " +
-                    "storage-backed swap; HyperOS may still enforce its per-process memory policy.",
+                "Context is selected automatically per model from successful tests on this phone. " +
+                    "The 16 GB memory extension is storage-backed swap; HyperOS may still enforce " +
+                    "its per-process memory policy.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1117,7 +1817,8 @@ private fun SettingsScreen(
             val ready = state.residencyState as? ModelResidencyState.Ready
             if (ready != null) {
                 Text(
-                    "Loaded in ${formatMillis(ready.loadMillis)} · ${ready.contextSize}-token context",
+                    "Loaded in ${formatMillis(ready.loadMillis)} · " +
+                        residentContextLabel(ready),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1127,6 +1828,17 @@ private fun SettingsScreen(
                 TextButton(onClick = actions::unloadModel) { Text("Unload") }
             }
             DevicePersistenceSettings()
+        }
+        item {
+            ContextProfileCard(
+                model = selectedModel,
+                profile = selectedProfile,
+                residencyState = state.residencyState,
+                reverifyEnabled = selectedModel?.status == DownloadStatus.READY &&
+                    selectedProfile?.state != ContextVerificationState.VERIFYING &&
+                    !state.isSending,
+                onReverify = actions::reverifyContext,
+            )
         }
         item {
             GenerationSettingsEditor(
@@ -1223,12 +1935,145 @@ private fun residencyLabel(state: ModelResidencyState): String = when (state) {
     is ModelResidencyState.Error -> state.message
 }
 
+private fun residentContextLabel(state: ModelResidencyState.Ready): String {
+    val active = "${formatContextTokens(state.contextSize)} active context"
+    return when {
+        state.verifiedContextSize >= state.contextSize -> "$active · verified"
+        state.contextVerificationState == ContextVerificationState.FAILED ->
+            "$active · unverified fallback"
+        state.contextVerificationState == ContextVerificationState.VERIFYING ->
+            "$active · verification in progress"
+        else -> "$active · verification pending"
+    }
+}
+
 private fun formatMillis(millis: Long): String =
     if (millis >= 1_000) "%.1f s".format(millis / 1_000.0) else "$millis ms"
 
 @Composable
+private fun ContextProfileCard(
+    model: ModelRecord?,
+    profile: ModelContextProfile?,
+    residencyState: ModelResidencyState,
+    reverifyEnabled: Boolean,
+    onReverify: () -> Unit,
+) {
+    SectionTitle("Automatic context", "Read-only, verified for each model and device")
+    Spacer(Modifier.height(10.dp))
+    Card {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (model == null) {
+                Text("Select an installed model to resolve its context.")
+                return@Column
+            }
+            Text(model.displayName, fontWeight = FontWeight.SemiBold)
+            val ready = residencyState as? ModelResidencyState.Ready
+            val activeTokens = ready
+                ?.takeIf { model.selected }
+                ?.contextSize
+                ?: profile?.verifiedContextTokens?.takeIf { it > 0 }
+                ?: 4_096
+            ContextValueRow("Active context", formatContextTokens(activeTokens))
+            ContextValueRow(
+                "Model maximum",
+                profile?.declaredContextTokens
+                    ?.takeIf { it > 0 }
+                    ?.let(::formatContextTokens)
+                    ?: "Read after first load",
+            )
+            when (profile?.state) {
+                ContextVerificationState.VERIFYING -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text(
+                        "Testing ${formatContextTokens(profile.lastAttemptedTokens ?: activeTokens)}. " +
+                            "Send remains available at the latest passing context.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                ContextVerificationState.VERIFIED -> Text(
+                    if (profile.declaredContextTokens > 0 &&
+                        profile.verifiedContextTokens >= profile.declaredContextTokens
+                    ) {
+                        "The model maximum has passed allocation and generation on this phone."
+                    } else {
+                        "Verified on this phone. Higher supported sizes continue during idle time."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                ContextVerificationState.LIMITED -> Text(
+                    "Limited by ${formatContextTokens(profile.lastAttemptedTokens ?: activeTokens)}: " +
+                        (profile.failureReason ?: "the next context test did not pass"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                ContextVerificationState.FAILED -> Text(
+                    profile.failureReason ?: "The baseline context verification did not pass.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                ContextVerificationState.UNVERIFIED, null -> Text(
+                    "AIchat starts at 4K and tests larger contexts after 15 seconds of idle time.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            profile?.verifiedAt?.let { verifiedAt ->
+                Text(
+                    "Last verified ${formatVerificationDate(verifiedAt)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedButton(
+                onClick = onReverify,
+                enabled = reverifyEnabled,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Re-verify")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContextValueRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+private fun modelContextSummary(profile: ModelContextProfile): String = when (profile.state) {
+    ContextVerificationState.VERIFYING ->
+        "Testing ${formatContextTokens(profile.lastAttemptedTokens ?: 4_096)} context"
+    ContextVerificationState.LIMITED ->
+        "${formatContextTokens(profile.verifiedContextTokens.coerceAtLeast(4_096))} verified on this phone"
+    ContextVerificationState.FAILED -> "Baseline context test failed"
+    ContextVerificationState.UNVERIFIED -> "Starts at 4K; verification pending"
+    ContextVerificationState.VERIFIED ->
+        "${formatContextTokens(profile.verifiedContextTokens)} verified · " +
+            "${profile.declaredContextTokens.takeIf { it > 0 }?.let(::formatContextTokens) ?: "?"} model max"
+}
+
+private fun formatContextTokens(tokens: Int): String = when {
+    tokens >= 1_024 && tokens % 1_024 == 0 -> "${tokens / 1_024}K tokens"
+    else -> "$tokens tokens"
+}
+
+private fun formatVerificationDate(timestamp: Long): String =
+    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(timestamp))
+
+@Composable
 private fun ModelCard(
     model: ModelRecord,
+    contextProfile: ModelContextProfile?,
     onDownload: () -> Unit,
     onPause: () -> Unit,
     onSelect: () -> Unit,
@@ -1256,6 +2101,13 @@ private fun ModelCard(
                             "Faster mobile option · 4.5B effective parameters",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    contextProfile?.let {
+                        Text(
+                            modelContextSummary(it),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -1413,24 +2265,14 @@ private fun GenerationSettingsEditor(
         )
     }
     Spacer(Modifier.height(10.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        NumberField(
-            label = "Context",
-            value = settings.contextSize.toString(),
-            onValue = { value ->
-                value.toIntOrNull()?.let { onChange(settings.copy(contextSize = it)) }
-            },
-            modifier = Modifier.weight(1f),
-        )
-        NumberField(
-            label = "Max output",
-            value = settings.maxNewTokens.toString(),
-            onValue = { value ->
-                value.toIntOrNull()?.let { onChange(settings.copy(maxNewTokens = it)) }
-            },
-            modifier = Modifier.weight(1f),
-        )
-    }
+    NumberField(
+        label = "Answer limit",
+        value = settings.maxAnswerTokens.toString(),
+        onValue = { value ->
+            value.toIntOrNull()?.let { onChange(settings.copy(maxAnswerTokens = it)) }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
     Spacer(Modifier.height(10.dp))
     OutlinedTextField(
         value = settings.temperature.toString(),
@@ -1457,11 +2299,13 @@ private fun NumberField(
     label: String,
     value: String,
     onValue: (String) -> Unit,
+    enabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     OutlinedTextField(
         value = value,
         onValueChange = onValue,
+        enabled = enabled,
         label = { Text(label) },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = modifier,

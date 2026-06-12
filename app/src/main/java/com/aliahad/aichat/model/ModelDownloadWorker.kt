@@ -28,9 +28,12 @@ class ModelDownloadWorker(
     appContext: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
-    private val app = appContext as AiChatApplication
-    private val dao = app.container.database.modelDao()
-    private val modelsDirectory = app.container.modelRepository.modelsDirectory()
+    private val app: AiChatApplication
+        get() = applicationContext as AiChatApplication
+    private val dao
+        get() = app.container.database.modelDao()
+    private val modelsDirectory: File
+        get() = app.container.modelRepository.modelsDirectory()
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val modelId = inputData.getString(ModelConstants.WORK_INPUT_MODEL_ID)
