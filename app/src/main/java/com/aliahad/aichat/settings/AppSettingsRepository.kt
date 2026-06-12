@@ -10,7 +10,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.ChatQualityMode
-import com.aliahad.aichat.core.ActivitySource
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -31,7 +30,6 @@ class AppSettingsRepository(
         val lastQualityMode = stringPreferencesKey("last_quality_mode")
         val memoryEnabled = booleanPreferencesKey("memory_enabled")
         val collectionPaused = booleanPreferencesKey("collection_paused")
-        val enabledCollectionSources = stringPreferencesKey("enabled_collection_sources")
         val actionAllowlist = stringPreferencesKey("action_allowlist")
     }
 
@@ -64,15 +62,7 @@ class AppSettingsRepository(
     }
 
     val collectionPaused: Flow<Boolean> = context.settingsDataStore.data.map {
-        it[Keys.collectionPaused] ?: false
-    }
-
-    val enabledCollectionSources: Flow<Set<ActivitySource>> = context.settingsDataStore.data.map {
-        it[Keys.enabledCollectionSources]
-            ?.split(',')
-            ?.mapNotNull { value -> runCatching { ActivitySource.valueOf(value) }.getOrNull() }
-            ?.toSet()
-            .orEmpty()
+        it[Keys.collectionPaused] ?: true
     }
 
     val actionAllowlist: Flow<Set<String>> = context.settingsDataStore.data.map {
@@ -114,21 +104,6 @@ class AppSettingsRepository(
 
     suspend fun setCollectionPaused(paused: Boolean) {
         context.settingsDataStore.edit { it[Keys.collectionPaused] = paused }
-    }
-
-    suspend fun setCollectionSourceEnabled(source: ActivitySource, enabled: Boolean) {
-        context.settingsDataStore.edit { preferences ->
-            val current = preferences[Keys.enabledCollectionSources]
-                ?.split(',')
-                ?.mapNotNull { value ->
-                    runCatching { ActivitySource.valueOf(value) }.getOrNull()
-                }
-                ?.toMutableSet()
-                ?: mutableSetOf()
-            if (enabled) current += source else current -= source
-            preferences[Keys.enabledCollectionSources] =
-                current.sortedBy(ActivitySource::name).joinToString(",") { it.name }
-        }
     }
 
     suspend fun setActionAllowlist(packages: Set<String>) {

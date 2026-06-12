@@ -11,6 +11,7 @@ import com.aliahad.aichat.attachment.DefaultAttachmentRepository
 import com.aliahad.aichat.activity.ActivityRepository
 import com.aliahad.aichat.activity.RoomActivityRepository
 import com.aliahad.aichat.activity.OfficeWorkScheduler
+import com.aliahad.aichat.activity.PhoneSourceAccessManager
 import com.aliahad.aichat.backup.EncryptedOfficeBackupRepository
 import com.aliahad.aichat.backup.OfficeBackupRepository
 import com.aliahad.aichat.inference.InferenceEngine
@@ -63,6 +64,7 @@ class AppContainer(val application: Application) {
     val memoryRepository: MemoryRepository = RoomMemoryRepository(database, memoryIndexer)
     val contextProfileRepository: ContextProfileRepository =
         RoomContextProfileRepository(application, database.modelContextProfileDao())
+    val phoneSourceAccessManager = PhoneSourceAccessManager(application)
     val activityRepository: ActivityRepository = RoomActivityRepository(database)
     val conversationSummaryRepository = ConversationSummaryRepository(database)
     val attachmentRepository: AttachmentRepository = DefaultAttachmentRepository(application, database)

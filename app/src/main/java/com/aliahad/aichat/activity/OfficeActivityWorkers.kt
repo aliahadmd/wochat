@@ -2,7 +2,7 @@ package com.aliahad.aichat.activity
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.AppOpsManager
+import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.ContentUris
 import android.content.Context
@@ -14,7 +14,6 @@ import android.hardware.SensorManager
 import android.location.LocationManager
 import android.os.Handler
 import android.os.Looper
-import android.os.Process
 import android.provider.CalendarContract
 import android.provider.ContactsContract
 import androidx.core.content.ContextCompat
@@ -42,30 +41,51 @@ class UsageCollectionWorker(
     override suspend fun doWork(): Result {
         val app = applicationContext as AiChatApplication
         val container = app.container
-        if (container.settings.collectionPaused.first()) return Result.success()
-        if (ActivitySource.APP_USAGE !in container.settings.enabledCollectionSources.first()) {
-            return Result.success()
-        }
-        if (!hasUsageAccess(applicationContext)) return Result.success()
+        if (!container.shouldCollect(ActivitySource.APP_USAGE)) return Result.success()
         val dao = container.database.activityDao()
         val now = System.currentTimeMillis()
         val checkpoint = dao.checkpoint(COLLECTOR)
-        val start = checkpoint?.lastCollectedAt ?: now - TimeUnit.HOURS.toMillis(24)
+        val start = maxOf(
+            checkpoint?.lastCollectedAt?.minus(TimeUnit.HOURS.toMillis(24))
+                ?: now - TimeUnit.HOURS.toMillis(24),
+            now - TimeUnit.DAYS.toMillis(7),
+        )
         val manager = applicationContext.getSystemService(UsageStatsManager::class.java)
-        val rows = manager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, start, now).orEmpty()
-        rows.filter { it.lastTimeUsed >= start && it.totalTimeInForeground > 0 }
-            .forEach { usage ->
-                container.activityRepository.record(
-                    source = ActivitySource.APP_USAGE,
-                    eventType = "foreground",
-                    startedAt = usage.lastTimeUsed,
-                    endedAt = usage.lastTimeUsed + usage.totalTimeInForeground,
-                    packageName = usage.packageName,
-                    title = usage.packageName,
-                    metadataJson = """{"foregroundMillis":${usage.totalTimeInForeground}}""",
-                    stableKey = "${usage.packageName}:${usage.lastTimeUsed}:${usage.totalTimeInForeground}",
-                )
+        val packageManager = applicationContext.packageManager
+        val activeSessions = mutableMapOf<String, Long>()
+        val event = UsageEvents.Event()
+        val events = manager.queryEvents(start, now)
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            val packageName = event.packageName ?: continue
+            when (event.eventType) {
+                UsageEvents.Event.ACTIVITY_RESUMED -> {
+                    activeSessions[packageName] = event.timeStamp
+                }
+                UsageEvents.Event.ACTIVITY_PAUSED,
+                UsageEvents.Event.ACTIVITY_STOPPED -> {
+                    val sessionStart = activeSessions.remove(packageName) ?: continue
+                    val sessionEnd = event.timeStamp.coerceAtLeast(sessionStart)
+                    if (sessionEnd - sessionStart < MIN_SESSION_MILLIS) continue
+                    val label = runCatching {
+                        packageManager.getApplicationLabel(
+                            packageManager.getApplicationInfo(packageName, 0),
+                        ).toString()
+                    }.getOrDefault(packageName)
+                    val duration = sessionEnd - sessionStart
+                    container.activityRepository.record(
+                        source = ActivitySource.APP_USAGE,
+                        eventType = "foreground_session",
+                        startedAt = sessionStart,
+                        endedAt = sessionEnd,
+                        packageName = packageName,
+                        title = label,
+                        metadataJson = """{"foregroundMillis":$duration}""",
+                        stableKey = "$packageName:$sessionStart:$sessionEnd",
+                    )
+                }
             }
+        }
         dao.upsertCheckpoint(
             CollectorCheckpointEntity(
                 collector = COLLECTOR,
@@ -78,17 +98,9 @@ class UsageCollectionWorker(
         return Result.success()
     }
 
-    private fun hasUsageAccess(context: Context): Boolean {
-        val manager = context.getSystemService(AppOpsManager::class.java)
-        return manager.checkOpNoThrow(
-            AppOpsManager.OPSTR_GET_USAGE_STATS,
-            Process.myUid(),
-            context.packageName,
-        ) == AppOpsManager.MODE_ALLOWED
-    }
-
     private companion object {
         const val COLLECTOR = "usage"
+        const val MIN_SESSION_MILLIS = 1_000L
     }
 }
 
@@ -436,7 +448,7 @@ object OfficeWorkScheduler {
 private suspend fun com.aliahad.aichat.AppContainer.shouldCollect(
     source: ActivitySource,
 ): Boolean =
-    !settings.collectionPaused.first() && source in settings.enabledCollectionSources.first()
+    !settings.collectionPaused.first() && phoneSourceAccessManager.hasAccess(source)
 
 private fun hasAnyPermission(context: Context, vararg permissions: String): Boolean =
     permissions.any { permission ->

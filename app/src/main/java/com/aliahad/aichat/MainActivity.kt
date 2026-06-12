@@ -1,9 +1,11 @@
 package com.aliahad.aichat
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.net.Uri
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
 import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,6 +26,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aliahad.aichat.ui.AiChatApp
 import com.aliahad.aichat.ui.theme.AichatTheme
 import com.aliahad.aichat.residency.ModelResidencyService
+import com.aliahad.aichat.core.ActivitySource
+import com.aliahad.aichat.settings.DeviceSettingsNavigator
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels {
@@ -63,6 +67,11 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenDocument(),
                 ) { uri ->
                     viewModel.selectOfficeBackup(uri)
+                }
+                val phonePermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions(),
+                ) {
+                    viewModel.refreshPhoneSourceAccess()
                 }
                 val fileLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenMultipleDocuments(),
@@ -136,6 +145,67 @@ class MainActivity : ComponentActivity() {
                                 ),
                             )
                         },
+                        onRequestPhoneSourceAccess = { source ->
+                            when (source) {
+                                ActivitySource.APP_USAGE ->
+                                    DeviceSettingsNavigator.openUsageAccess(this)
+                                ActivitySource.NOTIFICATION ->
+                                    DeviceSettingsNavigator.openNotificationAccess(this)
+                                ActivitySource.ACCESSIBILITY ->
+                                    DeviceSettingsNavigator.openAccessibility(this)
+                                ActivitySource.LOCATION -> {
+                                    val foregroundGranted =
+                                        ContextCompat.checkSelfPermission(
+                                            this,
+                                            Manifest.permission.ACCESS_FINE_LOCATION,
+                                        ) == PackageManager.PERMISSION_GRANTED ||
+                                            ContextCompat.checkSelfPermission(
+                                                this,
+                                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                                            ) == PackageManager.PERMISSION_GRANTED
+                                    if (foregroundGranted) {
+                                        DeviceSettingsNavigator.openAppPermissions(this)
+                                    } else {
+                                        phonePermissionLauncher.launch(
+                                            arrayOf(
+                                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                            ),
+                                        )
+                                    }
+                                }
+                                ActivitySource.SENSOR -> {
+                                    if (hasPermission(Manifest.permission.ACTIVITY_RECOGNITION)) {
+                                        DeviceSettingsNavigator.openAppPermissions(this)
+                                    } else {
+                                        phonePermissionLauncher.launch(
+                                            arrayOf(Manifest.permission.ACTIVITY_RECOGNITION),
+                                        )
+                                    }
+                                }
+                                ActivitySource.CONTACT -> {
+                                    if (hasPermission(Manifest.permission.READ_CONTACTS)) {
+                                        DeviceSettingsNavigator.openAppPermissions(this)
+                                    } else {
+                                        phonePermissionLauncher.launch(
+                                            arrayOf(Manifest.permission.READ_CONTACTS),
+                                        )
+                                    }
+                                }
+                                ActivitySource.CALENDAR -> {
+                                    if (hasPermission(Manifest.permission.READ_CALENDAR)) {
+                                        DeviceSettingsNavigator.openAppPermissions(this)
+                                    } else {
+                                        phonePermissionLauncher.launch(
+                                            arrayOf(Manifest.permission.READ_CALENDAR),
+                                        )
+                                    }
+                                }
+                                ActivitySource.HEALTH ->
+                                    DeviceSettingsNavigator.openHealthConnect(this)
+                                else -> Unit
+                            }
+                        },
                     )
                 }
             }
@@ -147,8 +217,16 @@ class MainActivity : ComponentActivity() {
         (application as AiChatApplication).container.residencyController.setUiForeground(true)
     }
 
+    override fun onResume() {
+        super.onResume()
+        viewModel.refreshPhoneSourceAccess()
+    }
+
     override fun onStop() {
         (application as AiChatApplication).container.residencyController.setUiForeground(false)
         super.onStop()
     }
+
+    private fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 }

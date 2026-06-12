@@ -127,6 +127,12 @@ interface ActivityDao {
     fun observeRecent(limit: Int): Flow<List<ActivityEventEntity>>
 
     @Query(
+        "SELECT source, COUNT(*) AS eventCount, MAX(startedAt) AS lastEventAt " +
+            "FROM activity_events GROUP BY source",
+    )
+    fun observeSourceStats(): Flow<List<ActivitySourceStatsRow>>
+
+    @Query(
         "SELECT * FROM activity_events " +
             "WHERE (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
             "ORDER BY pinned DESC, startedAt DESC LIMIT :limit",

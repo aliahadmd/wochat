@@ -310,6 +310,12 @@ data class ActivityEventEntity(
     val createdAt: Long,
 )
 
+data class ActivitySourceStatsRow(
+    val source: ActivitySource,
+    val eventCount: Long,
+    val lastEventAt: Long?,
+)
+
 @Entity(tableName = "memory_summaries", indices = [Index("periodStart"), Index("source")])
 data class MemorySummaryEntity(
     @PrimaryKey val id: String,

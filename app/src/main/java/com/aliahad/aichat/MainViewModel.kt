@@ -9,6 +9,7 @@ import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.core.ActivitySource
+import com.aliahad.aichat.core.ActivitySourceStats
 import com.aliahad.aichat.core.ChatQualityMode
 import com.aliahad.aichat.core.ChatTurn
 import com.aliahad.aichat.core.ChatMessage
@@ -26,6 +27,8 @@ import com.aliahad.aichat.core.MemoryItem
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.ProjectorRecord
+import com.aliahad.aichat.core.PhoneSourceAccessState
+import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.core.UserTurn
 import com.aliahad.aichat.activity.OfficeWorkScheduler
 import com.aliahad.aichat.residency.ModelResidencyState
@@ -102,7 +105,8 @@ data class MainUiState(
     val contextProfiles: List<ModelContextProfile> = emptyList(),
     val memoryEnabled: Boolean = true,
     val collectionPaused: Boolean = false,
-    val enabledCollectionSources: Set<ActivitySource> = emptySet(),
+    val phoneSourceStatuses: Map<ActivitySource, PhoneSourceStatus> = emptyMap(),
+    val phoneSourceStats: Map<ActivitySource, ActivitySourceStats> = emptyMap(),
     val thinking: ThinkingUiState? = null,
     val usedMemoryCount: Int = 0,
     val isSending: Boolean = false,
@@ -197,10 +201,13 @@ class MainViewModel(
             }
         }
         viewModelScope.launch {
-            container.settings.enabledCollectionSources.collectLatest { sources ->
-                _uiState.update { it.copy(enabledCollectionSources = sources) }
+            container.activityRepository.sourceStats.collectLatest { stats ->
+                _uiState.update { state ->
+                    state.copy(phoneSourceStats = stats.associateBy(ActivitySourceStats::source))
+                }
             }
         }
+        refreshPhoneSourceAccess()
     }
 
     fun setPage(page: AppPage) {
@@ -701,14 +708,30 @@ class MainViewModel(
     }
 
     fun setCollectionPaused(paused: Boolean) {
-        viewModelScope.launch { container.settings.setCollectionPaused(paused) }
+        viewModelScope.launch {
+            container.settings.setCollectionPaused(paused)
+            if (!paused) collectFromGrantedSources(_uiState.value.phoneSourceStatuses)
+        }
     }
 
-    fun setCollectionSourceEnabled(source: ActivitySource, enabled: Boolean) {
-        viewModelScope.launch {
-            container.settings.setCollectionSourceEnabled(source, enabled)
-            if (enabled) OfficeWorkScheduler.collectNow(container.application, source)
+    fun refreshPhoneSourceAccess() {
+        val previous = _uiState.value.phoneSourceStatuses
+        val current = container.phoneSourceAccessManager.snapshot()
+        _uiState.update { it.copy(phoneSourceStatuses = current) }
+        if (!_uiState.value.collectionPaused) {
+            current.values
+                .filter { status ->
+                    status.state == PhoneSourceAccessState.GRANTED &&
+                        previous[status.source]?.state != PhoneSourceAccessState.GRANTED
+                }
+                .forEach { OfficeWorkScheduler.collectNow(container.application, it.source) }
         }
+    }
+
+    private fun collectFromGrantedSources(statuses: Map<ActivitySource, PhoneSourceStatus>) {
+        statuses.values
+            .filter { it.state == PhoneSourceAccessState.GRANTED }
+            .forEach { OfficeWorkScheduler.collectNow(container.application, it.source) }
     }
 
     fun clearCollectedSource(source: ActivitySource) {

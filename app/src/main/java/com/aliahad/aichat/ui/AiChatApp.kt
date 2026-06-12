@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -49,6 +51,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureAsPdf
@@ -116,6 +120,7 @@ import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.core.ActivitySource
+import com.aliahad.aichat.core.ActivitySourceStats
 import com.aliahad.aichat.core.ChatQualityMode
 import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.ContextVerificationState
@@ -128,6 +133,8 @@ import com.aliahad.aichat.core.MemoryItem
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.core.ProjectorRecord
+import com.aliahad.aichat.core.PhoneSourceAccessState
+import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.model.formatBytes
 import com.aliahad.aichat.residency.ModelResidencyState
@@ -152,6 +159,7 @@ fun AiChatApp(
     onTakePhoto: () -> Unit,
     onExportOffice: (String) -> Unit,
     onImportOffice: () -> Unit,
+    onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -261,6 +269,7 @@ fun AiChatApp(
                     actions = actions,
                     onExportOffice = onExportOffice,
                     onImportOffice = onImportOffice,
+                    onRequestPhoneSourceAccess = onRequestPhoneSourceAccess,
                     modifier = Modifier.padding(padding),
                 )
                 AppPage.SETTINGS -> SettingsScreen(
@@ -1245,13 +1254,14 @@ private fun MemoryCenter(
     actions: MainViewModel,
     onExportOffice: (String) -> Unit,
     onImportOffice: () -> Unit,
+    onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
     var query by remember { mutableStateOf("") }
     var editing by remember { mutableStateOf<MemoryItem?>(null) }
     var creating by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
+    var managingSourceData by remember { mutableStateOf(false) }
     var clearingSource by remember { mutableStateOf<ActivitySource?>(null) }
     val visible = remember(state.memories, query) {
         val value = query.trim()
@@ -1284,15 +1294,20 @@ private fun MemoryCenter(
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "Phone collection",
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        FilterChip(
-                            selected = state.collectionPaused,
-                            onClick = { actions.setCollectionPaused(!state.collectionPaused) },
-                            label = { Text(if (state.collectionPaused) "Paused" else "Active") },
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Automatic phone collection",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                "One privacy control for every granted source",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = !state.collectionPaused,
+                            onCheckedChange = { actions.setCollectionPaused(!it) },
                         )
                     }
                 }
@@ -1337,113 +1352,39 @@ private fun MemoryCenter(
                 Column(Modifier.padding(16.dp)) {
                     Text("Phone sources", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Every source remains off until you enable it here. Android access is " +
-                            "also required where applicable. " +
-                            "Passwords, OTPs, keyboards, and secure windows are excluded.",
+                        "Granted sources collect automatically while Phone collection is active. " +
+                            "Revoke access in Android Settings to stop an individual source. " +
+                            "Password fields and keyboards are excluded; OTPs and payment numbers " +
+                            "are redacted before storage.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(10.dp))
-                    CollectorSourceRow(
-                        label = "App usage",
-                        description = "Foreground app sessions and duration",
-                        checked = ActivitySource.APP_USAGE in state.enabledCollectionSources,
-                        paused = state.collectionPaused,
-                        onCheckedChange = {
-                            actions.setCollectionSourceEnabled(ActivitySource.APP_USAGE, it)
-                        },
-                        onAccess = { DeviceSettingsNavigator.openUsageAccess(context) },
-                        onClear = { clearingSource = ActivitySource.APP_USAGE },
-                    )
-                    CollectorSourceRow(
-                        label = "Installed apps",
-                        description = "App inventory and package changes",
-                        checked = ActivitySource.APP_INSTALL in state.enabledCollectionSources,
-                        paused = state.collectionPaused,
-                        onCheckedChange = {
-                            actions.setCollectionSourceEnabled(ActivitySource.APP_INSTALL, it)
-                        },
-                        onClear = { clearingSource = ActivitySource.APP_INSTALL },
-                    )
-                    CollectorSourceRow(
-                        label = "Notifications",
-                        description = "Redacted title and visible notification text",
-                        checked = ActivitySource.NOTIFICATION in state.enabledCollectionSources,
-                        paused = state.collectionPaused,
-                        onCheckedChange = {
-                            actions.setCollectionSourceEnabled(ActivitySource.NOTIFICATION, it)
-                        },
-                        onAccess = { DeviceSettingsNavigator.openNotificationAccess(context) },
-                        onClear = { clearingSource = ActivitySource.NOTIFICATION },
-                    )
-                    CollectorSourceRow(
-                        label = "Screen context",
-                        description = "Visible non-secure UI text and optional actions",
-                        checked = ActivitySource.ACCESSIBILITY in state.enabledCollectionSources,
-                        paused = state.collectionPaused,
-                        onCheckedChange = {
-                            actions.setCollectionSourceEnabled(ActivitySource.ACCESSIBILITY, it)
-                        },
-                        onAccess = { DeviceSettingsNavigator.openAccessibility(context) },
-                        onClear = { clearingSource = ActivitySource.ACCESSIBILITY },
-                    )
-                    CollectorSourceRow(
-                        label = "Location",
-                        description = "Periodic passive location snapshots",
-                        checked = ActivitySource.LOCATION in state.enabledCollectionSources,
-                        paused = state.collectionPaused,
-                        onCheckedChange = {
-                            actions.setCollectionSourceEnabled(ActivitySource.LOCATION, it)
-                        },
-                        onAccess = { DeviceSettingsNavigator.openAppPermissions(context) },
-                        onClear = { clearingSource = ActivitySource.LOCATION },
-                    )
-                    CollectorSourceRow(
-                        label = "Sensors",
-                        description = "Low-frequency environment and step snapshots",
-                        checked = ActivitySource.SENSOR in state.enabledCollectionSources,
-                        paused = state.collectionPaused,
-                        onCheckedChange = {
-                            actions.setCollectionSourceEnabled(ActivitySource.SENSOR, it)
-                        },
-                        onAccess = { DeviceSettingsNavigator.openAppPermissions(context) },
-                        onClear = { clearingSource = ActivitySource.SENSOR },
-                    )
-                    CollectorSourceRow(
-                        label = "Contacts",
-                        description = "Contact names and update timestamps",
-                        checked = ActivitySource.CONTACT in state.enabledCollectionSources,
-                        paused = state.collectionPaused,
-                        onCheckedChange = {
-                            actions.setCollectionSourceEnabled(ActivitySource.CONTACT, it)
-                        },
-                        onAccess = { DeviceSettingsNavigator.openAppPermissions(context) },
-                        onClear = { clearingSource = ActivitySource.CONTACT },
-                    )
-                    CollectorSourceRow(
-                        label = "Calendar",
-                        description = "Past month and upcoming year of events",
-                        checked = ActivitySource.CALENDAR in state.enabledCollectionSources,
-                        paused = state.collectionPaused,
-                        onCheckedChange = {
-                            actions.setCollectionSourceEnabled(ActivitySource.CALENDAR, it)
-                        },
-                        onAccess = { DeviceSettingsNavigator.openAppPermissions(context) },
-                        onClear = { clearingSource = ActivitySource.CALENDAR },
-                    )
-                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Health Connect", style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                "Permission setup is available; local record ingestion is not enabled yet.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                    phoneSourceSpecs.forEachIndexed { index, spec ->
+                        val status = state.phoneSourceStatuses[spec.source] ?: PhoneSourceStatus(
+                            source = spec.source,
+                            state = PhoneSourceAccessState.NOT_GRANTED,
+                            detail = "Checking Android access",
+                        )
+                        PhoneSourceRow(
+                            spec = spec,
+                            status = status,
+                            stats = state.phoneSourceStats[spec.source],
+                            collectionPaused = state.collectionPaused,
+                            onAccess = { onRequestPhoneSourceAccess(spec.source) },
+                        )
+                        if (index != phoneSourceSpecs.lastIndex) {
+                            HorizontalDivider(Modifier.padding(vertical = 4.dp))
                         }
-                        TextButton(
-                            onClick = { DeviceSettingsNavigator.openHealthConnect(context) },
-                        ) { Text("Access") }
+                    }
+                    if (state.phoneSourceStats.values.any { it.eventCount > 0 }) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { managingSourceData = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Manage stored phone data")
+                        }
                     }
                 }
             }
@@ -1597,6 +1538,51 @@ private fun MemoryCenter(
             },
         )
     }
+    if (managingSourceData) {
+        val storedSources = state.phoneSourceStats.values
+            .filter { it.eventCount > 0 }
+            .sortedBy { phoneSourceLabel(it.source) }
+        AlertDialog(
+            onDismissRequest = { managingSourceData = false },
+            title = { Text("Stored phone data") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "Removing stored records does not revoke Android access. New records may " +
+                            "be collected while Automatic phone collection is active.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    storedSources.forEach { stats ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(phoneSourceLabel(stats.source))
+                                Text(
+                                    "${stats.eventCount} stored records",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    managingSourceData = false
+                                    clearingSource = stats.source
+                                },
+                            ) {
+                                Text("Delete", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { managingSourceData = false }) { Text("Done") }
+            },
+        )
+    }
     clearingSource?.let { source ->
         AlertDialog(
             onDismissRequest = { clearingSource = null },
@@ -1624,40 +1610,173 @@ private fun MemoryCenter(
     }
 }
 
+private data class PhoneSourceSpec(
+    val source: ActivitySource,
+    val label: String,
+    val description: String,
+)
+
+private val phoneSourceSpecs = listOf(
+    PhoneSourceSpec(
+        ActivitySource.APP_USAGE,
+        "App usage",
+        "Foreground app sessions and duration",
+    ),
+    PhoneSourceSpec(
+        ActivitySource.APP_INSTALL,
+        "Installed apps",
+        "App inventory and package changes",
+    ),
+    PhoneSourceSpec(
+        ActivitySource.NOTIFICATION,
+        "Notifications",
+        "Redacted title and visible notification text",
+    ),
+    PhoneSourceSpec(
+        ActivitySource.ACCESSIBILITY,
+        "Screen context",
+        "Visible non-password UI text and optional device actions",
+    ),
+    PhoneSourceSpec(
+        ActivitySource.LOCATION,
+        "Location",
+        "Periodic passive location snapshots",
+    ),
+    PhoneSourceSpec(
+        ActivitySource.SENSOR,
+        "Sensors",
+        "Low-frequency environment and step snapshots",
+    ),
+    PhoneSourceSpec(
+        ActivitySource.CONTACT,
+        "Contacts",
+        "Contact names and update timestamps",
+    ),
+    PhoneSourceSpec(
+        ActivitySource.CALENDAR,
+        "Calendar",
+        "Past month and upcoming year of events",
+    ),
+    PhoneSourceSpec(
+        ActivitySource.HEALTH,
+        "Health Connect",
+        "Local health and fitness records",
+    ),
+)
+
 @Composable
-private fun CollectorSourceRow(
-    label: String,
-    description: String,
-    checked: Boolean,
-    paused: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    onAccess: (() -> Unit)? = null,
-    onClear: () -> Unit,
+private fun PhoneSourceRow(
+    spec: PhoneSourceSpec,
+    status: PhoneSourceStatus,
+    stats: ActivitySourceStats?,
+    collectionPaused: Boolean,
+    onAccess: () -> Unit,
 ) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                spec.label,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            PhoneSourceStatusBadge(status.state)
+        }
+        Text(
+            spec.description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                buildString {
+                    append(status.detail)
+                    if (status.state == PhoneSourceAccessState.GRANTED && collectionPaused) {
+                        append(" · Collection paused")
+                    }
+                    stats?.takeIf { it.eventCount > 0 }?.let {
+                        append(" · ${it.eventCount} stored")
+                        it.lastEventAt?.let { timestamp ->
+                            append(" · ${formatSourceTimestamp(timestamp)}")
+                        }
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = when (status.state) {
+                    PhoneSourceAccessState.GRANTED -> sourceGrantedColor()
+                    PhoneSourceAccessState.NOT_GRANTED -> MaterialTheme.colorScheme.error
+                    PhoneSourceAccessState.UNAVAILABLE ->
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            status.actionLabel?.let { label ->
+                TextButton(onClick = onAccess) { Text(label) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhoneSourceStatusBadge(state: PhoneSourceAccessState) {
+    val dark = isSystemInDarkTheme()
+    val background = when (state) {
+        PhoneSourceAccessState.GRANTED ->
+            if (dark) Color(0xFF173D2B) else Color(0xFFD8F8E6)
+        PhoneSourceAccessState.NOT_GRANTED ->
+            if (dark) Color(0xFF4A1D22) else Color(0xFFFFDAD6)
+        PhoneSourceAccessState.UNAVAILABLE -> MaterialTheme.colorScheme.surfaceContainerHighest
+    }
+    val foreground = when (state) {
+        PhoneSourceAccessState.GRANTED -> sourceGrantedColor()
+        PhoneSourceAccessState.NOT_GRANTED -> MaterialTheme.colorScheme.error
+        PhoneSourceAccessState.UNAVAILABLE -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(background)
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                if (paused && checked) "$description. Paused by master control." else description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        onAccess?.let { action ->
-            TextButton(onClick = action) { Text("Access") }
-        }
-        TextButton(onClick = onClear) { Text("Clear") }
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
+        Icon(
+            imageVector = when (state) {
+                PhoneSourceAccessState.GRANTED -> Icons.Default.CheckCircle
+                PhoneSourceAccessState.NOT_GRANTED -> Icons.Default.ErrorOutline
+                PhoneSourceAccessState.UNAVAILABLE -> Icons.Default.Info
+            },
+            contentDescription = null,
+            modifier = Modifier.size(15.dp),
+            tint = foreground,
+        )
+        Text(
+            when (state) {
+                PhoneSourceAccessState.GRANTED -> "Accessed"
+                PhoneSourceAccessState.NOT_GRANTED -> "No access"
+                PhoneSourceAccessState.UNAVAILABLE -> "Unavailable"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = foreground,
         )
     }
 }
+
+@Composable
+private fun sourceGrantedColor(): Color =
+    if (isSystemInDarkTheme()) Color(0xFF8DE5B5) else Color(0xFF146C43)
+
+private fun formatSourceTimestamp(timestamp: Long): String =
+    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(timestamp))
+
+private fun phoneSourceLabel(source: ActivitySource): String =
+    phoneSourceSpecs.firstOrNull { it.source == source }?.label
+        ?: source.name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
 
 @Composable
 private fun BackupPassphraseDialog(

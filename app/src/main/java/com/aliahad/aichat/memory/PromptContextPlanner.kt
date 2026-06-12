@@ -40,7 +40,14 @@ class PromptContextPlanner(
         val selectedMemories = mutableListOf<MemoryHit>()
         val memoryText = StringBuilder()
         for (hit in memoryHits) {
-            val line = "- [${hit.memory.type.name.lowercase()}] ${hit.memory.content}\n"
+            val provenance = hit.sources
+                .mapNotNull { source -> source.label?.takeIf(String::isNotBlank) }
+                .distinct()
+                .joinToString()
+                .ifBlank { "Office Memory" }
+            val line =
+                "- [${hit.memory.type.name.lowercase()}; source: $provenance] " +
+                    "${hit.memory.content}\n"
             val tokens = inferenceEngine.countTokens(line).coerceAtLeast(1)
             if (tokens > remaining / 3 || tokens > remaining) continue
             selectedMemories += hit

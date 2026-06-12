@@ -463,7 +463,7 @@ class EncryptedOfficeBackupRepository(
             ),
         )
         settings.setMemoryEnabled(json.optBoolean("memoryEnabled", true))
-        settings.setCollectionPaused(json.optBoolean("collectionPaused", false))
+        settings.setCollectionPaused(json.optBoolean("collectionPaused", true))
         settings.setActionAllowlist(
             json.optString("actionAllowlist")
                 .split(',')

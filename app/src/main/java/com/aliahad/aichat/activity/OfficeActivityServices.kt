@@ -29,13 +29,10 @@ class OfficeNotificationListenerService : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         val notification = sbn?.notification ?: return
-        if (sbn.packageName == packageName) return
+        if (sbn.packageName == packageName || isSensitiveUiPackage(sbn.packageName)) return
         val container = (application as AiChatApplication).container
         scope.launch {
             if (container.settings.collectionPaused.first()) return@launch
-            if (ActivitySource.NOTIFICATION !in container.settings.enabledCollectionSources.first()) {
-                return@launch
-            }
             val extras = notification.extras
             val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
             val text = listOfNotNull(
@@ -69,9 +66,7 @@ class PackageChangeReceiver : BroadcastReceiver() {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
                 val settings = application.container.settings
-                if (!settings.collectionPaused.first() &&
-                    ActivitySource.APP_INSTALL in settings.enabledCollectionSources.first()
-                ) {
+                if (!settings.collectionPaused.first()) {
                     application.container.activityRepository.record(
                         source = ActivitySource.APP_INSTALL,
                         eventType = when (intent.action) {
@@ -104,7 +99,12 @@ class OfficeAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
         val sourcePackage = event.packageName?.toString() ?: return
-        if (sourcePackage == packageName || isKeyboardPackage(sourcePackage)) return
+        if (sourcePackage == packageName ||
+            isKeyboardPackage(sourcePackage) ||
+            isSensitiveUiPackage(sourcePackage)
+        ) {
+            return
+        }
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
@@ -120,9 +120,6 @@ class OfficeAccessibilityService : AccessibilityService() {
         val container = (application as AiChatApplication).container
         scope.launch {
             if (container.settings.collectionPaused.first()) return@launch
-            if (ActivitySource.ACCESSIBILITY !in container.settings.enabledCollectionSources.first()) {
-                return@launch
-            }
             container.activityRepository.record(
                 source = ActivitySource.ACCESSIBILITY,
                 eventType = if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
@@ -236,3 +233,20 @@ class OfficeAccessibilityService : AccessibilityService() {
         internal fun active(): OfficeAccessibilityService? = activeService.get()
     }
 }
+
+private fun isSensitiveUiPackage(packageName: String): Boolean {
+    val normalized = packageName.lowercase()
+    return SENSITIVE_PACKAGE_TERMS.any(normalized::contains)
+}
+
+private val SENSITIVE_PACKAGE_TERMS = listOf(
+    "authenticator",
+    "password",
+    "keychain",
+    "keystore",
+    "wallet",
+    "bank",
+    "payment",
+    "securityinput",
+    "permissioncontroller",
+)

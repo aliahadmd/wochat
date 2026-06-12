@@ -92,6 +92,25 @@ enum class ActivitySource {
     CALL,
 }
 
+enum class PhoneSourceAccessState {
+    GRANTED,
+    NOT_GRANTED,
+    UNAVAILABLE,
+}
+
+data class PhoneSourceStatus(
+    val source: ActivitySource,
+    val state: PhoneSourceAccessState,
+    val detail: String,
+    val actionLabel: String? = null,
+)
+
+data class ActivitySourceStats(
+    val source: ActivitySource,
+    val eventCount: Long,
+    val lastEventAt: Long?,
+)
+
 enum class ActionRisk {
     LOW,
     SENSITIVE,
