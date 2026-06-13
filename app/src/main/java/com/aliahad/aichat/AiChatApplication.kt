@@ -2,6 +2,7 @@ package com.aliahad.aichat
 
 import android.app.Application
 import android.util.Log
+import androidx.work.WorkManager
 import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.data.ChatRepository
 import com.aliahad.aichat.data.RoomChatRepository
@@ -32,16 +33,12 @@ import com.aliahad.aichat.settings.AppSettingsRepository
 import com.aliahad.aichat.settings.TokenCipher
 import com.aliahad.aichat.skill.RoomSkillRepository
 import com.aliahad.aichat.skill.SkillRepository
-import com.aliahad.aichat.speech.DefaultSpeechAssetRepository
-import com.aliahad.aichat.speech.SherpaIncrementalSpeechSynthesizer
-import com.aliahad.aichat.speech.SherpaStreamingSpeechRecognizer
-import com.aliahad.aichat.speech.SpeechAssetRepository
-import com.aliahad.aichat.speech.VoiceConversationController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.io.File
 
 class AiChatApplication : Application() {
     lateinit var container: AppContainer
@@ -57,16 +54,34 @@ class AiChatApplication : Application() {
                 container.attachmentRepository.markInterrupted()
                 container.attachmentRepository.cleanupAbandonedDrafts()
                 container.modelRepository.ensureOfficialRecords()
-                container.speechAssetRepository.ensureOfficialRecords()
+                cleanupRetiredSpeechArtifacts()
                 container.settings.setBackend(com.aliahad.aichat.core.BackendMode.CPU)
                 container.memoryIndexer.rebuild(container.memoryRepository.memories.first())
             }.onFailure { Log.e("AiChatApplication", "Startup reconciliation failed", it) }
         }
     }
+
+    private fun cleanupRetiredSpeechArtifacts() {
+        val workManager = WorkManager.getInstance(this)
+        RETIRED_SPEECH_ASSET_IDS.forEach { id ->
+            workManager.cancelUniqueWork("official-speech-download-$id")
+        }
+        File(noBackupFilesDir, "speech").deleteRecursively()
+    }
+
+    private companion object {
+        val RETIRED_SPEECH_ASSET_IDS = listOf(
+            "kws-hey-ali-zh-en-3m-int8",
+            "silero-vad-onnx",
+            "whisper-tiny-en-int8",
+            "kokoro-v1-1-int8",
+            "kitten-nano-en-v0-8-int8",
+            "zipformer-en-20m-int8",
+        )
+    }
 }
 
 class AppContainer(val application: Application) {
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val database: AppDatabase = AppDatabase.create(application)
     val settings = AppSettingsRepository(application, TokenCipher(application))
     val chatRepository: ChatRepository = RoomChatRepository(database)
@@ -80,18 +95,6 @@ class AppContainer(val application: Application) {
     val conversationSummaryRepository = ConversationSummaryRepository(database)
     val attachmentRepository: AttachmentRepository = DefaultAttachmentRepository(application, database)
     val inferenceEngine: InferenceEngine = NativeInferenceEngine(application)
-    val speechAssetRepository: SpeechAssetRepository = DefaultSpeechAssetRepository(
-        context = application,
-        dao = database.speechAssetDao(),
-    )
-    private val speechRecognizer = SherpaStreamingSpeechRecognizer()
-    private val speechSynthesizer = SherpaIncrementalSpeechSynthesizer(application, appScope)
-    val voiceConversationController = VoiceConversationController(
-        scope = appScope,
-        assets = speechAssetRepository,
-        recognizer = speechRecognizer,
-        synthesizer = speechSynthesizer,
-    )
     lateinit var promptContextPlanner: PromptContextPlanner
         private set
     lateinit var residencyController: ModelResidencyController

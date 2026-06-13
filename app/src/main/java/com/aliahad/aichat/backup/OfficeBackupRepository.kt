@@ -191,7 +191,6 @@ class EncryptedOfficeBackupRepository(
             plain.delete("models", null, null)
             plain.delete("projectors", null, null)
             plain.delete("model_context_profiles", null, null)
-            plain.delete("speech_assets", null, null)
             plain.execSQL("PRAGMA user_version = ${AppDatabase.VERSION}")
             plain.query(
                 "attachments",

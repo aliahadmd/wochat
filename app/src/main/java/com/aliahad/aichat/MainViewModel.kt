@@ -20,7 +20,6 @@ import com.aliahad.aichat.core.GenerationEvent
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.InferenceMetrics
-import com.aliahad.aichat.core.InferenceExecutionProfile
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
 import com.aliahad.aichat.core.ModelRecord
@@ -28,13 +27,9 @@ import com.aliahad.aichat.core.MemoryItem
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.ProjectorRecord
-import com.aliahad.aichat.core.SpeechAssetKind
-import com.aliahad.aichat.core.SpeechAssetRecord
 import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.core.SkillRecord
 import com.aliahad.aichat.core.TurnOrigin
-import com.aliahad.aichat.core.VoiceSessionState
-import com.aliahad.aichat.core.VoiceSettings
 import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.core.UserTurn
@@ -104,7 +99,6 @@ data class MainUiState(
     val messages: List<ChatMessage> = emptyList(),
     val models: List<ModelRecord> = emptyList(),
     val projectors: List<ProjectorRecord> = emptyList(),
-    val speechAssets: List<SpeechAssetRecord> = emptyList(),
     val draftAttachments: List<Attachment> = emptyList(),
     val messageAttachments: Map<String, List<Attachment>> = emptyMap(),
     val skills: List<SkillRecord> = emptyList(),
@@ -115,10 +109,6 @@ data class MainUiState(
     val page: AppPage = AppPage.CHAT,
     val backendMode: BackendMode = BackendMode.AUTO,
     val generationSettings: GenerationSettings = GenerationSettings(),
-    val voiceSettings: VoiceSettings = VoiceSettings(),
-    val voiceState: VoiceSessionState = VoiceSessionState.Unavailable(
-        "Download both speech models in Settings",
-    ),
     val inferenceState: InferenceState = InferenceState.Uninitialized,
     val inferenceMetrics: InferenceMetrics = InferenceMetrics(),
     val residencyState: ModelResidencyState = ModelResidencyState.Idle,
@@ -176,11 +166,6 @@ class MainViewModel(
             }
         }
         viewModelScope.launch {
-            container.speechAssetRepository.assets.collectLatest { assets ->
-                _uiState.update { it.copy(speechAssets = assets) }
-            }
-        }
-        viewModelScope.launch {
             container.skillRepository.skills.collectLatest { skills ->
                 val enabledIds = skills.filter(SkillRecord::enabled).map(SkillRecord::id).toSet()
                 _uiState.update {
@@ -200,22 +185,6 @@ class MainViewModel(
         viewModelScope.launch {
             container.settings.generationSettings.collectLatest { settings ->
                 _uiState.update { it.copy(generationSettings = settings) }
-            }
-        }
-        viewModelScope.launch {
-            container.settings.voiceSettings.collectLatest { settings ->
-                _uiState.update { it.copy(voiceSettings = settings) }
-            }
-        }
-        viewModelScope.launch {
-            container.voiceConversationController.state.collectLatest { state ->
-                _uiState.update { it.copy(voiceState = state) }
-            }
-        }
-        viewModelScope.launch {
-            container.voiceConversationController.finalTranscripts.collectLatest { transcript ->
-                generationJob?.takeIf { it.isActive }?.join()
-                sendMessage(transcript, TurnOrigin.VOICE)
             }
         }
         viewModelScope.launch {
@@ -299,7 +268,6 @@ class MainViewModel(
         if (_uiState.value.selectedConversationId == id) return
         generationJob?.cancel()
         container.inferenceEngine.cancel()
-        container.voiceConversationController.cancelAll()
         observeConversation(id)
     }
 
@@ -338,7 +306,6 @@ class MainViewModel(
             runCatching {
                 if (_uiState.value.selectedConversationId == id) {
                     container.inferenceEngine.cancel()
-                    container.voiceConversationController.cancelAll()
                     generationJob?.cancelAndJoin()
                 }
                 container.chatRepository.getMessages(id).forEach { message ->
@@ -379,7 +346,6 @@ class MainViewModel(
             return
         }
         configurationReloadJob?.cancel()
-        if (origin == TurnOrigin.TYPED) container.voiceConversationController.cancelAll()
         generationJob = viewModelScope.launch {
             var assistant: ChatMessage? = null
             var keepThinking = false
@@ -387,14 +353,7 @@ class MainViewModel(
             val content = StringBuilder()
             try {
                 val conversationId = ensureConversation() ?: return@launch
-                val model = resolveSelectedModel() ?: run {
-                    if (origin == TurnOrigin.VOICE) {
-                        container.voiceConversationController.reportError(
-                            "Download or import a local language model before using voice chat.",
-                        )
-                    }
-                    return@launch
-                }
+                val model = resolveSelectedModel() ?: return@launch
                 val visionProfile = visionDetailProfile(model)
                 val settings = _uiState.value.generationSettings.normalized()
                 val activeSkills = container.skillRepository.promptBlocksForSelection(selectedSkillIds)
@@ -520,10 +479,6 @@ class MainViewModel(
                 }
                 var lastSavedAt = 0L
                 var completion: GenerationEvent.Completed? = null
-                val spokenReply = origin == TurnOrigin.VOICE &&
-                    container.voiceConversationController.beginSpokenReply(
-                        _uiState.value.voiceSettings,
-                    )
                 container.inferenceEngine.generate(
                     UserTurn(
                         conversationId = conversationId,
@@ -531,11 +486,7 @@ class MainViewModel(
                         attachments = adjustedContexts,
                     ),
                     plannedSettings,
-                    if (spokenReply) {
-                        InferenceExecutionProfile.CONCURRENT_SPEECH
-                    } else {
-                        InferenceExecutionProfile.NORMAL
-                    },
+                    com.aliahad.aichat.core.InferenceExecutionProfile.NORMAL,
                 ).collect { event ->
                     when (event) {
                         is GenerationEvent.ThoughtDelta -> {
@@ -554,9 +505,6 @@ class MainViewModel(
                         }
                         is GenerationEvent.AnswerDelta -> {
                             content.append(event.text)
-                            if (spokenReply) {
-                                container.voiceConversationController.acceptAnswerDelta(event.text)
-                            }
                             _uiState.update { state ->
                                 val thinking = state.thinking
                                 if (thinking == null || thinking.text.isEmpty()) {
@@ -584,7 +532,6 @@ class MainViewModel(
                         is GenerationEvent.Phase -> Unit
                     }
                 }
-                if (spokenReply) container.voiceConversationController.finishSpokenReply()
                 val result = completion ?: GenerationEvent.Completed(
                     reason = GenerationStopReason.ERROR,
                     answerTokens = 0,
@@ -638,7 +585,6 @@ class MainViewModel(
                     )
                 }
                 if (error !is CancellationException) {
-                    container.voiceConversationController.cancelAll()
                     showError(error)
                 }
             } finally {
@@ -660,39 +606,6 @@ class MainViewModel(
     fun stopGeneration() {
         container.inferenceEngine.cancel()
         generationJob?.cancel()
-        container.voiceConversationController.cancelAll()
-    }
-
-    fun toggleVoiceInput() {
-        if (_uiState.value.voiceState is VoiceSessionState.Listening) {
-            container.voiceConversationController.stopListening()
-            return
-        }
-        container.inferenceEngine.cancel()
-        generationJob?.cancel()
-        container.voiceConversationController.cancelAll()
-        container.voiceConversationController.startListening()
-    }
-
-    fun microphonePermissionDenied() {
-        val message = "Microphone permission is required for voice chat."
-        container.voiceConversationController.reportError(message)
-        showError(IllegalStateException(message))
-    }
-
-    fun replayMessage(messageId: String) {
-        val message = _uiState.value.messages.firstOrNull {
-            it.id == messageId &&
-                it.role == MessageRole.ASSISTANT &&
-                it.status != MessageStatus.STREAMING &&
-                it.content.isNotBlank()
-        } ?: return
-        container.inferenceEngine.cancel()
-        generationJob?.cancel()
-        container.voiceConversationController.cancelAll()
-        viewModelScope.launch {
-            container.voiceConversationController.replay(message.content, _uiState.value.voiceSettings)
-        }
     }
 
     fun continueResponse() {
@@ -1066,28 +979,6 @@ class MainViewModel(
         }
     }
 
-    fun startSpeechAssetDownload(id: String) {
-        viewModelScope.launch {
-            runCatching { container.speechAssetRepository.startDownload(id) }.onFailure(::showError)
-        }
-    }
-
-    fun pauseSpeechAssetDownload(id: String) {
-        viewModelScope.launch {
-            runCatching { container.speechAssetRepository.pauseDownload(id) }.onFailure(::showError)
-        }
-    }
-
-    fun deleteSpeechAsset(id: String) {
-        viewModelScope.launch {
-            runCatching {
-                val asset = _uiState.value.speechAssets.firstOrNull { it.id == id }
-                asset?.let { container.voiceConversationController.releaseAsset(it.kind) }
-                container.speechAssetRepository.delete(id)
-            }.onFailure(::showError)
-        }
-    }
-
     fun pauseProjectorDownload(id: String) {
         viewModelScope.launch {
             runCatching { container.modelRepository.pauseProjectorDownload(id) }.onFailure(::showError)
@@ -1228,10 +1119,6 @@ class MainViewModel(
         }
     }
 
-    fun updateVoice(settings: VoiceSettings) {
-        viewModelScope.launch { container.settings.updateVoice(settings) }
-    }
-
     fun retryPreload() {
         if (!allowModelMutation()) return
         viewModelScope.launch {
@@ -1351,7 +1238,6 @@ class MainViewModel(
 
     override fun onCleared() {
         container.inferenceEngine.cancel()
-        container.voiceConversationController.cancelAll()
         super.onCleared()
     }
 

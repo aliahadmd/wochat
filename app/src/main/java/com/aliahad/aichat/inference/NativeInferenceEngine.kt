@@ -188,7 +188,6 @@ class NativeInferenceEngine(
         check(activeConversationId == turn.conversationId) { "Restore this conversation before generating" }
         cancelled = false
         holdCpu()
-        nativeSetConcurrentSpeech(profile == InferenceExecutionProfile.CONCURRENT_SPEECH)
         try {
             val mediaPaths = turn.attachments.flatMap { it.imagePaths }
             _state.value = if (mediaPaths.isEmpty()) {
@@ -281,7 +280,6 @@ class NativeInferenceEngine(
                 }
             }
         } finally {
-            nativeSetConcurrentSpeech(false)
             releaseCpu()
         }
     }.flowOn(dispatcher)
@@ -419,7 +417,6 @@ class NativeInferenceEngine(
     private external fun nativeGeneratedAnswerTokens(): Int
     private external fun nativeModelContextLimit(): Int
     private external fun nativeCurrentContextSize(): Int
-    private external fun nativeSetConcurrentSpeech(enabled: Boolean)
     private external fun nativeFinishGeneration()
     private external fun nativeUnload()
     private external fun nativeReleaseModelPages()

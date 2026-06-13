@@ -39,7 +39,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CameraAlt
@@ -55,7 +54,6 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
@@ -137,11 +135,8 @@ import com.aliahad.aichat.core.MemoryItem
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.core.ProjectorRecord
-import com.aliahad.aichat.core.SpeechAssetRecord
 import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.core.SkillRecord
-import com.aliahad.aichat.core.VoiceSessionState
-import com.aliahad.aichat.core.VoiceSettings
 import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.model.ModelConstants
@@ -172,7 +167,6 @@ fun AiChatApp(
     onTakePhoto: () -> Unit,
     onExportOffice: (String) -> Unit,
     onImportOffice: () -> Unit,
-    onRequestMicrophone: () -> Unit,
     onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -277,8 +271,6 @@ fun AiChatApp(
                     state = state,
                     onSend = { actions.sendMessage(it) },
                     onStop = actions::stopGeneration,
-                    onMicrophone = onRequestMicrophone,
-                    onReplay = actions::replayMessage,
                     onContinue = actions::continueResponse,
                     onToggleThinking = actions::toggleThinking,
                     onOpenSettings = { actions.setPage(AppPage.SETTINGS) },
@@ -515,8 +507,6 @@ private fun ChatScreen(
     state: MainUiState,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
-    onMicrophone: () -> Unit,
-    onReplay: (String) -> Unit,
     onContinue: () -> Unit,
     onToggleThinking: (String) -> Unit,
     onOpenSettings: () -> Unit,
@@ -567,7 +557,6 @@ private fun ChatScreen(
                 thinking = state.thinking,
                 onToggleThinking = onToggleThinking,
                 onContinue = onContinue,
-                onReplay = onReplay,
                 onPreviewAttachment = { previewAttachment = it },
                 modifier = Modifier.weight(1f),
             )
@@ -593,8 +582,6 @@ private fun ChatScreen(
             onRetryAttachment = onRetryAttachment,
             onPreviewAttachment = { previewAttachment = it },
             blockingReason = visionBlockingReason,
-            voiceState = state.voiceState,
-            onMicrophone = onMicrophone,
             onSend = {
                 if (input.isNotBlank() || state.draftAttachments.isNotEmpty()) {
                     onSend(input)
@@ -715,7 +702,6 @@ internal fun MessageList(
     thinking: ThinkingUiState? = null,
     onToggleThinking: (String) -> Unit = {},
     onContinue: () -> Unit = {},
-    onReplay: (String) -> Unit = {},
     onPreviewAttachment: (Attachment) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -777,7 +763,6 @@ internal fun MessageList(
                     thinking = thinking?.takeIf { message.id == it.messageId },
                     onToggleThinking = { onToggleThinking(message.id) },
                     onContinue = onContinue,
-                    onReplay = { onReplay(message.id) },
                     onPreviewAttachment = onPreviewAttachment,
                     modifier = if (message.id == lastMessage?.id) {
                         Modifier.onSizeChanged { lastMessageHeight = it.height }
@@ -829,7 +814,6 @@ internal fun MessageBubble(
     thinking: ThinkingUiState? = null,
     onToggleThinking: () -> Unit = {},
     onContinue: () -> Unit = {},
-    onReplay: () -> Unit = {},
     onPreviewAttachment: (Attachment) -> Unit = {},
     modifier: Modifier = Modifier,
     onMarkdownRendered: () -> Unit = {},
@@ -926,15 +910,6 @@ internal fun MessageBubble(
                 else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
             )
-        } else if (!isUser && status != MessageStatus.STREAMING && content.isNotBlank()) {
-            IconButton(
-                onClick = onReplay,
-                modifier = Modifier
-                    .padding(horizontal = 4.dp)
-                    .size(36.dp),
-            ) {
-                Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Replay response")
-            }
         }
     }
 }
@@ -1064,17 +1039,9 @@ private fun Composer(
     onRetryAttachment: (String) -> Unit,
     onPreviewAttachment: (Attachment) -> Unit,
     blockingReason: String?,
-    voiceState: VoiceSessionState,
-    onMicrophone: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
-    val liveTranscript = (voiceState as? VoiceSessionState.Listening)?.partialTranscript
-    val voiceActive = voiceState is VoiceSessionState.Listening ||
-        voiceState is VoiceSessionState.Loading ||
-        voiceState is VoiceSessionState.Finalizing ||
-        voiceState is VoiceSessionState.Waiting ||
-        voiceState is VoiceSessionState.Speaking
     val selectedSkills = selectedSkillIds.mapNotNull { id ->
         skills.firstOrNull { it.id == id && it.enabled }
     }
@@ -1129,18 +1096,6 @@ private fun Composer(
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
-        AnimatedVisibility(visible = voiceActive || voiceState is VoiceSessionState.Error) {
-            Text(
-                voiceStateLabel(voiceState),
-                color = if (voiceState is VoiceSessionState.Error) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            )
-        }
         Row(verticalAlignment = Alignment.Bottom) {
         IconButton(
             onClick = onAttach,
@@ -1150,16 +1105,12 @@ private fun Composer(
             Icon(Icons.Default.AttachFile, contentDescription = "Add attachment")
         }
         OutlinedTextField(
-            value = liveTranscript ?: input,
+            value = input,
             onValueChange = onInputChange,
-            enabled = enabled && !sending && voiceState !is VoiceSessionState.Listening,
+            enabled = enabled && !sending,
             placeholder = {
                 Text(
-                    when {
-                        voiceState is VoiceSessionState.Listening -> "Listening"
-                        enabled -> "Message your local model"
-                        else -> "Set up a model first"
-                    },
+                    if (enabled) "Message your local model" else "Set up a model first",
                 )
             },
             modifier = Modifier.weight(1f),
@@ -1169,27 +1120,6 @@ private fun Composer(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
             keyboardActions = KeyboardActions(),
         )
-        Spacer(Modifier.width(8.dp))
-        IconButton(
-            onClick = onMicrophone,
-            enabled = enabled,
-            modifier = Modifier
-                .size(50.dp)
-                .background(
-                    if (voiceActive) MaterialTheme.colorScheme.secondaryContainer
-                    else MaterialTheme.colorScheme.surfaceContainerHigh,
-                    RoundedCornerShape(50),
-                ),
-        ) {
-            Icon(
-                if (voiceState is VoiceSessionState.Listening) Icons.Default.Stop else Icons.Default.Mic,
-                contentDescription = if (voiceState is VoiceSessionState.Listening) {
-                    "Finish voice input"
-                } else {
-                    "Start voice input"
-                },
-            )
-        }
         Spacer(Modifier.width(8.dp))
         IconButton(
             onClick = if (sending) onStop else onSend,
@@ -1317,18 +1247,6 @@ private fun SkillPickerSheet(
             Spacer(Modifier.height(10.dp))
         }
     }
-}
-
-private fun voiceStateLabel(state: VoiceSessionState): String = when (state) {
-    is VoiceSessionState.Unavailable -> state.reason
-    VoiceSessionState.Idle -> ""
-    is VoiceSessionState.Loading -> state.label
-    is VoiceSessionState.Listening ->
-        state.partialTranscript.ifBlank { "Listening. Pause when you are finished." }
-    is VoiceSessionState.Finalizing -> "Sending: ${state.transcript}"
-    VoiceSessionState.Waiting -> "Preparing speech"
-    VoiceSessionState.Speaking -> "Speaking. Tap the microphone to interrupt."
-    is VoiceSessionState.Error -> state.message
 }
 
 @Composable
@@ -2532,28 +2450,6 @@ private fun SettingsScreen(
             )
         }
         item {
-            SectionTitle("Voice", "English speech recognition and playback stay on device")
-            Text(
-                "Tracked speech storage: ${formatBytes(state.speechAssets.sumOf { it.downloadedBytes })}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        items(state.speechAssets, key = { it.id }) { asset ->
-            SpeechAssetCard(
-                asset = asset,
-                onDownload = { actions.startSpeechAssetDownload(asset.id) },
-                onPause = { actions.pauseSpeechAssetDownload(asset.id) },
-                onDelete = { actions.deleteSpeechAsset(asset.id) },
-            )
-        }
-        item {
-            VoiceSettingsEditor(
-                settings = state.voiceSettings,
-                onChange = actions::updateVoice,
-            )
-        }
-        item {
             OutlinedButton(onClick = onImportModel, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.FolderOpen, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -3022,113 +2918,6 @@ private fun ProjectorCard(
 }
 
 @Composable
-private fun SpeechAssetCard(
-    asset: SpeechAssetRecord,
-    onDownload: () -> Unit,
-    onPause: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    Card {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    if (asset.kind == com.aliahad.aichat.core.SpeechAssetKind.ASR) {
-                        Icons.Default.Mic
-                    } else {
-                        Icons.AutoMirrored.Filled.VolumeUp
-                    },
-                    contentDescription = null,
-                )
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(asset.displayName, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        formatBytes(asset.expectedBytes),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (asset.status == DownloadStatus.READY) {
-                    AssistChip(onClick = {}, label = { Text("Ready") })
-                }
-            }
-            if (asset.status in setOf(
-                    DownloadStatus.QUEUED,
-                    DownloadStatus.DOWNLOADING,
-                    DownloadStatus.VERIFYING,
-                    DownloadStatus.PAUSED,
-                )
-            ) {
-                Spacer(Modifier.height(10.dp))
-                LinearProgressIndicator(
-                    progress = {
-                        (asset.downloadedBytes.toFloat() / asset.expectedBytes)
-                            .coerceIn(0f, 1f)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    "${formatBytes(asset.downloadedBytes)} of ${formatBytes(asset.expectedBytes)}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            asset.error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(10.dp))
-            when (asset.status) {
-                DownloadStatus.NOT_DOWNLOADED,
-                DownloadStatus.FAILED,
-                DownloadStatus.PAUSED -> Button(onClick = onDownload) {
-                    Icon(Icons.Default.Download, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (asset.downloadedBytes > 0) "Resume" else "Download")
-                }
-                DownloadStatus.QUEUED,
-                DownloadStatus.DOWNLOADING -> OutlinedButton(onClick = onPause) {
-                    Icon(Icons.Default.Pause, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Pause")
-                }
-                DownloadStatus.READY -> OutlinedButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Delete")
-                }
-                DownloadStatus.VERIFYING -> Unit
-            }
-        }
-    }
-}
-
-@Composable
-private fun VoiceSettingsEditor(
-    settings: VoiceSettings,
-    onChange: (VoiceSettings) -> Unit,
-) {
-    var speed by remember(settings.speed) { mutableStateOf(settings.speed) }
-    Text("Voice", style = MaterialTheme.typography.labelLarge)
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(KITTEN_VOICES.indices.toList()) { speakerId ->
-            FilterChip(
-                selected = settings.speakerId == speakerId,
-                onClick = { onChange(settings.copy(speakerId = speakerId)) },
-                label = { Text(KITTEN_VOICES[speakerId]) },
-            )
-        }
-    }
-    Spacer(Modifier.height(8.dp))
-    Text("Speed ${"%.2f".format(speed)}x")
-    Slider(
-        value = speed,
-        onValueChange = { speed = it },
-        onValueChangeFinished = { onChange(settings.copy(speed = speed)) },
-        valueRange = 0.7f..1.3f,
-        steps = 5,
-    )
-}
-
-@Composable
 private fun GenerationSettingsEditor(
     settings: GenerationSettings,
     onChange: (GenerationSettings) -> Unit,
@@ -3206,17 +2995,6 @@ private fun SectionTitle(title: String, subtitle: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
-
-private val KITTEN_VOICES = listOf(
-    "Expressive 2 M",
-    "Expressive 2 F",
-    "Voice 3 M",
-    "Voice 3 F",
-    "Voice 4 M",
-    "Voice 4 F",
-    "Voice 5 M",
-    "Voice 5 F",
-)
 
 @Composable
 private fun TokenDialog(

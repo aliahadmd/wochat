@@ -21,7 +21,6 @@ import com.aliahad.aichat.core.MemoryStatus
 import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.ContextVerificationState
 import com.aliahad.aichat.core.BackendMode
-import com.aliahad.aichat.core.SpeechAssetKind
 import com.aliahad.aichat.core.TurnOrigin
 
 @Entity(tableName = "conversations")
@@ -151,21 +150,6 @@ data class ProjectorRecordEntity(
     val fileName: String,
     val localPath: String?,
     val sourceRepo: String,
-    val expectedBytes: Long,
-    val sha256: String,
-    val downloadedBytes: Long,
-    val status: DownloadStatus,
-    val error: String?,
-)
-
-@Entity(tableName = "speech_assets", indices = [Index("kind", unique = true)])
-data class SpeechAssetEntity(
-    @PrimaryKey val id: String,
-    val kind: SpeechAssetKind,
-    val displayName: String,
-    val archiveFileName: String,
-    val localPath: String?,
-    val sourceUrl: String,
     val expectedBytes: Long,
     val sha256: String,
     val downloadedBytes: Long,

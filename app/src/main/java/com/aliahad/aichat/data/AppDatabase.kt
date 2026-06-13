@@ -24,7 +24,6 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
 import com.aliahad.aichat.core.ContextVerificationState
-import com.aliahad.aichat.core.SpeechAssetKind
 import com.aliahad.aichat.core.TurnOrigin
 
 class DatabaseConverters {
@@ -61,10 +60,9 @@ class DatabaseConverters {
     @TypeConverter fun fromContextVerificationState(value: ContextVerificationState): String = value.name
     @TypeConverter fun toContextVerificationState(value: String): ContextVerificationState =
         ContextVerificationState.valueOf(value)
-    @TypeConverter fun fromSpeechAssetKind(value: SpeechAssetKind): String = value.name
-    @TypeConverter fun toSpeechAssetKind(value: String): SpeechAssetKind = SpeechAssetKind.valueOf(value)
     @TypeConverter fun fromTurnOrigin(value: TurnOrigin): String = value.name
-    @TypeConverter fun toTurnOrigin(value: String): TurnOrigin = TurnOrigin.valueOf(value)
+    @TypeConverter fun toTurnOrigin(value: String): TurnOrigin =
+        if (value == "VOICE") TurnOrigin.TYPED else TurnOrigin.valueOf(value)
 }
 
 @Database(
@@ -76,7 +74,6 @@ class DatabaseConverters {
         ModelRecordEntity::class,
         ModelContextProfileEntity::class,
         ProjectorRecordEntity::class,
-        SpeechAssetEntity::class,
         AttachmentEntity::class,
         AttachmentChunkEntity::class,
         MessageAttachmentEntity::class,
@@ -89,7 +86,7 @@ class DatabaseConverters {
         CollectorCheckpointEntity::class,
         ActionAuditEntity::class,
     ],
-    version = 6,
+    version = 9,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -100,7 +97,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun modelDao(): ModelDao
     abstract fun modelContextProfileDao(): ModelContextProfileDao
     abstract fun projectorDao(): ProjectorDao
-    abstract fun speechAssetDao(): SpeechAssetDao
     abstract fun attachmentDao(): AttachmentDao
     abstract fun conversationSummaryDao(): ConversationSummaryDao
     abstract fun memoryDao(): MemoryDao
@@ -338,6 +334,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP INDEX IF EXISTS index_speech_assets_kind")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_speech_assets_kind ON speech_assets(kind)")
+            }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP INDEX IF EXISTS index_speech_assets_kind")
+                db.execSQL("DROP TABLE IF EXISTS speech_assets")
+            }
+        }
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE messages SET origin = 'TYPED' WHERE origin = 'VOICE'")
+            }
+        }
+
         fun create(context: Context): AppDatabase {
             System.loadLibrary("sqlcipher")
             val passphrase = DatabaseKeyManager(context).passphrase()
@@ -355,6 +371,9 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_3_4,
                     MIGRATION_4_5,
                     MIGRATION_5_6,
+                    MIGRATION_6_7,
+                    MIGRATION_7_8,
+                    MIGRATION_8_9,
                 )
                 .build()
             database.openHelper.writableDatabase
@@ -364,6 +383,6 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         const val DATABASE_NAME = "aichat.db"
-        const val VERSION = 6
+        const val VERSION = 9
     }
 }

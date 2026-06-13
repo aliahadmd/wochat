@@ -123,7 +123,6 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.markdown.renderer.m3)
     implementation(files("libs/sqlcipher-android-4.16.0.aar"))
-    implementation(files("libs/sherpa-onnx-1.13.2.aar"))
     ksp(libs.androidx.room.compiler)
 
     testImplementation(libs.junit)

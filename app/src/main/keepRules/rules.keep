@@ -11,4 +11,3 @@
 #   public *;
 #}
 -keep class com.aliahad.aichat.inference.NativeInferenceEngine { *; }
--keep class com.k2fsa.sherpa.onnx.** { *; }
