@@ -216,6 +216,24 @@ data class ChatTurn(
     val attachments: List<AttachmentContext> = emptyList(),
 )
 
+data class SkillRecord(
+    val id: String,
+    val name: String,
+    val description: String,
+    val instructions: String,
+    val enabled: Boolean = true,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val lastUsedAt: Long? = null,
+)
+
+data class SkillPromptBlock(
+    val skillId: String?,
+    val name: String,
+    val description: String,
+    val instructions: String,
+)
+
 data class GenerationSettings(
     val maxNewTokens: Int = 1024,
     val maxAnswerTokens: Int = 8192,
@@ -353,6 +371,7 @@ data class ContextPlan(
     val summary: ConversationSummary?,
     val history: List<ChatTurn>,
     val memories: List<MemoryHit>,
+    val skills: List<SkillPromptBlock> = emptyList(),
     val estimatedTokens: Int,
     val outputReserveTokens: Int,
 )

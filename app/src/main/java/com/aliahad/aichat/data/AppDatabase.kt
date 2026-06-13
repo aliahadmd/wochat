@@ -71,6 +71,8 @@ class DatabaseConverters {
     entities = [
         ConversationEntity::class,
         MessageEntity::class,
+        SkillEntity::class,
+        MessageSkillInvocationEntity::class,
         ModelRecordEntity::class,
         ModelContextProfileEntity::class,
         ProjectorRecordEntity::class,
@@ -87,13 +89,14 @@ class DatabaseConverters {
         CollectorCheckpointEntity::class,
         ActionAuditEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
     abstract fun messageDao(): MessageDao
+    abstract fun skillDao(): SkillDao
     abstract fun modelDao(): ModelDao
     abstract fun modelContextProfileDao(): ModelContextProfileDao
     abstract fun projectorDao(): ProjectorDao
@@ -305,6 +308,36 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS skills (" +
+                        "id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, " +
+                        "description TEXT NOT NULL, instructions TEXT NOT NULL, " +
+                        "enabled INTEGER NOT NULL DEFAULT 1, createdAt INTEGER NOT NULL, " +
+                        "updatedAt INTEGER NOT NULL, lastUsedAt INTEGER)",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_skills_updatedAt ON skills(updatedAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_skills_enabled ON skills(enabled)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS message_skill_invocations (" +
+                        "messageId TEXT NOT NULL, skillId TEXT, ordinal INTEGER NOT NULL, " +
+                        "snapshotName TEXT NOT NULL, snapshotDescription TEXT NOT NULL, " +
+                        "snapshotInstructions TEXT NOT NULL, createdAt INTEGER NOT NULL, " +
+                        "PRIMARY KEY(messageId, ordinal), " +
+                        "FOREIGN KEY(messageId) REFERENCES messages(id) ON DELETE CASCADE)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_message_skill_invocations_messageId " +
+                        "ON message_skill_invocations(messageId)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_message_skill_invocations_skillId " +
+                        "ON message_skill_invocations(skillId)",
+                )
+            }
+        }
+
         fun create(context: Context): AppDatabase {
             System.loadLibrary("sqlcipher")
             val passphrase = DatabaseKeyManager(context).passphrase()
@@ -316,7 +349,13 @@ abstract class AppDatabase : RoomDatabase() {
                 context.getDatabasePath(DATABASE_NAME).absolutePath,
             )
                 .openHelperFactory(SupportOpenHelperFactory(passphrase.copyOf()))
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                )
                 .build()
             database.openHelper.writableDatabase
             migrator.finishVerifiedMigration()
@@ -325,6 +364,6 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         const val DATABASE_NAME = "aichat.db"
-        const val VERSION = 5
+        const val VERSION = 6
     }
 }

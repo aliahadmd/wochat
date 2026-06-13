@@ -22,7 +22,7 @@ class DatabaseMigrationInstrumentedTest {
     )
 
     @Test
-    fun migrationOneToFivePreservesChatsAndAddsSpeechAssets() {
+    fun migrationOneToSixPreservesChatsAndAddsSpeechAndSkillTables() {
         helper.createDatabase(DATABASE_NAME, 1).apply {
             execSQL(
                 "INSERT INTO conversations(id, title, createdAt, updatedAt) " +
@@ -42,6 +42,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_2_3,
                 AppDatabase.MIGRATION_3_4,
                 AppDatabase.MIGRATION_4_5,
+                AppDatabase.MIGRATION_5_6,
             )
             .build()
         try {
@@ -88,6 +89,24 @@ class DatabaseMigrationInstrumentedTest {
                 0,
                 database.openHelper.writableDatabase.query(
                     "SELECT count(*) FROM model_context_profiles",
+                ).use {
+                    it.moveToFirst()
+                    it.getInt(0)
+                },
+            )
+            assertEquals(
+                0,
+                database.openHelper.writableDatabase.query(
+                    "SELECT count(*) FROM skills",
+                ).use {
+                    it.moveToFirst()
+                    it.getInt(0)
+                },
+            )
+            assertEquals(
+                0,
+                database.openHelper.writableDatabase.query(
+                    "SELECT count(*) FROM message_skill_invocations",
                 ).use {
                     it.moveToFirst()
                     it.getInt(0)

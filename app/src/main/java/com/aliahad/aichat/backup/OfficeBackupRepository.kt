@@ -192,6 +192,7 @@ class EncryptedOfficeBackupRepository(
             plain.delete("projectors", null, null)
             plain.delete("model_context_profiles", null, null)
             plain.delete("speech_assets", null, null)
+            plain.execSQL("PRAGMA user_version = ${AppDatabase.VERSION}")
             plain.query(
                 "attachments",
                 arrayOf("id", "originalPath"),
@@ -360,6 +361,7 @@ class EncryptedOfficeBackupRepository(
             try {
                 val memoryIds = buildMemoryIdMap(source, target)
                 PRE_MEMORY_TABLES.forEach { copyTable(source, target, it) }
+                OPTIONAL_USER_TABLES.forEach { copyTableIfPresent(source, target, it) }
                 copyTable(source, target, "memory_items") { values ->
                     val oldId = values.getAsString("id")
                     val mappedId = memoryIds.getValue(oldId)
@@ -460,6 +462,20 @@ class EncryptedOfficeBackupRepository(
                     target.insert(table, SQLiteDatabase.CONFLICT_IGNORE, values)
                 }
             }
+        }
+    }
+
+    private fun copyTableIfPresent(
+        source: PlainSQLiteDatabase,
+        target: SQLiteDatabase,
+        table: String,
+    ) {
+        if (source.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+                arrayOf(table),
+            ).use(Cursor::moveToFirst)
+        ) {
+            copyTable(source, target, table)
         }
     }
 
@@ -626,6 +642,10 @@ class EncryptedOfficeBackupRepository(
             "attachment_chunks",
             "message_attachments",
             "conversation_summaries",
+        )
+        val OPTIONAL_USER_TABLES = listOf(
+            "skills",
+            "message_skill_invocations",
         )
         val POST_MEMORY_TABLES = listOf(
             "memory_summaries",

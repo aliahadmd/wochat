@@ -99,4 +99,18 @@ class MemoryLogicTest {
             ),
         )
     }
+
+    @Test
+    fun promptBudgetReservesSelectedSkillTokensBeforeSelectingHistory() {
+        assertEquals(
+            1_152,
+            initialPromptTokensRemaining(
+                contextTokens = 4_096,
+                outputReserve = 1_024,
+                safetyReserve = 192,
+                currentTokens = 416,
+                systemTokens = 1_312,
+            ),
+        )
+    }
 }

@@ -30,6 +30,8 @@ import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.ProjectorRecord
 import com.aliahad.aichat.core.SpeechAssetKind
 import com.aliahad.aichat.core.SpeechAssetRecord
+import com.aliahad.aichat.core.SkillPromptBlock
+import com.aliahad.aichat.core.SkillRecord
 import com.aliahad.aichat.core.TurnOrigin
 import com.aliahad.aichat.core.VoiceSessionState
 import com.aliahad.aichat.core.VoiceSettings
@@ -41,6 +43,7 @@ import com.aliahad.aichat.residency.ModelResidencyState
 import com.aliahad.aichat.inference.VisionDetailProfile
 import com.aliahad.aichat.inference.VisionBudgetPlanner
 import com.aliahad.aichat.model.ModelConstants
+import com.aliahad.aichat.skill.MAX_SELECTED_SKILLS
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -57,6 +60,7 @@ import java.util.UUID
 enum class AppPage {
     CHAT,
     MEMORY,
+    SKILLS,
     SETTINGS,
 }
 
@@ -103,6 +107,9 @@ data class MainUiState(
     val speechAssets: List<SpeechAssetRecord> = emptyList(),
     val draftAttachments: List<Attachment> = emptyList(),
     val messageAttachments: Map<String, List<Attachment>> = emptyMap(),
+    val skills: List<SkillRecord> = emptyList(),
+    val selectedSkillIds: List<String> = emptyList(),
+    val messageSkills: Map<String, List<SkillPromptBlock>> = emptyMap(),
     val draftKey: String = "",
     val selectedConversationId: String? = null,
     val page: AppPage = AppPage.CHAT,
@@ -171,6 +178,17 @@ class MainViewModel(
         viewModelScope.launch {
             container.speechAssetRepository.assets.collectLatest { assets ->
                 _uiState.update { it.copy(speechAssets = assets) }
+            }
+        }
+        viewModelScope.launch {
+            container.skillRepository.skills.collectLatest { skills ->
+                val enabledIds = skills.filter(SkillRecord::enabled).map(SkillRecord::id).toSet()
+                _uiState.update {
+                    it.copy(
+                        skills = skills,
+                        selectedSkillIds = it.selectedSkillIds.filter(enabledIds::contains),
+                    )
+                }
             }
         }
         observeDraft(_uiState.value.draftKey)
@@ -301,7 +319,13 @@ class MainViewModel(
                 val attachments = messages.associate { message ->
                     message.id to container.attachmentRepository.attachmentsForMessage(message.id)
                 }
-                _uiState.update { it.copy(messageAttachments = attachments) }
+                val skills = container.skillRepository.blocksForMessages(messages.map(ChatMessage::id))
+                _uiState.update {
+                    it.copy(
+                        messageAttachments = attachments,
+                        messageSkills = skills,
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -348,6 +372,7 @@ class MainViewModel(
     fun sendMessage(text: String, origin: TurnOrigin = TurnOrigin.TYPED) {
         val prompt = text.trim()
         val draft = _uiState.value.draftAttachments
+        val selectedSkillIds = _uiState.value.selectedSkillIds.take(MAX_SELECTED_SKILLS)
         if ((prompt.isEmpty() && draft.isEmpty()) || generationJob?.isActive == true) return
         if (draft.any { it.state != AttachmentProcessingState.READY }) {
             showError(IllegalStateException("Wait for every attachment to finish processing."))
@@ -372,6 +397,7 @@ class MainViewModel(
                 }
                 val visionProfile = visionDetailProfile(model)
                 val settings = _uiState.value.generationSettings.normalized()
+                val activeSkills = container.skillRepository.promptBlocksForSelection(selectedSkillIds)
                 val previous = container.chatRepository.getMessages(conversationId)
                     .filter { it.status != MessageStatus.STREAMING }
                 val previousTurns = previous.map { message ->
@@ -417,6 +443,7 @@ class MainViewModel(
                     contextTokens = loadConfiguration.contextTokens,
                     memoryEnabled = _uiState.value.memoryEnabled &&
                         _uiState.value.conversations.firstOrNull { it.id == conversationId }?.temporary != true,
+                    skillBlocks = activeSkills,
                 )
                 val plannedTurns = contextPlan.history
                 val historyImageBudget = plannedTurns.maxOfOrNull { turn ->
@@ -446,6 +473,7 @@ class MainViewModel(
                     userText,
                     origin = origin,
                 )
+                container.skillRepository.recordInvocation(user.id, activeSkills)
                 container.memoryRepository.rememberMessage(
                     message = user,
                     conversationTemporary = _uiState.value.conversations
@@ -461,6 +489,8 @@ class MainViewModel(
                 _uiState.update {
                     it.copy(
                         messageAttachments = it.messageAttachments + (user.id to draft),
+                        messageSkills = it.messageSkills + (user.id to activeSkills),
+                        selectedSkillIds = emptyList(),
                     )
                 }
                 clearDraft()
@@ -692,6 +722,10 @@ class MainViewModel(
                 container.chatRepository.updateMessage(assistant)
                 val messages = container.chatRepository.getMessages(conversationId)
                     .filter { it.id != target.id && it.status != MessageStatus.STREAMING }
+                val sourceUser = messages.lastOrNull { it.role == MessageRole.USER }
+                val activeSkills = sourceUser
+                    ?.let { container.skillRepository.blocksForMessage(it.id) }
+                    .orEmpty()
                 val turns = messages.map { message ->
                     ChatTurn(
                         message = message,
@@ -719,6 +753,7 @@ class MainViewModel(
                     settings = settings,
                     contextTokens = loadConfiguration.contextTokens,
                     memoryEnabled = _uiState.value.memoryEnabled,
+                    skillBlocks = activeSkills,
                 )
                 val plannedSettings = settings.copy(systemPrompt = contextPlan.systemPrompt)
                 container.inferenceEngine.restoreSession(
@@ -815,6 +850,68 @@ class MainViewModel(
                 }
                 if (inferenceUseStarted) container.residencyController.endInferenceUse()
             }
+        }
+    }
+
+    fun toggleSelectedSkill(id: String) {
+        if (_uiState.value.isSending) return
+        var maxReached = false
+        _uiState.update { state ->
+            val enabled = state.skills.any { it.id == id && it.enabled }
+            if (!enabled) return@update state
+            val selected = state.selectedSkillIds
+            val next = when {
+                id in selected -> selected - id
+                selected.size >= MAX_SELECTED_SKILLS -> {
+                    maxReached = true
+                    selected
+                }
+                else -> selected + id
+            }
+            state.copy(selectedSkillIds = next)
+        }
+        if (maxReached) {
+            showError(IllegalStateException("A message can use up to $MAX_SELECTED_SKILLS skills."))
+        }
+    }
+
+    fun clearSelectedSkills() {
+        _uiState.update { it.copy(selectedSkillIds = emptyList()) }
+    }
+
+    fun createSkill(name: String, description: String, instructions: String) {
+        viewModelScope.launch {
+            runCatching {
+                container.skillRepository.create(name, description, instructions)
+            }.onFailure(::showError)
+        }
+    }
+
+    fun updateSkill(id: String, name: String, description: String, instructions: String) {
+        viewModelScope.launch {
+            runCatching {
+                container.skillRepository.update(id, name, description, instructions)
+            }.onFailure(::showError)
+        }
+    }
+
+    fun setSkillEnabled(id: String, enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching {
+                container.skillRepository.setEnabled(id, enabled)
+                if (!enabled) {
+                    _uiState.update { it.copy(selectedSkillIds = it.selectedSkillIds - id) }
+                }
+            }.onFailure(::showError)
+        }
+    }
+
+    fun deleteSkill(id: String) {
+        viewModelScope.launch {
+            runCatching {
+                container.skillRepository.delete(id)
+                _uiState.update { it.copy(selectedSkillIds = it.selectedSkillIds - id) }
+            }.onFailure(::showError)
         }
     }
 

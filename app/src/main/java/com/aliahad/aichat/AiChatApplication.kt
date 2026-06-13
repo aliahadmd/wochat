@@ -30,6 +30,8 @@ import com.aliahad.aichat.context.RoomContextProfileRepository
 import com.aliahad.aichat.residency.ModelResidencyController
 import com.aliahad.aichat.settings.AppSettingsRepository
 import com.aliahad.aichat.settings.TokenCipher
+import com.aliahad.aichat.skill.RoomSkillRepository
+import com.aliahad.aichat.skill.SkillRepository
 import com.aliahad.aichat.speech.DefaultSpeechAssetRepository
 import com.aliahad.aichat.speech.SherpaIncrementalSpeechSynthesizer
 import com.aliahad.aichat.speech.SherpaStreamingSpeechRecognizer
@@ -70,6 +72,7 @@ class AppContainer(val application: Application) {
     val chatRepository: ChatRepository = RoomChatRepository(database)
     val memoryIndexer: MemoryIndexer = AppSearchMemoryIndexer(application)
     val memoryRepository: MemoryRepository = RoomMemoryRepository(database, memoryIndexer)
+    val skillRepository: SkillRepository = RoomSkillRepository(database)
     val contextProfileRepository: ContextProfileRepository =
         RoomContextProfileRepository(application, database.modelContextProfileDao())
     val phoneSourceAccessManager = PhoneSourceAccessManager(application)

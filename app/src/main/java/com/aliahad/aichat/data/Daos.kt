@@ -172,6 +172,47 @@ interface MessageDao {
 }
 
 @Dao
+interface SkillDao {
+    @Query("SELECT * FROM skills ORDER BY updatedAt DESC")
+    fun observeAll(): Flow<List<SkillEntity>>
+
+    @Query("SELECT * FROM skills WHERE id = :id")
+    suspend fun get(id: String): SkillEntity?
+
+    @Query("SELECT * FROM skills WHERE id IN (:ids) AND enabled = 1")
+    suspend fun getEnabled(ids: List<String>): List<SkillEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(skill: SkillEntity)
+
+    @Query("UPDATE skills SET enabled = :enabled, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun setEnabled(id: String, enabled: Boolean, updatedAt: Long)
+
+    @Query("UPDATE skills SET lastUsedAt = :lastUsedAt WHERE id IN (:ids)")
+    suspend fun markUsed(ids: List<String>, lastUsedAt: Long)
+
+    @Query("DELETE FROM skills WHERE id = :id")
+    suspend fun delete(id: String)
+
+    @Query("DELETE FROM message_skill_invocations WHERE messageId = :messageId")
+    suspend fun deleteInvocations(messageId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertInvocations(invocations: List<MessageSkillInvocationEntity>)
+
+    @Query(
+        "SELECT * FROM message_skill_invocations WHERE messageId = :messageId ORDER BY ordinal",
+    )
+    suspend fun invocationsForMessage(messageId: String): List<MessageSkillInvocationEntity>
+
+    @Query(
+        "SELECT * FROM message_skill_invocations WHERE messageId IN (:messageIds) " +
+            "ORDER BY messageId, ordinal",
+    )
+    suspend fun invocationsForMessages(messageIds: List<String>): List<MessageSkillInvocationEntity>
+}
+
+@Dao
 interface ModelDao {
     @Query("SELECT * FROM models ORDER BY selected DESC, displayName ASC")
     fun observeAll(): Flow<List<ModelRecordEntity>>
@@ -314,6 +355,18 @@ interface BackupImportInvalidationDao {
     )
     suspend fun touchActionAudits()
 
+    @Query(
+        "UPDATE skills SET updatedAt = updatedAt " +
+            "WHERE rowid = (SELECT rowid FROM skills LIMIT 1)",
+    )
+    suspend fun touchSkills()
+
+    @Query(
+        "UPDATE message_skill_invocations SET ordinal = ordinal " +
+            "WHERE rowid = (SELECT rowid FROM message_skill_invocations LIMIT 1)",
+    )
+    suspend fun touchMessageSkillInvocations()
+
     @Transaction
     suspend fun notifyImportedTables() {
         touchConversations()
@@ -329,5 +382,7 @@ interface BackupImportInvalidationDao {
         touchActivityEvents()
         touchCollectorCheckpoints()
         touchActionAudits()
+        touchSkills()
+        touchMessageSkillInvocations()
     }
 }

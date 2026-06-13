@@ -138,6 +138,8 @@ import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.core.ProjectorRecord
 import com.aliahad.aichat.core.SpeechAssetRecord
+import com.aliahad.aichat.core.SkillPromptBlock
+import com.aliahad.aichat.core.SkillRecord
 import com.aliahad.aichat.core.VoiceSessionState
 import com.aliahad.aichat.core.VoiceSettings
 import com.aliahad.aichat.core.PhoneSourceAccessState
@@ -146,6 +148,10 @@ import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.model.formatBytes
 import com.aliahad.aichat.residency.ModelResidencyState
 import com.aliahad.aichat.settings.DeviceSettingsNavigator
+import com.aliahad.aichat.skill.MAX_SELECTED_SKILLS
+import com.aliahad.aichat.skill.MAX_SKILL_DESCRIPTION_CHARS
+import com.aliahad.aichat.skill.MAX_SKILL_INSTRUCTIONS_CHARS
+import com.aliahad.aichat.skill.MAX_SKILL_NAME_CHARS
 import com.mikepenz.markdown.compose.MarkdownSuccess
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.model.rememberMarkdownState
@@ -172,6 +178,7 @@ fun AiChatApp(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val snackbarHost = remember { SnackbarHostState() }
+    var showSkillSheet by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.error) {
         state.error?.let {
@@ -202,6 +209,10 @@ fun AiChatApp(
                     actions.setPage(AppPage.MEMORY)
                     scope.launch { drawerState.close() }
                 },
+                onSkills = {
+                    actions.setPage(AppPage.SKILLS)
+                    scope.launch { drawerState.close() }
+                },
                 onSettings = {
                     actions.setPage(AppPage.SETTINGS)
                     scope.launch { drawerState.close() }
@@ -222,6 +233,7 @@ fun AiChatApp(
                         when (state.page) {
                             AppPage.SETTINGS -> Text("Settings")
                             AppPage.MEMORY -> Text("Office Memory")
+                            AppPage.SKILLS -> Text("Skills")
                             AppPage.CHAT -> Box(
                                 modifier = Modifier.fillMaxWidth(),
                                 contentAlignment = Alignment.Center,
@@ -237,8 +249,19 @@ fun AiChatApp(
                     },
                     actions = {
                         if (state.page == AppPage.CHAT) {
-                            IconButton(onClick = { actions.setPage(AppPage.SETTINGS) }) {
-                                Icon(Icons.Default.Settings, contentDescription = "Settings")
+                            IconButton(
+                                onClick = { showSkillSheet = true },
+                                enabled = !state.isSending,
+                            ) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = "Select skills",
+                                    tint = if (state.selectedSkillIds.isNotEmpty()) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
                             }
                         } else {
                             IconButton(onClick = { actions.setPage(AppPage.CHAT) }) {
@@ -259,6 +282,7 @@ fun AiChatApp(
                     onContinue = actions::continueResponse,
                     onToggleThinking = actions::toggleThinking,
                     onOpenSettings = { actions.setPage(AppPage.SETTINGS) },
+                    onToggleSkill = actions::toggleSelectedSkill,
                     onAddPhotos = onAddPhotos,
                     onAddFiles = onAddFiles,
                     onTakePhoto = onTakePhoto,
@@ -275,6 +299,11 @@ fun AiChatApp(
                     onRequestPhoneSourceAccess = onRequestPhoneSourceAccess,
                     modifier = Modifier.padding(padding),
                 )
+                AppPage.SKILLS -> SkillsScreen(
+                    state = state,
+                    actions = actions,
+                    modifier = Modifier.padding(padding),
+                )
                 AppPage.SETTINGS -> SettingsScreen(
                     state = state,
                     actions = actions,
@@ -283,6 +312,20 @@ fun AiChatApp(
                 )
             }
         }
+    }
+
+    if (showSkillSheet) {
+        SkillPickerSheet(
+            skills = state.skills,
+            selectedSkillIds = state.selectedSkillIds,
+            onToggleSkill = actions::toggleSelectedSkill,
+            onClearSkills = actions::clearSelectedSkills,
+            onOpenSkills = {
+                showSkillSheet = false
+                actions.setPage(AppPage.SKILLS)
+            },
+            onDismiss = { showSkillSheet = false },
+        )
     }
 
     state.pendingProjectorId?.let { id ->
@@ -395,6 +438,7 @@ private fun ConversationDrawer(
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
     onMemory: () -> Unit,
+    onSkills: () -> Unit,
     onSettings: () -> Unit,
 ) {
     ModalDrawerSheet(modifier = Modifier.width(320.dp)) {
@@ -452,6 +496,11 @@ private fun ConversationDrawer(
                 Spacer(Modifier.width(8.dp))
                 Text("Office Memory")
             }
+            TextButton(onClick = onSkills, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Skills")
+            }
             TextButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.Settings, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -471,6 +520,7 @@ private fun ChatScreen(
     onContinue: () -> Unit,
     onToggleThinking: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onToggleSkill: (String) -> Unit,
     onAddPhotos: () -> Unit,
     onAddFiles: () -> Unit,
     onTakePhoto: () -> Unit,
@@ -513,6 +563,7 @@ private fun ChatScreen(
                 messages = state.messages,
                 conversationId = state.selectedConversationId,
                 attachments = state.messageAttachments,
+                skills = state.messageSkills,
                 thinking = state.thinking,
                 onToggleThinking = onToggleThinking,
                 onContinue = onContinue,
@@ -534,7 +585,10 @@ private fun ChatScreen(
             sending = state.isSending,
             enabled = selectedModel != null,
             attachments = state.draftAttachments,
+            skills = state.skills,
+            selectedSkillIds = state.selectedSkillIds,
             onAttach = { showAttachmentSheet = true },
+            onRemoveSkill = onToggleSkill,
             onRemoveAttachment = onRemoveAttachment,
             onRetryAttachment = onRetryAttachment,
             onPreviewAttachment = { previewAttachment = it },
@@ -657,6 +711,7 @@ internal fun MessageList(
     messages: List<ChatMessage>,
     conversationId: String?,
     attachments: Map<String, List<Attachment>> = emptyMap(),
+    skills: Map<String, List<SkillPromptBlock>> = emptyMap(),
     thinking: ThinkingUiState? = null,
     onToggleThinking: (String) -> Unit = {},
     onContinue: () -> Unit = {},
@@ -718,6 +773,7 @@ internal fun MessageList(
                     status = message.status,
                     stopReason = message.stopReason,
                     attachments = attachments[message.id].orEmpty(),
+                    skills = skills[message.id].orEmpty(),
                     thinking = thinking?.takeIf { message.id == it.messageId },
                     onToggleThinking = { onToggleThinking(message.id) },
                     onContinue = onContinue,
@@ -769,6 +825,7 @@ internal fun MessageBubble(
     status: MessageStatus,
     stopReason: com.aliahad.aichat.core.GenerationStopReason? = null,
     attachments: List<Attachment> = emptyList(),
+    skills: List<SkillPromptBlock> = emptyList(),
     thinking: ThinkingUiState? = null,
     onToggleThinking: () -> Unit = {},
     onContinue: () -> Unit = {},
@@ -797,45 +854,49 @@ internal fun MessageBubble(
                     MessageAttachmentGrid(attachments, onPreviewAttachment)
                     if (content.isNotEmpty()) Spacer(Modifier.height(10.dp))
                 }
-            val currentThinking = thinking
-            if (!isUser && currentThinking != null) {
-                AnimatedVisibility(
-                    visible = currentThinking.text.isNotEmpty() ||
-                        status == MessageStatus.STREAMING,
-                    enter = fadeIn(tween(160)),
-                    exit = fadeOut(tween(200)) + shrinkVertically(tween(200)),
-                ) {
-                    ThinkingPanel(
-                        thinking = currentThinking,
-                        onToggle = onToggleThinking,
-                    )
+                if (isUser && skills.isNotEmpty()) {
+                    UsedSkillChips(skills)
+                    if (content.isNotEmpty()) Spacer(Modifier.height(8.dp))
                 }
-            }
-            if (thinking != null && content.isNotEmpty()) Spacer(Modifier.height(8.dp))
-            if (content.isEmpty() && status == MessageStatus.STREAMING && thinking == null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Thinking locally…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val currentThinking = thinking
+                if (!isUser && currentThinking != null) {
+                    AnimatedVisibility(
+                        visible = currentThinking.text.isNotEmpty() ||
+                            status == MessageStatus.STREAMING,
+                        enter = fadeIn(tween(160)),
+                        exit = fadeOut(tween(200)) + shrinkVertically(tween(200)),
+                    ) {
+                        ThinkingPanel(
+                            thinking = currentThinking,
+                            onToggle = onToggleThinking,
+                        )
+                    }
                 }
-            } else {
-                if (isUser) {
-                    Text(content)
+                if (thinking != null && content.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                if (content.isEmpty() && status == MessageStatus.STREAMING && thinking == null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Thinking locally…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 } else {
-                    val markdownState = rememberMarkdownState(
-                        content = content,
-                        retainState = true,
-                    )
-                    Markdown(
-                        markdownState = markdownState,
-                        modifier = Modifier.fillMaxWidth(),
-                        success = { state, components, successModifier ->
-                            LaunchedEffect(state) { onMarkdownRendered() }
-                            MarkdownSuccess(state, components, successModifier)
-                        },
-                    )
+                    if (isUser) {
+                        Text(content)
+                    } else {
+                        val markdownState = rememberMarkdownState(
+                            content = content,
+                            retainState = true,
+                        )
+                        Markdown(
+                            markdownState = markdownState,
+                            modifier = Modifier.fillMaxWidth(),
+                            success = { state, components, successModifier ->
+                                LaunchedEffect(state) { onMarkdownRendered() }
+                                MarkdownSuccess(state, components, successModifier)
+                            },
+                        )
+                    }
                 }
-            }
             }
         }
         if (status == MessageStatus.CONTINUABLE) {
@@ -874,6 +935,26 @@ internal fun MessageBubble(
             ) {
                 Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Replay response")
             }
+        }
+    }
+}
+
+@Composable
+private fun UsedSkillChips(skills: List<SkillPromptBlock>) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 2.dp),
+    ) {
+        skills.forEach { skill ->
+            AssistChip(
+                onClick = {},
+                label = { Text("Used ${skill.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                leadingIcon = {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, Modifier.size(16.dp))
+                },
+            )
         }
     }
 }
@@ -975,7 +1056,10 @@ private fun Composer(
     sending: Boolean,
     enabled: Boolean,
     attachments: List<Attachment>,
+    skills: List<SkillRecord>,
+    selectedSkillIds: List<String>,
     onAttach: () -> Unit,
+    onRemoveSkill: (String) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
     onPreviewAttachment: (Attachment) -> Unit,
@@ -991,6 +1075,9 @@ private fun Composer(
         voiceState is VoiceSessionState.Finalizing ||
         voiceState is VoiceSessionState.Waiting ||
         voiceState is VoiceSessionState.Speaking
+    val selectedSkills = selectedSkillIds.mapNotNull { id ->
+        skills.firstOrNull { it.id == id && it.enabled }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1011,6 +1098,28 @@ private fun Composer(
                 onRetry = onRetryAttachment,
                 onPreview = onPreviewAttachment,
             )
+        }
+        AnimatedVisibility(visible = selectedSkills.isNotEmpty()) {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 8.dp),
+            ) {
+                items(selectedSkills, key = SkillRecord::id) { skill ->
+                    AssistChip(
+                        onClick = { onRemoveSkill(skill.id) },
+                        label = {
+                            Text(
+                                skill.name,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, Modifier.size(16.dp))
+                        },
+                    )
+                }
+            }
         }
         AnimatedVisibility(visible = blockingReason != null) {
             Text(
@@ -1100,6 +1209,112 @@ private fun Composer(
                 tint = MaterialTheme.colorScheme.onPrimary,
             )
         }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SkillPickerSheet(
+    skills: List<SkillRecord>,
+    selectedSkillIds: List<String>,
+    onToggleSkill: (String) -> Unit,
+    onClearSkills: () -> Unit,
+    onOpenSkills: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val enabledSkills = skills.filter(SkillRecord::enabled)
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Skills", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Choose up to $MAX_SELECTED_SKILLS prompt-only skills for the next message.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onOpenSkills) { Text("Manage") }
+            }
+            if (enabledSkills.isEmpty()) {
+                Text(
+                    "No enabled skills yet. Create one from the Skills page.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 360.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(enabledSkills, key = SkillRecord::id) { skill ->
+                        val selected = skill.id in selectedSkillIds
+                        val blocked = !selected && selectedSkillIds.size >= MAX_SELECTED_SKILLS
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !blocked) { onToggleSkill(skill.id) },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (selected) {
+                                    MaterialTheme.colorScheme.secondaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerLow
+                                },
+                            ),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(skill.name, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        skill.description,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                FilterChip(
+                                    selected = selected,
+                                    enabled = !blocked,
+                                    onClick = { onToggleSkill(skill.id) },
+                                    label = { Text(if (selected) "Selected" else "Use") },
+                                    leadingIcon = if (selected) {
+                                        {
+                                            Icon(
+                                                Icons.Default.Check,
+                                                contentDescription = null,
+                                                Modifier.size(16.dp),
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(
+                    onClick = onClearSkills,
+                    enabled = selectedSkillIds.isNotEmpty(),
+                ) { Text("Clear") }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = onDismiss) { Text("Done") }
+            }
+            Spacer(Modifier.height(10.dp))
         }
     }
 }
@@ -1988,6 +2203,286 @@ private fun MemoryEditorDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+@Composable
+private fun SkillsScreen(
+    state: MainUiState,
+    actions: MainViewModel,
+    modifier: Modifier = Modifier,
+) {
+    var editingSkill by remember { mutableStateOf<SkillRecord?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<SkillRecord?>(null) }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    SectionTitle("Skills", "Prompt-only workflows for the next message")
+                }
+                Button(onClick = { creating = true }) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("New")
+                }
+            }
+            Text(
+                "Skills never run code or contact services. A selected skill is copied into the " +
+                    "prompt for that turn and saved as a snapshot on the user message.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        if (state.skills.isEmpty()) {
+            item {
+                Card {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("No skills yet", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Create a focused instruction set, then select it from the chat composer.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedButton(onClick = { creating = true }) {
+                            Text("Create your first skill")
+                        }
+                    }
+                }
+            }
+        } else {
+            items(state.skills, key = SkillRecord::id) { skill ->
+                SkillCard(
+                    skill = skill,
+                    onEdit = { editingSkill = skill },
+                    onEnabledChange = { actions.setSkillEnabled(skill.id, it) },
+                    onDelete = { pendingDelete = skill },
+                )
+            }
+        }
+    }
+
+    if (creating) {
+        SkillEditorDialog(
+            title = "Create skill",
+            skill = null,
+            onDismiss = { creating = false },
+            onSave = { name, description, instructions ->
+                actions.createSkill(name, description, instructions)
+                creating = false
+            },
+        )
+    }
+    editingSkill?.let { skill ->
+        SkillEditorDialog(
+            title = "Edit skill",
+            skill = skill,
+            onDismiss = { editingSkill = null },
+            onSave = { name, description, instructions ->
+                actions.updateSkill(skill.id, name, description, instructions)
+                editingSkill = null
+            },
+        )
+    }
+    pendingDelete?.let { skill ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete ${skill.name}?") },
+            text = {
+                Text("Past messages keep their skill snapshots. This only removes the skill from future use.")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    actions.deleteSkill(skill.id)
+                    pendingDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SkillCard(
+    skill: SkillRecord,
+    onEdit: () -> Unit,
+    onEnabledChange: (Boolean) -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(skill.name, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (skill.enabled) "Enabled" else "Disabled",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (skill.enabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                Switch(
+                    checked = skill.enabled,
+                    onCheckedChange = onEnabledChange,
+                )
+            }
+            Text(
+                skill.description,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                skill.instructions.replace(Regex("\\s+"), " "),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onEdit) { Text("Edit") }
+                TextButton(onClick = onDelete) { Text("Delete") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkillEditorDialog(
+    title: String,
+    skill: SkillRecord?,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String) -> Unit,
+) {
+    var name by remember(skill?.id) { mutableStateOf(skill?.name.orEmpty()) }
+    var description by remember(skill?.id) { mutableStateOf(skill?.description.orEmpty()) }
+    var instructions by remember(skill?.id) { mutableStateOf(skill?.instructions.orEmpty()) }
+    var submitted by remember(skill?.id) { mutableStateOf(false) }
+    val trimmedName = name.trim()
+    val trimmedDescription = description.trim()
+    val trimmedInstructions = instructions.trim()
+    val nameError = skillFieldError(
+        value = trimmedName,
+        label = "Skill name",
+        maxChars = MAX_SKILL_NAME_CHARS,
+        showRequired = submitted,
+    )
+    val descriptionError = skillFieldError(
+        value = trimmedDescription,
+        label = "Skill description",
+        maxChars = MAX_SKILL_DESCRIPTION_CHARS,
+        showRequired = submitted,
+    )
+    val instructionsError = skillFieldError(
+        value = trimmedInstructions,
+        label = "Skill instructions",
+        maxChars = MAX_SKILL_INSTRUCTIONS_CHARS,
+        showRequired = submitted,
+    )
+    val hasValidationErrors = trimmedName.isEmpty() ||
+        trimmedName.length > MAX_SKILL_NAME_CHARS ||
+        trimmedDescription.isEmpty() ||
+        trimmedDescription.length > MAX_SKILL_DESCRIPTION_CHARS ||
+        trimmedInstructions.isEmpty() ||
+        trimmedInstructions.length > MAX_SKILL_INSTRUCTIONS_CHARS
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 520.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        isError = nameError != null,
+                        supportingText = {
+                            Text(nameError ?: "${name.length}/$MAX_SKILL_NAME_CHARS")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = description,
+                        onValueChange = { description = it },
+                        label = { Text("Description") },
+                        minLines = 2,
+                        maxLines = 4,
+                        isError = descriptionError != null,
+                        supportingText = {
+                            Text(
+                                descriptionError ?:
+                                    "${description.length}/$MAX_SKILL_DESCRIPTION_CHARS",
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = instructions,
+                        onValueChange = { instructions = it },
+                        label = { Text("Instructions") },
+                        minLines = 8,
+                        maxLines = 14,
+                        isError = instructionsError != null,
+                        supportingText = {
+                            Text(
+                                instructionsError ?:
+                                    "${instructions.length}/$MAX_SKILL_INSTRUCTIONS_CHARS",
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    submitted = true
+                    if (!hasValidationErrors) {
+                        onSave(trimmedName, trimmedDescription, trimmedInstructions)
+                    }
+                },
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+private fun skillFieldError(
+    value: String,
+    label: String,
+    maxChars: Int,
+    showRequired: Boolean,
+): String? = when {
+    value.isEmpty() && showRequired -> "$label is required."
+    value.length > maxChars -> "$label must be $maxChars characters or less."
+    else -> null
 }
 
 @Composable

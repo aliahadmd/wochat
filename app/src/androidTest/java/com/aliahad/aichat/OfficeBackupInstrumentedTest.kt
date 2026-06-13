@@ -6,6 +6,8 @@ import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.aliahad.aichat.core.MessageRole
+import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.data.AppDatabase
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
@@ -73,6 +75,30 @@ class OfficeBackupInstrumentedTest {
         runBlocking {
             val application = ApplicationProvider.getApplicationContext<AiChatApplication>()
             val repository = application.container.officeBackupRepository
+            val skillRepository = application.container.skillRepository
+            val chatRepository = application.container.chatRepository
+            val skill = skillRepository.create(
+                name = "Backup reviewer ${System.currentTimeMillis()}",
+                description = "Reviews backup round trip",
+                instructions = "Check that skills survive encrypted backup import.",
+            )
+            val conversation = chatRepository.createConversation()
+            val user = chatRepository.addMessage(
+                conversationId = conversation.id,
+                role = MessageRole.USER,
+                content = "Use the backup skill",
+            )
+            skillRepository.recordInvocation(
+                user.id,
+                listOf(
+                    SkillPromptBlock(
+                        skillId = skill.id,
+                        name = skill.name,
+                        description = skill.description,
+                        instructions = skill.instructions,
+                    ),
+                ),
+            )
             val before = application.container.memoryRepository.memories.first()
             val backup = File(application.cacheDir, "office-round-trip.aichatoffice").apply {
                 delete()
@@ -81,6 +107,8 @@ class OfficeBackupInstrumentedTest {
 
             repository.export(Uri.fromFile(backup), passphrase.toCharArray())
             assertTrue(backup.length() > 0)
+            chatRepository.deleteConversation(conversation.id)
+            skillRepository.delete(skill.id)
 
             val preview = repository.prepareImport(Uri.fromFile(backup), passphrase.toCharArray())
             assertEquals(before.size.toLong(), preview.memories)
@@ -90,6 +118,12 @@ class OfficeBackupInstrumentedTest {
             assertEquals(
                 before.associate { it.id to it.content },
                 after.associate { it.id to it.content },
+            )
+            assertTrue(skillRepository.skills.first().any { it.id == skill.id })
+            assertEquals("Use the backup skill", chatRepository.getMessages(conversation.id).first().content)
+            assertEquals(
+                skill.name,
+                skillRepository.blocksForMessage(user.id).first().name,
             )
             backup.delete()
         }

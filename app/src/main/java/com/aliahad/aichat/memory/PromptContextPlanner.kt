@@ -5,7 +5,9 @@ import com.aliahad.aichat.core.ContextPlan
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.MemoryHit
 import com.aliahad.aichat.core.MemoryQuery
+import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.inference.InferenceEngine
+import com.aliahad.aichat.skill.formatSkillPromptBlocks
 
 class PromptContextPlanner(
     private val inferenceEngine: InferenceEngine,
@@ -19,15 +21,18 @@ class PromptContextPlanner(
         settings: GenerationSettings,
         contextTokens: Int,
         memoryEnabled: Boolean,
+        skillBlocks: List<SkillPromptBlock> = emptyList(),
     ): ContextPlan {
         val normalized = settings.normalized()
+        val skillText = formatSkillPromptBlocks(skillBlocks)
+        val baseSystemPrompt = normalized.systemPrompt + skillText
         val outputReserve = minOf(
             normalized.maxNewTokens,
             (contextTokens / 3).coerceAtLeast(256),
         )
         val safetyReserve = 192
         val currentTokens = inferenceEngine.countTokens(currentText).coerceAtLeast(1)
-        val baseSystemTokens = inferenceEngine.countTokens(normalized.systemPrompt).coerceAtLeast(1)
+        val baseSystemTokens = inferenceEngine.countTokens(baseSystemPrompt).coerceAtLeast(1)
         var remaining = initialPromptTokensRemaining(
             contextTokens = contextTokens,
             outputReserve = outputReserve,
@@ -36,7 +41,12 @@ class PromptContextPlanner(
             systemTokens = baseSystemTokens,
         )
         require(remaining > 256) {
-            "The current message does not fit the selected context. Increase context or shorten it."
+            if (skillBlocks.isEmpty()) {
+                "The current message does not fit the selected context. Increase context or shorten it."
+            } else {
+                "The selected skills and current message do not fit the selected context. " +
+                    "Remove a skill, shorten its instructions, or use a larger context."
+            }
         }
 
         val memoryHits = if (memoryEnabled) {
@@ -95,7 +105,7 @@ class PromptContextPlanner(
         }
 
         val systemPrompt = buildString {
-            append(normalized.systemPrompt)
+            append(baseSystemPrompt)
             if (selectedMemories.isNotEmpty()) {
                 append(MEMORY_HEADER)
                 append(memoryText)
@@ -116,6 +126,7 @@ class PromptContextPlanner(
             summary = summary,
             history = selectedReversed.toList(),
             memories = selectedMemories,
+            skills = skillBlocks,
             estimatedTokens = estimatedTokens,
             outputReserveTokens = outputReserve,
         )

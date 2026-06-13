@@ -61,6 +61,45 @@ data class MessageEntity(
     val generatedTokens: Int? = null,
 )
 
+@Entity(
+    tableName = "skills",
+    indices = [Index("updatedAt"), Index("enabled")],
+)
+data class SkillEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val description: String,
+    val instructions: String,
+    @ColumnInfo(defaultValue = "1")
+    val enabled: Boolean = true,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val lastUsedAt: Long?,
+)
+
+@Entity(
+    tableName = "message_skill_invocations",
+    primaryKeys = ["messageId", "ordinal"],
+    foreignKeys = [
+        ForeignKey(
+            entity = MessageEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["messageId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("messageId"), Index("skillId")],
+)
+data class MessageSkillInvocationEntity(
+    val messageId: String,
+    val skillId: String?,
+    val ordinal: Int,
+    val snapshotName: String,
+    val snapshotDescription: String,
+    val snapshotInstructions: String,
+    val createdAt: Long,
+)
+
 @Entity(tableName = "models")
 data class ModelRecordEntity(
     @PrimaryKey val id: String,
