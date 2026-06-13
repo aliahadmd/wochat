@@ -22,7 +22,7 @@ class DatabaseMigrationInstrumentedTest {
     )
 
     @Test
-    fun migrationOneToFourPreservesChatsAndAddsContextProfiles() {
+    fun migrationOneToFivePreservesChatsAndAddsSpeechAssets() {
         helper.createDatabase(DATABASE_NAME, 1).apply {
             execSQL(
                 "INSERT INTO conversations(id, title, createdAt, updatedAt) " +
@@ -41,6 +41,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_1_2,
                 AppDatabase.MIGRATION_2_3,
                 AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5,
             )
             .build()
         try {
@@ -60,6 +61,24 @@ class DatabaseMigrationInstrumentedTest {
                 0,
                 database.openHelper.writableDatabase.query(
                     "SELECT count(*) FROM memory_items",
+                ).use {
+                    it.moveToFirst()
+                    it.getInt(0)
+                },
+            )
+            assertEquals(
+                "TYPED",
+                database.openHelper.writableDatabase.query(
+                    "SELECT origin FROM messages WHERE id = 'message'",
+                ).use {
+                    it.moveToFirst()
+                    it.getString(0)
+                },
+            )
+            assertEquals(
+                0,
+                database.openHelper.writableDatabase.query(
+                    "SELECT count(*) FROM speech_assets",
                 ).use {
                     it.moveToFirst()
                     it.getInt(0)

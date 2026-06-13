@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.aliahad.aichat.AiChatApplication
@@ -32,23 +33,25 @@ class OfficeNotificationListenerService : NotificationListenerService() {
         if (sbn.packageName == packageName || isSensitiveUiPackage(sbn.packageName)) return
         val container = (application as AiChatApplication).container
         scope.launch {
-            if (container.settings.collectionPaused.first()) return@launch
-            val extras = notification.extras
-            val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
-            val text = listOfNotNull(
-                extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
-                extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString(),
-                extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
-            ).distinct().joinToString("\n")
-            container.activityRepository.record(
-                source = ActivitySource.NOTIFICATION,
-                eventType = "posted",
-                startedAt = sbn.postTime,
-                packageName = sbn.packageName,
-                title = title,
-                text = text,
-                stableKey = sbn.key + ":" + sbn.postTime,
-            )
+            runCatching {
+                if (container.settings.collectionPaused.first()) return@runCatching
+                val extras = notification.extras
+                val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+                val text = listOfNotNull(
+                    extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+                    extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString(),
+                    extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
+                ).distinct().joinToString("\n")
+                container.activityRepository.record(
+                    source = ActivitySource.NOTIFICATION,
+                    eventType = "posted",
+                    startedAt = sbn.postTime,
+                    packageName = sbn.packageName,
+                    title = title,
+                    text = text,
+                    stableKey = sbn.key + ":" + sbn.postTime,
+                )
+            }.onFailure { Log.e(TAG, "Unable to record notification activity", it) }
         }
     }
 
@@ -56,35 +59,56 @@ class OfficeNotificationListenerService : NotificationListenerService() {
         scope.cancel()
         super.onDestroy()
     }
+
+    private companion object {
+        const val TAG = "OfficeActivity"
+    }
 }
 
 class PackageChangeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        val action = intent.action
+        if (action !in SUPPORTED_ACTIONS) return
+        if (intent.getBooleanExtra(Intent.EXTRA_REPLACING, false) &&
+            action != Intent.ACTION_PACKAGE_REPLACED
+        ) {
+            return
+        }
         val packageName = intent.data?.schemeSpecificPart ?: return
         val pending = goAsync()
         val application = context.applicationContext as AiChatApplication
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
-                val settings = application.container.settings
-                if (!settings.collectionPaused.first()) {
-                    application.container.activityRepository.record(
-                        source = ActivitySource.APP_INSTALL,
-                        eventType = when (intent.action) {
-                            Intent.ACTION_PACKAGE_ADDED -> "installed"
-                            Intent.ACTION_PACKAGE_REMOVED -> "removed"
-                            Intent.ACTION_PACKAGE_REPLACED -> "updated"
-                            else -> "changed"
-                        },
-                        startedAt = System.currentTimeMillis(),
-                        packageName = packageName,
-                        title = packageName,
-                        stableKey = "${intent.action}:$packageName:${System.currentTimeMillis() / 60_000}",
-                    )
-                }
+                runCatching {
+                    val settings = application.container.settings
+                    if (!settings.collectionPaused.first()) {
+                        application.container.activityRepository.record(
+                            source = ActivitySource.APP_INSTALL,
+                            eventType = when (action) {
+                                Intent.ACTION_PACKAGE_ADDED -> "installed"
+                                Intent.ACTION_PACKAGE_REMOVED -> "removed"
+                                else -> "updated"
+                            },
+                            startedAt = System.currentTimeMillis(),
+                            packageName = packageName,
+                            title = packageName,
+                            stableKey = "$action:$packageName:${System.currentTimeMillis() / 60_000}",
+                        )
+                    }
+                }.onFailure { Log.e(TAG, "Unable to record package change", it) }
             } finally {
                 pending.finish()
             }
         }
+    }
+
+    private companion object {
+        const val TAG = "OfficeActivity"
+        val SUPPORTED_ACTIONS = setOf(
+            Intent.ACTION_PACKAGE_ADDED,
+            Intent.ACTION_PACKAGE_REMOVED,
+            Intent.ACTION_PACKAGE_REPLACED,
+        )
     }
 }
 
@@ -119,20 +143,22 @@ class OfficeAccessibilityService : AccessibilityService() {
         val title = event.className?.toString()
         val container = (application as AiChatApplication).container
         scope.launch {
-            if (container.settings.collectionPaused.first()) return@launch
-            container.activityRepository.record(
-                source = ActivitySource.ACCESSIBILITY,
-                eventType = if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-                    "window"
-                } else {
-                    "content"
-                },
-                startedAt = now,
-                packageName = sourcePackage,
-                title = title,
-                text = visibleText,
-                stableKey = "$sourcePackage:$title:${visibleText.hashCode()}:${now / 2_000}",
-            )
+            runCatching {
+                if (container.settings.collectionPaused.first()) return@runCatching
+                container.activityRepository.record(
+                    source = ActivitySource.ACCESSIBILITY,
+                    eventType = if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                        "window"
+                    } else {
+                        "content"
+                    },
+                    startedAt = now,
+                    packageName = sourcePackage,
+                    title = title,
+                    text = visibleText,
+                    stableKey = "$sourcePackage:$title:${visibleText.hashCode()}:${now / 2_000}",
+                )
+            }.onFailure { Log.e(TAG, "Unable to record accessibility activity", it) }
         }
     }
 
@@ -226,6 +252,7 @@ class OfficeAccessibilityService : AccessibilityService() {
     }
 
     companion object {
+        private const val TAG = "OfficeActivity"
         private const val MAX_NODES = 800
         private const val MAX_TEXT = 8_000
         private var activeService = WeakReference<OfficeAccessibilityService>(null)

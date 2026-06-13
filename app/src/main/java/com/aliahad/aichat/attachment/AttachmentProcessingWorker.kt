@@ -12,6 +12,7 @@ import androidx.room.withTransaction
 import com.aliahad.aichat.AiChatApplication
 import com.aliahad.aichat.core.AttachmentProcessingState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 
 class AttachmentProcessingWorker(
@@ -53,6 +54,8 @@ class AttachmentProcessingWorker(
                 )
             }
             Result.success()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Throwable) {
             dao.get(id)?.let {
                 dao.upsert(

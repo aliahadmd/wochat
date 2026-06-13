@@ -6,6 +6,7 @@ import com.aliahad.aichat.core.ChatQualityMode
 import com.aliahad.aichat.core.Conversation
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
+import com.aliahad.aichat.core.TurnOrigin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.util.UUID
@@ -24,6 +25,7 @@ interface ChatRepository {
         role: MessageRole,
         content: String,
         status: MessageStatus = MessageStatus.COMPLETE,
+        origin: TurnOrigin = TurnOrigin.TYPED,
     ): ChatMessage
     suspend fun updateMessage(message: ChatMessage)
     suspend fun deleteConversation(id: String)
@@ -69,6 +71,7 @@ class RoomChatRepository(
         role: MessageRole,
         content: String,
         status: MessageStatus,
+        origin: TurnOrigin,
     ): ChatMessage {
         val now = System.currentTimeMillis()
         val message = ChatMessage(
@@ -78,6 +81,7 @@ class RoomChatRepository(
             content = content,
             createdAt = now,
             status = status,
+            origin = origin,
         )
         database.withTransaction {
             messagesDao.upsert(message.toEntity())
@@ -124,6 +128,7 @@ private fun MessageEntity.toDomain() = ChatMessage(
     content = content,
     createdAt = createdAt,
     status = status,
+    origin = origin,
     stopReason = stopReason,
     continuationCount = continuationCount,
     promptTokens = promptTokens,
@@ -137,6 +142,7 @@ private fun ChatMessage.toEntity() = MessageEntity(
     content = content,
     createdAt = createdAt,
     status = status,
+    origin = origin,
     stopReason = stopReason,
     continuationCount = continuationCount,
     promptTokens = promptTokens,

@@ -1,11 +1,15 @@
 package com.aliahad.aichat.inference
 
 import com.aliahad.aichat.core.AttachmentContext
-import com.aliahad.aichat.core.ChatQualityMode
+
+internal enum class VisionDetailProfile {
+    MOBILE,
+    DETAILED,
+}
 
 internal object VisionBudgetPlanner {
     fun allocate(
-        mode: ChatQualityMode,
+        profile: VisionDetailProfile,
         attachments: List<AttachmentContext>,
         prompt: String,
         availableTokens: Int,
@@ -20,14 +24,14 @@ internal object VisionBudgetPlanner {
             .split(Regex("[^\\p{L}\\p{N}_]+"))
             .filter { it.length >= 3 }
             .toSet()
-        val preferred = when (mode) {
-            ChatQualityMode.FAST -> when {
+        val preferred = when (profile) {
+            VisionDetailProfile.MOBILE -> when {
                 keywords.any(HIGH_DETAIL_KEYWORDS::contains) -> 560
                 keywords.any(ANALYSIS_KEYWORDS::contains) -> 280
                 keywords.any(COMPACT_KEYWORDS::contains) -> 70
                 else -> 140
             }
-            ChatQualityMode.BEST -> when {
+            VisionDetailProfile.DETAILED -> when {
                 keywords.any(HIGH_DETAIL_KEYWORDS::contains) -> 1120
                 keywords.any(COMPACT_KEYWORDS::contains) -> 280
                 else -> 560

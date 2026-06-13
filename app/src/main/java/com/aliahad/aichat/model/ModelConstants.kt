@@ -32,6 +32,15 @@ data class OfficialProjectorSpec(
 }
 
 object ModelConstants {
+    val GEMMA_4_E2B = OfficialModelSpec(
+        id = "google-gemma-4-e2b-it-q4",
+        displayName = "Gemma 4 E2B IT Q4",
+        repository = "google/gemma-4-E2B-it-qat-q4_0-gguf",
+        fileName = "gemma-4-E2B_q4_0-it.gguf",
+        sizeBytes = 3_349_514_112L,
+        sha256 = "3646b4c147cd235a44d91df1546d3b7d8e29b547dbe4e1f80856419aa455e6fd",
+    )
+
     val GEMMA_4_E4B = OfficialModelSpec(
         id = "google-gemma-4-e4b-it-q4",
         displayName = "Gemma 4 E4B IT Q4",
@@ -50,7 +59,17 @@ object ModelConstants {
         sha256 = "faff1a63667fac17ac5e777f47114688fcefea96e220e211aaa8d62c2c4561f1",
     )
 
-    val OFFICIAL_MODELS = listOf(GEMMA_4_E4B, GEMMA_4_12B)
+    val OFFICIAL_MODELS = listOf(GEMMA_4_E2B, GEMMA_4_E4B, GEMMA_4_12B)
+
+    val GEMMA_4_E2B_PROJECTOR = OfficialProjectorSpec(
+        id = "google-gemma-4-e2b-mmproj",
+        modelId = GEMMA_4_E2B.id,
+        displayName = "Gemma 4 E2B vision projector",
+        repository = "google/gemma-4-E2B-it-qat-q4_0-gguf",
+        fileName = "gemma-4-E2B-it-mmproj.gguf",
+        sizeBytes = 986_833_312L,
+        sha256 = "58c187648007cab392bd5678b87e862c3e8794017deb945feea2cf256195e96a",
+    )
 
     val GEMMA_4_E4B_PROJECTOR = OfficialProjectorSpec(
         id = "google-gemma-4-e4b-mmproj",
@@ -72,7 +91,11 @@ object ModelConstants {
         sha256 = "e70b0e5cd80323d5d588b4ed06780356b7b1ba03995a4b8164c6ae9db0ff5989",
     )
 
-    val OFFICIAL_PROJECTORS = listOf(GEMMA_4_E4B_PROJECTOR, GEMMA_4_12B_PROJECTOR)
+    val OFFICIAL_PROJECTORS = listOf(
+        GEMMA_4_E2B_PROJECTOR,
+        GEMMA_4_E4B_PROJECTOR,
+        GEMMA_4_12B_PROJECTOR,
+    )
 
     const val DOWNLOAD_CHANNEL_ID = "model_downloads"
     const val WORK_INPUT_MODEL_ID = "model_id"

@@ -2,6 +2,7 @@ package com.aliahad.aichat.residency
 
 import android.content.Context
 import android.os.UserManager
+import android.util.Log
 import com.aliahad.aichat.attachment.AttachmentRepository
 import com.aliahad.aichat.context.ContextCandidates
 import com.aliahad.aichat.context.ContextProfileRepository
@@ -9,7 +10,6 @@ import com.aliahad.aichat.context.ContextRuntimeMonitor
 import com.aliahad.aichat.context.ContextVerifier
 import com.aliahad.aichat.context.RoomContextProfileRepository
 import com.aliahad.aichat.core.BackendMode
-import com.aliahad.aichat.core.ChatQualityMode
 import com.aliahad.aichat.core.ContextVerificationState
 import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.ModelContextProfile
@@ -20,6 +20,7 @@ import com.aliahad.aichat.model.ModelRepository
 import com.aliahad.aichat.settings.AppSettingsRepository
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -73,7 +74,11 @@ class ModelResidencyController(
 ) : ContextVerifier {
     private val userManager = context.getSystemService(UserManager::class.java)
     private val runtimeMonitor = ContextRuntimeMonitor(context)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() +
+            Dispatchers.IO +
+            CoroutineExceptionHandler { _, error -> recordError(error) },
+    )
     private val mutex = Mutex()
     private val activeInferenceUsers = AtomicInteger(0)
     private val _state = MutableStateFlow<ModelResidencyState>(ModelResidencyState.Idle)
@@ -93,15 +98,20 @@ class ModelResidencyController(
     }
 
     suspend fun ensureLoaded(
-        qualityMode: ChatQualityMode? = null,
         requireVision: Boolean = false,
         imageTokenBudget: Int = 280,
-    ): ModelLoadConfiguration {
+    ): ModelLoadConfiguration = try {
         val configuration = mutex.withLock {
-            ensureLoadedLocked(qualityMode, requireVision, imageTokenBudget)
+            ensureLoadedLocked(requireVision, imageTokenBudget)
         }
         scheduleVerification()
-        return configuration
+        configuration
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Throwable) {
+        if (inferenceEngine.loadedModelPath == null) loadedSignature = null
+        recordError(error)
+        throw error
     }
 
     override fun setUiForeground(foreground: Boolean) {
@@ -130,8 +140,14 @@ class ModelResidencyController(
         if (!canStartVerification()) return
         if (verificationJob?.isActive == true) return
         verificationJob = scope.launch {
-            delay(15_000)
-            verifyProgressively()
+            try {
+                delay(15_000)
+                verifyProgressively()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                recordError(error)
+            }
         }
     }
 
@@ -163,20 +179,10 @@ class ModelResidencyController(
             inferenceEngine.loadedProjectorPath == path
 
     private suspend fun ensureLoadedLocked(
-        qualityMode: ChatQualityMode?,
         requireVision: Boolean,
         imageTokenBudget: Int,
     ): ModelLoadConfiguration {
-        val unresolved = if (qualityMode == null) {
-            selectedOrReadyModel()
-        } else {
-            modelRepository.modelForQuality(qualityMode)?.also {
-                require(it.status == DownloadStatus.READY && it.localPath != null) {
-                    "${it.displayName} is not installed."
-                }
-                if (!it.selected) modelRepository.selectModel(it.id)
-            }
-        }
+        val unresolved = selectedOrReadyModel()
         if (unresolved?.localPath == null) {
             _state.value = ModelResidencyState.WaitingForModel
             return ModelLoadConfiguration(
@@ -282,7 +288,7 @@ class ModelResidencyController(
         val model = selectedReadyModel() ?: return
         try {
             mutex.withLock {
-                ensureLoadedLocked(null, false, 280)
+                ensureLoadedLocked(false, 280)
             }
             var profile = contextProfiles.resolve(model)
             val candidates = ContextCandidates.remaining(profile)
@@ -307,7 +313,7 @@ class ModelResidencyController(
         } finally {
             if (activeInferenceUsers.get() == 0 && userManager.isUserUnlocked) {
                 runCatching {
-                    mutex.withLock { ensureLoadedLocked(null, false, 280) }
+                    mutex.withLock { ensureLoadedLocked(false, 280) }
                 }
             }
         }
@@ -394,7 +400,20 @@ class ModelResidencyController(
             ?.let { model -> modelRepository.ensureSha256(model) }
 
     private suspend fun selectedOrReadyModel(): ModelRecord? =
-        modelRepository.selectedModel() ?: modelRepository.models.first()
+        modelRepository.selectedModel()
+            ?.takeIf { it.localPath != null && it.status == DownloadStatus.READY }
+            ?: modelRepository.models.first()
             .firstOrNull { it.localPath != null && it.status == DownloadStatus.READY }
             ?.also { modelRepository.selectModel(it.id) }
+
+    private fun recordError(error: Throwable) {
+        val message = error.message?.takeIf(String::isNotBlank)
+            ?: error.javaClass.simpleName
+        Log.e(TAG, "Model residency operation failed", error)
+        _state.value = ModelResidencyState.Error(message)
+    }
+
+    private companion object {
+        const val TAG = "ModelResidency"
+    }
 }

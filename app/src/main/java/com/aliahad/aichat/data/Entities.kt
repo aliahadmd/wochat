@@ -1,6 +1,7 @@
 package com.aliahad.aichat.data
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -20,6 +21,8 @@ import com.aliahad.aichat.core.MemoryStatus
 import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.ContextVerificationState
 import com.aliahad.aichat.core.BackendMode
+import com.aliahad.aichat.core.SpeechAssetKind
+import com.aliahad.aichat.core.TurnOrigin
 
 @Entity(tableName = "conversations")
 data class ConversationEntity(
@@ -50,6 +53,8 @@ data class MessageEntity(
     val content: String,
     val createdAt: Long,
     val status: MessageStatus,
+    @ColumnInfo(defaultValue = "'TYPED'")
+    val origin: TurnOrigin = TurnOrigin.TYPED,
     val stopReason: GenerationStopReason? = null,
     val continuationCount: Int = 0,
     val promptTokens: Int? = null,
@@ -107,6 +112,21 @@ data class ProjectorRecordEntity(
     val fileName: String,
     val localPath: String?,
     val sourceRepo: String,
+    val expectedBytes: Long,
+    val sha256: String,
+    val downloadedBytes: Long,
+    val status: DownloadStatus,
+    val error: String?,
+)
+
+@Entity(tableName = "speech_assets", indices = [Index("kind", unique = true)])
+data class SpeechAssetEntity(
+    @PrimaryKey val id: String,
+    val kind: SpeechAssetKind,
+    val displayName: String,
+    val archiveFileName: String,
+    val localPath: String?,
+    val sourceUrl: String,
     val expectedBytes: Long,
     val sha256: String,
     val downloadedBytes: Long,

@@ -286,7 +286,11 @@ internal class AttachmentProcessor(
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         Canvas(bitmap).drawColor(Color.WHITE)
         page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-        destination.outputStream().buffered().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        destination.outputStream().buffered().use {
+            require(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) {
+                "Unable to render PDF page."
+            }
+        }
         bitmap.recycle()
     }
 

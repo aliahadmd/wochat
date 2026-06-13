@@ -8,6 +8,7 @@ import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.GenerationEvent
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.InferenceMetrics
+import com.aliahad.aichat.core.InferenceExecutionProfile
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.ModelCapabilities
@@ -178,11 +179,16 @@ class NativeInferenceEngine(
         _state.value = InferenceState.Ready(requireNotNull(loadedModelName), loadedBackend)
     }
 
-    override fun generate(turn: UserTurn, settings: GenerationSettings): Flow<GenerationEvent> = flow {
+    override fun generate(
+        turn: UserTurn,
+        settings: GenerationSettings,
+        profile: InferenceExecutionProfile,
+    ): Flow<GenerationEvent> = flow {
         check(state.value is InferenceState.Ready) { "Model is not ready" }
         check(activeConversationId == turn.conversationId) { "Restore this conversation before generating" }
         cancelled = false
         holdCpu()
+        nativeSetConcurrentSpeech(profile == InferenceExecutionProfile.CONCURRENT_SPEECH)
         try {
             val mediaPaths = turn.attachments.flatMap { it.imagePaths }
             _state.value = if (mediaPaths.isEmpty()) {
@@ -275,6 +281,7 @@ class NativeInferenceEngine(
                 }
             }
         } finally {
+            nativeSetConcurrentSpeech(false)
             releaseCpu()
         }
     }.flowOn(dispatcher)
@@ -412,6 +419,7 @@ class NativeInferenceEngine(
     private external fun nativeGeneratedAnswerTokens(): Int
     private external fun nativeModelContextLimit(): Int
     private external fun nativeCurrentContextSize(): Int
+    private external fun nativeSetConcurrentSpeech(enabled: Boolean)
     private external fun nativeFinishGeneration()
     private external fun nativeUnload()
     private external fun nativeReleaseModelPages()

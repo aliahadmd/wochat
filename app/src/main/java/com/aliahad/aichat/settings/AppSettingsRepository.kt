@@ -10,6 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.ChatQualityMode
+import com.aliahad.aichat.core.VoiceSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -31,6 +32,8 @@ class AppSettingsRepository(
         val memoryEnabled = booleanPreferencesKey("memory_enabled")
         val collectionPaused = booleanPreferencesKey("collection_paused")
         val actionAllowlist = stringPreferencesKey("action_allowlist")
+        val voiceSpeakerId = intPreferencesKey("voice_speaker_id")
+        val voiceSpeed = floatPreferencesKey("voice_speed")
     }
 
     val backendMode: Flow<BackendMode> = context.settingsDataStore.data.map {
@@ -74,6 +77,13 @@ class AppSettingsRepository(
             .orEmpty()
     }
 
+    val voiceSettings: Flow<VoiceSettings> = context.settingsDataStore.data.map {
+        VoiceSettings(
+            speakerId = it[Keys.voiceSpeakerId] ?: 1,
+            speed = it[Keys.voiceSpeed] ?: 1.0f,
+        ).normalized()
+    }
+
     suspend fun setBackend(mode: BackendMode) {
         context.settingsDataStore.edit { it[Keys.backend] = mode.name }
     }
@@ -109,6 +119,14 @@ class AppSettingsRepository(
     suspend fun setActionAllowlist(packages: Set<String>) {
         context.settingsDataStore.edit {
             it[Keys.actionAllowlist] = packages.sorted().joinToString(",")
+        }
+    }
+
+    suspend fun updateVoice(settings: VoiceSettings) {
+        val value = settings.normalized()
+        context.settingsDataStore.edit {
+            it[Keys.voiceSpeakerId] = value.speakerId
+            it[Keys.voiceSpeed] = value.speed
         }
     }
 

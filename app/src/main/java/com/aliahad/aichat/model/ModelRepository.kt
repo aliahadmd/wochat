@@ -10,7 +10,6 @@ import androidx.work.workDataOf
 import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.core.ProjectorRecord
-import com.aliahad.aichat.core.ChatQualityMode
 import com.aliahad.aichat.data.ModelDao
 import com.aliahad.aichat.data.ModelRecordEntity
 import com.aliahad.aichat.data.ProjectorDao
@@ -40,7 +39,6 @@ interface ModelRepository {
     suspend fun hasActiveTransfers(): Boolean
     suspend fun deleteModel(id: String)
     suspend fun testHuggingFaceToken(token: String): Result<Unit>
-    suspend fun modelForQuality(mode: ChatQualityMode): ModelRecord?
     suspend fun projectorForModel(modelId: String): ProjectorRecord?
     suspend fun startProjectorDownload(id: String)
     suspend fun pauseProjectorDownload(id: String)
@@ -198,7 +196,7 @@ class DefaultModelRepository(
                 temporary.outputStream().buffered().use { output -> input.copyTo(output, DEFAULT_BUFFER_SIZE * 16) }
             } ?: error("Unable to open selected file")
             GgufValidator.validate(temporary).getOrThrow()
-            require(temporary.renameTo(destination)) { "Unable to finish importing model" }
+            AtomicFileInstaller.replace(temporary, destination)
             ModelRecord(
                 id = id,
                 displayName = displayName,
@@ -242,7 +240,8 @@ class DefaultModelRepository(
         val model = requireNotNull(dao.get(id)) { "Model not found" }
         model.localPath?.let { path ->
             require(!isPathInUse(path)) { "Unload this model before deleting it" }
-            File(path).delete()
+            val file = File(path)
+            require(!file.exists() || file.delete()) { "Unable to delete the model file" }
         }
         File(modelsDirectory(), "${model.fileName}.part").delete()
         if (ModelConstants.officialModel(id) != null) {
@@ -273,14 +272,6 @@ class DefaultModelRepository(
             }
         }
     }
-
-    override suspend fun modelForQuality(mode: ChatQualityMode): ModelRecord? =
-        dao.get(
-            when (mode) {
-                ChatQualityMode.FAST -> ModelConstants.GEMMA_4_E4B.id
-                ChatQualityMode.BEST -> ModelConstants.GEMMA_4_12B.id
-            },
-        )?.toDomain()
 
     override suspend fun projectorForModel(modelId: String): ProjectorRecord? =
         projectorDao.getForModel(modelId)?.toDomain()
@@ -326,7 +317,8 @@ class DefaultModelRepository(
         val record = requireNotNull(projectorDao.get(id)) { "Projector not found" }
         record.localPath?.let { path ->
             require(!isPathInUse(path)) { "Unload vision before deleting this projector" }
-            File(path).delete()
+            val file = File(path)
+            require(!file.exists() || file.delete()) { "Unable to delete the projector file" }
         }
         File(modelsDirectory(), "${record.fileName}.part").delete()
         projectorDao.upsert(

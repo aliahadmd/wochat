@@ -20,6 +20,7 @@ import com.aliahad.aichat.core.GenerationEvent
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.InferenceMetrics
+import com.aliahad.aichat.core.InferenceExecutionProfile
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
 import com.aliahad.aichat.core.ModelRecord
@@ -27,14 +28,22 @@ import com.aliahad.aichat.core.MemoryItem
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.ProjectorRecord
+import com.aliahad.aichat.core.SpeechAssetKind
+import com.aliahad.aichat.core.SpeechAssetRecord
+import com.aliahad.aichat.core.TurnOrigin
+import com.aliahad.aichat.core.VoiceSessionState
+import com.aliahad.aichat.core.VoiceSettings
 import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.core.UserTurn
 import com.aliahad.aichat.activity.OfficeWorkScheduler
 import com.aliahad.aichat.residency.ModelResidencyState
+import com.aliahad.aichat.inference.VisionDetailProfile
 import com.aliahad.aichat.inference.VisionBudgetPlanner
+import com.aliahad.aichat.model.ModelConstants
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -91,6 +100,7 @@ data class MainUiState(
     val messages: List<ChatMessage> = emptyList(),
     val models: List<ModelRecord> = emptyList(),
     val projectors: List<ProjectorRecord> = emptyList(),
+    val speechAssets: List<SpeechAssetRecord> = emptyList(),
     val draftAttachments: List<Attachment> = emptyList(),
     val messageAttachments: Map<String, List<Attachment>> = emptyMap(),
     val draftKey: String = "",
@@ -98,6 +108,10 @@ data class MainUiState(
     val page: AppPage = AppPage.CHAT,
     val backendMode: BackendMode = BackendMode.AUTO,
     val generationSettings: GenerationSettings = GenerationSettings(),
+    val voiceSettings: VoiceSettings = VoiceSettings(),
+    val voiceState: VoiceSessionState = VoiceSessionState.Unavailable(
+        "Download both speech models in Settings",
+    ),
     val inferenceState: InferenceState = InferenceState.Uninitialized,
     val inferenceMetrics: InferenceMetrics = InferenceMetrics(),
     val residencyState: ModelResidencyState = ModelResidencyState.Idle,
@@ -154,6 +168,11 @@ class MainViewModel(
                 _uiState.update { it.copy(projectors = projectors) }
             }
         }
+        viewModelScope.launch {
+            container.speechAssetRepository.assets.collectLatest { assets ->
+                _uiState.update { it.copy(speechAssets = assets) }
+            }
+        }
         observeDraft(_uiState.value.draftKey)
         viewModelScope.launch {
             container.settings.backendMode.collectLatest { mode ->
@@ -163,6 +182,22 @@ class MainViewModel(
         viewModelScope.launch {
             container.settings.generationSettings.collectLatest { settings ->
                 _uiState.update { it.copy(generationSettings = settings) }
+            }
+        }
+        viewModelScope.launch {
+            container.settings.voiceSettings.collectLatest { settings ->
+                _uiState.update { it.copy(voiceSettings = settings) }
+            }
+        }
+        viewModelScope.launch {
+            container.voiceConversationController.state.collectLatest { state ->
+                _uiState.update { it.copy(voiceState = state) }
+            }
+        }
+        viewModelScope.launch {
+            container.voiceConversationController.finalTranscripts.collectLatest { transcript ->
+                generationJob?.takeIf { it.isActive }?.join()
+                sendMessage(transcript, TurnOrigin.VOICE)
             }
         }
         viewModelScope.launch {
@@ -246,6 +281,7 @@ class MainViewModel(
         if (_uiState.value.selectedConversationId == id) return
         generationJob?.cancel()
         container.inferenceEngine.cancel()
+        container.voiceConversationController.cancelAll()
         observeConversation(id)
     }
 
@@ -269,15 +305,18 @@ class MainViewModel(
             }
         }
         viewModelScope.launch {
-            val mode = _uiState.value.conversations.firstOrNull { it.id == id }?.qualityMode
-                ?: ChatQualityMode.FAST
-            runCatching { prepareQualityMode(mode) }.onFailure(::showError)
+            runCatching { container.residencyController.ensureLoaded() }.onFailure(::showError)
         }
     }
 
     fun deleteConversation(id: String) {
         viewModelScope.launch {
             runCatching {
+                if (_uiState.value.selectedConversationId == id) {
+                    container.inferenceEngine.cancel()
+                    container.voiceConversationController.cancelAll()
+                    generationJob?.cancelAndJoin()
+                }
                 container.chatRepository.getMessages(id).forEach { message ->
                     container.attachmentRepository.attachmentsForMessage(message.id).forEach {
                         container.attachmentRepository.remove(it.id)
@@ -306,7 +345,7 @@ class MainViewModel(
         }
     }
 
-    fun sendMessage(text: String) {
+    fun sendMessage(text: String, origin: TurnOrigin = TurnOrigin.TYPED) {
         val prompt = text.trim()
         val draft = _uiState.value.draftAttachments
         if ((prompt.isEmpty() && draft.isEmpty()) || generationJob?.isActive == true) return
@@ -314,45 +353,59 @@ class MainViewModel(
             showError(IllegalStateException("Wait for every attachment to finish processing."))
             return
         }
+        configurationReloadJob?.cancel()
+        if (origin == TurnOrigin.TYPED) container.voiceConversationController.cancelAll()
         generationJob = viewModelScope.launch {
-            val conversationId = ensureConversation() ?: return@launch
-            val mode = currentQualityMode()
-            resolveQualityModel(mode) ?: return@launch
-            val settings = _uiState.value.generationSettings.normalized()
-            val previous = container.chatRepository.getMessages(conversationId)
-                .filter { it.status != MessageStatus.STREAMING }
-            val previousTurns = previous.map { message ->
-                ChatTurn(
-                    message = message,
-                    attachments = container.attachmentRepository.contextsForMessage(message.id, message.content),
-                )
-            }
-            val contexts = container.attachmentRepository.contexts(draft.map { it.id }, prompt)
-            val visualCount = contexts.sumOf { it.imagePaths.size }
-            // Restoring this conversation re-encodes history images, so the projector
-            // must be loaded (at a budget no smaller than history was encoded with)
-            // even when the new message itself has no attachments.
-            val allHistoryImageBudget = previousTurns.maxOfOrNull { turn ->
-                turn.attachments.filter { it.imagePaths.isNotEmpty() }
-                    .maxOfOrNull { it.imageTokenBudget } ?: 0
-            } ?: 0
-            val userText = prompt.ifEmpty { attachmentOnlyPrompt(draft) }
             var assistant: ChatMessage? = null
             var keepThinking = false
-            container.residencyController.beginInferenceUse()
+            var inferenceUseStarted = false
+            val content = StringBuilder()
             try {
+                val conversationId = ensureConversation() ?: return@launch
+                val model = resolveSelectedModel() ?: run {
+                    if (origin == TurnOrigin.VOICE) {
+                        container.voiceConversationController.reportError(
+                            "Download or import a local language model before using voice chat.",
+                        )
+                    }
+                    return@launch
+                }
+                val visionProfile = visionDetailProfile(model)
+                val settings = _uiState.value.generationSettings.normalized()
+                val previous = container.chatRepository.getMessages(conversationId)
+                    .filter { it.status != MessageStatus.STREAMING }
+                val previousTurns = previous.map { message ->
+                    ChatTurn(
+                        message = message,
+                        attachments = container.attachmentRepository.contextsForMessage(
+                            message.id,
+                            message.content,
+                        ),
+                    )
+                }
+                val contexts = container.attachmentRepository.contexts(draft.map { it.id }, prompt)
+                val visualCount = contexts.sumOf { it.imagePaths.size }
+                // Restoring this conversation re-encodes history images, so the projector
+                // must be loaded (at a budget no smaller than history was encoded with)
+                // even when the new message itself has no attachments.
+                val allHistoryImageBudget = previousTurns.maxOfOrNull { turn ->
+                    turn.attachments.filter { it.imagePaths.isNotEmpty() }
+                        .maxOfOrNull { it.imageTokenBudget } ?: 0
+                } ?: 0
+                val userText = prompt.ifEmpty { attachmentOnlyPrompt(draft) }
+                container.residencyController.beginInferenceUse()
+                inferenceUseStarted = true
                 _uiState.update { it.copy(isSending = true, error = null) }
                 val provisionalContext =
                     (_uiState.value.residencyState as? ModelResidencyState.Ready)?.contextSize
                         ?: 4_096
                 val initialVisualBudget = VisionBudgetPlanner.allocate(
-                    mode,
+                    visionProfile,
                     contexts,
                     userText,
                     provisionalContext - settings.maxNewTokens - 256,
                 )
                 val loadConfiguration = container.residencyController.ensureLoaded(
-                    qualityMode = mode,
                     requireVision = visualCount > 0 || allHistoryImageBudget > 0,
                     imageTokenBudget = maxOf(initialVisualBudget, allHistoryImageBudget),
                 )
@@ -375,14 +428,13 @@ class MainViewModel(
                     contextPlan.outputReserveTokens -
                     192
                 val visualBudget = VisionBudgetPlanner.allocate(
-                    mode,
+                    visionProfile,
                     contexts,
                     userText,
                     availableVisualTokens,
                 )
                 if (visualCount > 0 && visualBudget != initialVisualBudget) {
                     container.residencyController.ensureLoaded(
-                        qualityMode = mode,
                         requireVision = true,
                         imageTokenBudget = maxOf(visualBudget, historyImageBudget),
                     )
@@ -392,6 +444,7 @@ class MainViewModel(
                     conversationId,
                     MessageRole.USER,
                     userText,
+                    origin = origin,
                 )
                 container.memoryRepository.rememberMessage(
                     message = user,
@@ -416,6 +469,7 @@ class MainViewModel(
                     MessageRole.ASSISTANT,
                     "",
                     MessageStatus.STREAMING,
+                    origin,
                 )
                 _uiState.update {
                     it.copy(
@@ -428,16 +482,18 @@ class MainViewModel(
                 if (visualCount > 0 && historyImageBudget > visualBudget) {
                     // History must be reconstructed at its original detail. Once its
                     // KV state is restored, reload only the projector at this turn's
-                    // lower budget so Fast descriptions stay fast.
+                    // lower budget so mobile-model descriptions stay responsive.
                     container.residencyController.ensureLoaded(
-                        qualityMode = mode,
                         requireVision = true,
                         imageTokenBudget = visualBudget,
                     )
                 }
-                val content = StringBuilder()
                 var lastSavedAt = 0L
                 var completion: GenerationEvent.Completed? = null
+                val spokenReply = origin == TurnOrigin.VOICE &&
+                    container.voiceConversationController.beginSpokenReply(
+                        _uiState.value.voiceSettings,
+                    )
                 container.inferenceEngine.generate(
                     UserTurn(
                         conversationId = conversationId,
@@ -445,6 +501,11 @@ class MainViewModel(
                         attachments = adjustedContexts,
                     ),
                     plannedSettings,
+                    if (spokenReply) {
+                        InferenceExecutionProfile.CONCURRENT_SPEECH
+                    } else {
+                        InferenceExecutionProfile.NORMAL
+                    },
                 ).collect { event ->
                     when (event) {
                         is GenerationEvent.ThoughtDelta -> {
@@ -463,6 +524,9 @@ class MainViewModel(
                         }
                         is GenerationEvent.AnswerDelta -> {
                             content.append(event.text)
+                            if (spokenReply) {
+                                container.voiceConversationController.acceptAnswerDelta(event.text)
+                            }
                             _uiState.update { state ->
                                 val thinking = state.thinking
                                 if (thinking == null || thinking.text.isEmpty()) {
@@ -490,6 +554,7 @@ class MainViewModel(
                         is GenerationEvent.Phase -> Unit
                     }
                 }
+                if (spokenReply) container.voiceConversationController.finishSpokenReply()
                 val result = completion ?: GenerationEvent.Completed(
                     reason = GenerationStopReason.ERROR,
                     answerTokens = 0,
@@ -525,6 +590,7 @@ class MainViewModel(
                 assistant?.let {
                     container.chatRepository.updateMessage(
                         it.copy(
+                            content = content.toString().ifEmpty { it.content },
                             status = MessageStatus.CANCELLED,
                             stopReason = GenerationStopReason.CANCELLED,
                         ),
@@ -534,12 +600,17 @@ class MainViewModel(
                 assistant?.let {
                     container.chatRepository.updateMessage(
                         it.copy(
-                            content = it.content.ifEmpty { "Generation failed: ${error.message}" },
+                            content = content.toString().ifEmpty {
+                                it.content.ifEmpty { "Generation failed: ${error.message}" }
+                            },
                             status = MessageStatus.ERROR,
                         ),
                     )
                 }
-                showError(error)
+                if (error !is CancellationException) {
+                    container.voiceConversationController.cancelAll()
+                    showError(error)
+                }
             } finally {
                 _uiState.update { state ->
                     state.copy(
@@ -551,29 +622,66 @@ class MainViewModel(
                         },
                     )
                 }
-                container.residencyController.endInferenceUse()
+                if (inferenceUseStarted) container.residencyController.endInferenceUse()
             }
         }
     }
 
     fun stopGeneration() {
         container.inferenceEngine.cancel()
+        generationJob?.cancel()
+        container.voiceConversationController.cancelAll()
+    }
+
+    fun toggleVoiceInput() {
+        if (_uiState.value.voiceState is VoiceSessionState.Listening) {
+            container.voiceConversationController.stopListening()
+            return
+        }
+        container.inferenceEngine.cancel()
+        generationJob?.cancel()
+        container.voiceConversationController.cancelAll()
+        container.voiceConversationController.startListening()
+    }
+
+    fun microphonePermissionDenied() {
+        val message = "Microphone permission is required for voice chat."
+        container.voiceConversationController.reportError(message)
+        showError(IllegalStateException(message))
+    }
+
+    fun replayMessage(messageId: String) {
+        val message = _uiState.value.messages.firstOrNull {
+            it.id == messageId &&
+                it.role == MessageRole.ASSISTANT &&
+                it.status != MessageStatus.STREAMING &&
+                it.content.isNotBlank()
+        } ?: return
+        container.inferenceEngine.cancel()
+        generationJob?.cancel()
+        container.voiceConversationController.cancelAll()
+        viewModelScope.launch {
+            container.voiceConversationController.replay(message.content, _uiState.value.voiceSettings)
+        }
     }
 
     fun continueResponse() {
         if (generationJob?.isActive == true) return
+        configurationReloadJob?.cancel()
         val conversationId = _uiState.value.selectedConversationId ?: return
         val target = _uiState.value.messages.lastOrNull {
             it.role == MessageRole.ASSISTANT && it.status == MessageStatus.CONTINUABLE
         } ?: return
         generationJob = viewModelScope.launch {
-            val settings = _uiState.value.generationSettings.normalized()
-            val mode = currentQualityMode()
-            resolveQualityModel(mode) ?: return@launch
             var assistant = target.copy(status = MessageStatus.STREAMING)
             var keepThinking = false
-            container.residencyController.beginInferenceUse()
+            var inferenceUseStarted = false
+            val continuation = StringBuilder()
             try {
+                val settings = _uiState.value.generationSettings.normalized()
+                resolveSelectedModel() ?: return@launch
+                container.residencyController.beginInferenceUse()
+                inferenceUseStarted = true
                 _uiState.update {
                     it.copy(
                         isSending = true,
@@ -598,7 +706,6 @@ class MainViewModel(
                         .maxOfOrNull { it.imageTokenBudget } ?: 0
                 } ?: 0
                 val loadConfiguration = container.residencyController.ensureLoaded(
-                    qualityMode = mode,
                     requireVision = historyImageBudget > 0,
                     imageTokenBudget = historyImageBudget.coerceAtLeast(70),
                 )
@@ -619,7 +726,6 @@ class MainViewModel(
                     contextPlan.history,
                     plannedSettings,
                 )
-                val continuation = StringBuilder()
                 var completion: GenerationEvent.Completed? = null
                 var lastSavedAt = 0L
                 container.inferenceEngine.generate(
@@ -679,9 +785,18 @@ class MainViewModel(
                     generatedTokens = (target.generatedTokens ?: 0) + result.answerTokens,
                 )
                 container.chatRepository.updateMessage(assistant)
+            } catch (cancelled: CancellationException) {
+                container.chatRepository.updateMessage(
+                    assistant.copy(
+                        content = mergeContinuation(target.content, continuation.toString()),
+                        status = MessageStatus.CONTINUABLE,
+                        stopReason = GenerationStopReason.CANCELLED,
+                    ),
+                )
             } catch (error: Throwable) {
                 container.chatRepository.updateMessage(
                     assistant.copy(
+                        content = mergeContinuation(target.content, continuation.toString()),
                         status = MessageStatus.CONTINUABLE,
                         stopReason = GenerationStopReason.ERROR,
                     ),
@@ -698,7 +813,7 @@ class MainViewModel(
                         },
                     )
                 }
-                container.residencyController.endInferenceUse()
+                if (inferenceUseStarted) container.residencyController.endInferenceUse()
             }
         }
     }
@@ -854,6 +969,28 @@ class MainViewModel(
         }
     }
 
+    fun startSpeechAssetDownload(id: String) {
+        viewModelScope.launch {
+            runCatching { container.speechAssetRepository.startDownload(id) }.onFailure(::showError)
+        }
+    }
+
+    fun pauseSpeechAssetDownload(id: String) {
+        viewModelScope.launch {
+            runCatching { container.speechAssetRepository.pauseDownload(id) }.onFailure(::showError)
+        }
+    }
+
+    fun deleteSpeechAsset(id: String) {
+        viewModelScope.launch {
+            runCatching {
+                val asset = _uiState.value.speechAssets.firstOrNull { it.id == id }
+                asset?.let { container.voiceConversationController.releaseAsset(it.kind) }
+                container.speechAssetRepository.delete(id)
+            }.onFailure(::showError)
+        }
+    }
+
     fun pauseProjectorDownload(id: String) {
         viewModelScope.launch {
             runCatching { container.modelRepository.pauseProjectorDownload(id) }.onFailure(::showError)
@@ -861,6 +998,7 @@ class MainViewModel(
     }
 
     fun deleteProjector(id: String) {
+        if (!allowModelMutation()) return
         viewModelScope.launch {
             runCatching {
                 if (_uiState.value.projectors.firstOrNull { it.id == id }?.localPath
@@ -914,18 +1052,6 @@ class MainViewModel(
         }
     }
 
-    fun updateQualityMode(mode: ChatQualityMode) {
-        if (_uiState.value.isSending) return
-        viewModelScope.launch {
-            val id = ensureConversation() ?: return@launch
-            runCatching {
-                container.chatRepository.setQualityMode(id, mode)
-                container.settings.setLastQualityMode(mode)
-                prepareQualityMode(mode)
-            }.onFailure(::showError)
-        }
-    }
-
     fun pauseDownload(id: String) {
         viewModelScope.launch {
             runCatching { container.modelRepository.pauseOfficialDownload(id) }.onFailure(::showError)
@@ -941,16 +1067,33 @@ class MainViewModel(
     }
 
     fun selectModel(id: String) {
+        if (!allowModelMutation()) return
         viewModelScope.launch {
             runCatching {
+                val previous = container.modelRepository.selectedModel()
                 container.residencyController.unload()
                 container.modelRepository.selectModel(id)
-                container.residencyController.ensureLoaded()
+                try {
+                    container.residencyController.ensureLoaded()
+                } catch (error: Throwable) {
+                    if (previous?.status == DownloadStatus.READY && previous.localPath != null) {
+                        container.modelRepository.selectModel(previous.id)
+                        runCatching { container.residencyController.ensureLoaded() }
+                    }
+                    throw error
+                }
+                if (_uiState.value.draftAttachments.any {
+                        it.kind == AttachmentKind.IMAGE || it.derivedImagePaths.isNotEmpty()
+                    }
+                ) {
+                    promptForProjector()
+                }
             }.onFailure(::showError)
         }
     }
 
     fun deleteModel(id: String) {
+        if (!allowModelMutation()) return
         viewModelScope.launch {
             runCatching {
                 val model = _uiState.value.models.firstOrNull { it.id == id }
@@ -964,6 +1107,7 @@ class MainViewModel(
     }
 
     fun updateBackend(@Suppress("UNUSED_PARAMETER") mode: BackendMode) {
+        if (!allowModelMutation()) return
         viewModelScope.launch {
             container.settings.setBackend(BackendMode.CPU)
             container.residencyController.reloadForConfigurationChange()
@@ -974,7 +1118,9 @@ class MainViewModel(
         val previous = _uiState.value.generationSettings
         viewModelScope.launch {
             container.settings.updateGeneration(settings)
-            if (previous.temperature != settings.normalized().temperature) {
+            if (previous.temperature != settings.normalized().temperature &&
+                !_uiState.value.isSending
+            ) {
                 configurationReloadJob?.cancel()
                 configurationReloadJob = viewModelScope.launch {
                     delay(750)
@@ -985,13 +1131,19 @@ class MainViewModel(
         }
     }
 
+    fun updateVoice(settings: VoiceSettings) {
+        viewModelScope.launch { container.settings.updateVoice(settings) }
+    }
+
     fun retryPreload() {
+        if (!allowModelMutation()) return
         viewModelScope.launch {
             runCatching { container.residencyController.ensureLoaded() }.onFailure(::showError)
         }
     }
 
     fun reverifyContext() {
+        if (!allowModelMutation()) return
         viewModelScope.launch {
             runCatching { container.residencyController.reverifySelectedModel() }
                 .onFailure(::showError)
@@ -999,6 +1151,7 @@ class MainViewModel(
     }
 
     fun unloadModel() {
+        if (!allowModelMutation()) return
         viewModelScope.launch {
             runCatching { container.residencyController.unload() }.onFailure(::showError)
         }
@@ -1035,8 +1188,12 @@ class MainViewModel(
     }
 
     private suspend fun resolveSelectedModel(): ModelRecord? {
-        container.modelRepository.selectedModel()?.let { return it }
-        val ready = _uiState.value.models.firstOrNull { it.status == DownloadStatus.READY }
+        container.modelRepository.selectedModel()?.takeIf {
+            it.status == DownloadStatus.READY && it.localPath != null
+        }?.let { return it }
+        val ready = _uiState.value.models.firstOrNull {
+            it.status == DownloadStatus.READY && it.localPath != null
+        }
         if (ready != null) {
             container.modelRepository.selectModel(ready.id)
             return ready.copy(selected = true)
@@ -1045,35 +1202,20 @@ class MainViewModel(
         return null
     }
 
-    private suspend fun resolveQualityModel(mode: ChatQualityMode): ModelRecord? {
-        val model = container.modelRepository.modelForQuality(mode)
-        if (model?.status == DownloadStatus.READY && model.localPath != null) return model
-        showError(
-            IllegalStateException(
-                "${if (mode == ChatQualityMode.FAST) "Gemma 4 E4B" else "Gemma 4 12B"} is not installed.",
-            ),
-        )
-        return null
-    }
-
-    private suspend fun prepareQualityMode(mode: ChatQualityMode) {
-        resolveQualityModel(mode) ?: return
-        container.residencyController.ensureLoaded(qualityMode = mode)
-    }
-
-    private fun currentQualityMode(): ChatQualityMode =
-        _uiState.value.conversations.firstOrNull {
-            it.id == _uiState.value.selectedConversationId
-        }?.qualityMode ?: ChatQualityMode.FAST
-
     private suspend fun promptForProjector() {
-        val mode = currentQualityMode()
-        val model = container.modelRepository.modelForQuality(mode) ?: return
+        val model = container.modelRepository.selectedModel() ?: return
         val projector = container.modelRepository.projectorForModel(model.id) ?: return
         if (projector.status != DownloadStatus.READY) {
             _uiState.update { it.copy(pendingProjectorId = projector.id) }
         }
     }
+
+    private fun visionDetailProfile(model: ModelRecord): VisionDetailProfile =
+        if (model.id == ModelConstants.GEMMA_4_12B.id) {
+            VisionDetailProfile.DETAILED
+        } else {
+            VisionDetailProfile.MOBILE
+        }
 
     private fun observeDraft(key: String) {
         draftJob?.cancel()
@@ -1104,8 +1246,15 @@ class MainViewModel(
         _uiState.update { it.copy(error = error.message ?: error.javaClass.simpleName) }
     }
 
+    private fun allowModelMutation(): Boolean {
+        if (!_uiState.value.isSending && generationJob?.isActive != true) return true
+        showError(IllegalStateException("Stop the current response before changing the model."))
+        return false
+    }
+
     override fun onCleared() {
         container.inferenceEngine.cancel()
+        container.voiceConversationController.cancelAll()
         super.onCleared()
     }
 

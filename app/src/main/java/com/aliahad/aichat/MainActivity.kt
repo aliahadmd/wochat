@@ -73,6 +73,12 @@ class MainActivity : ComponentActivity() {
                 ) {
                     viewModel.refreshPhoneSourceAccess()
                 }
+                val microphonePermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { granted ->
+                    if (granted) viewModel.toggleVoiceInput()
+                    else viewModel.microphonePermissionDenied()
+                }
                 val fileLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenMultipleDocuments(),
                 ) { uris ->
@@ -144,6 +150,13 @@ class MainActivity : ComponentActivity() {
                                     "*/*",
                                 ),
                             )
+                        },
+                        onRequestMicrophone = {
+                            if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
+                                viewModel.toggleVoiceInput()
+                            } else {
+                                microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
                         },
                         onRequestPhoneSourceAccess = { source ->
                             when (source) {

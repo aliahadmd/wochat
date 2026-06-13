@@ -13,6 +13,7 @@ import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.settings.AppSettingsRepository
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
+import java.net.URI
 import java.util.UUID
 
 data class DeviceActionResult(
@@ -58,6 +59,10 @@ class PolicyControlledDeviceActionExecutor(
         val risk = ActionPolicyEngine.classify(action)
         val packageName = action.packageName
         val rejection = when {
+            action.kind == DeviceActionKind.OPEN_APP && packageName.isNullOrBlank() ->
+                "An app package is required"
+            action.kind == DeviceActionKind.OPEN_URI && action.target.isNullOrBlank() ->
+                "A web address is required"
             packageName != null && ActionPolicyEngine.isBlockedPackage(packageName) ->
                 "This app category is blocked by the device-action policy"
             packageName != null && packageName !in allowlist ->
@@ -83,11 +88,13 @@ class PolicyControlledDeviceActionExecutor(
         )
         if (rejection != null) return DeviceActionResult(action.id, false, rejection)
 
-        val success = when (action.kind) {
-            DeviceActionKind.OPEN_APP -> openApp(requireNotNull(packageName))
-            DeviceActionKind.OPEN_URI -> openUri(requireNotNull(action.target), packageName)
-            else -> OfficeAccessibilityService.active()?.perform(action) == true
-        }
+        val success = runCatching {
+            when (action.kind) {
+                DeviceActionKind.OPEN_APP -> openApp(requireNotNull(packageName))
+                DeviceActionKind.OPEN_URI -> openUri(requireNotNull(action.target), packageName)
+                else -> OfficeAccessibilityService.active()?.perform(action) == true
+            }
+        }.getOrDefault(false)
         val message = if (success) "Action completed" else "Target was not found or changed"
         auditDao.upsert(
             ActionAuditEntity(
@@ -139,13 +146,23 @@ object ActionPolicyEngine {
         DeviceActionKind.CHANGE_PERMISSION,
         DeviceActionKind.CHANGE_ACCOUNT,
         DeviceActionKind.HEALTH_WRITE -> ActionRisk.SENSITIVE
+        DeviceActionKind.OPEN_URI -> classifyUri(action.target)
         DeviceActionKind.OPEN_APP,
-        DeviceActionKind.OPEN_URI,
         DeviceActionKind.TAP_NODE,
         DeviceActionKind.SET_TEXT,
         DeviceActionKind.SCROLL,
         DeviceActionKind.BACK,
         DeviceActionKind.HOME -> ActionRisk.LOW
+    }
+
+    private fun classifyUri(target: String?): ActionRisk {
+        val scheme = runCatching { URI(target.orEmpty()).scheme?.lowercase() }.getOrNull()
+            ?: return ActionRisk.BLOCKED
+        return when (scheme) {
+            "http", "https" -> ActionRisk.LOW
+            "mailto", "sms", "smsto", "tel" -> ActionRisk.SENSITIVE
+            else -> ActionRisk.BLOCKED
+        }
     }
 
     fun isBlockedPackage(packageName: String): Boolean =

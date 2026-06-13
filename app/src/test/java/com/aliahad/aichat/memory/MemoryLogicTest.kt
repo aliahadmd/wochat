@@ -85,4 +85,18 @@ class MemoryLogicTest {
         assertTrue(formatted.contains("12m"))
         assertFalse(formatted.contains("Metadata"))
     }
+
+    @Test
+    fun promptBudgetReservesSystemPromptBeforeSelectingHistory() {
+        assertEquals(
+            1_952,
+            initialPromptTokensRemaining(
+                contextTokens = 4_096,
+                outputReserve = 1_024,
+                safetyReserve = 192,
+                currentTokens = 416,
+                systemTokens = 512,
+            ),
+        )
+    }
 }

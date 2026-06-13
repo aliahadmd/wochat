@@ -159,7 +159,9 @@ class DatabaseEncryptionMigrator(
         check(databaseFile.renameTo(backupFile)) { "Unable to preserve the plaintext database" }
         deleteSidecars(databaseFile)
         if (!encryptedTemp.renameTo(databaseFile)) {
-            backupFile.renameTo(databaseFile)
+            check(backupFile.renameTo(databaseFile)) {
+                "Unable to restore the plaintext database after encryption failed"
+            }
             error("Unable to activate the encrypted database")
         }
     }

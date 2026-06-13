@@ -42,14 +42,16 @@ class ProjectorDownloadWorker(
         try {
             setForeground(notification(spec, partial.length(), "Preparing vision projector"))
             dao.upsert(record.copy(status = DownloadStatus.DOWNLOADING, error = null))
-            download(spec, partial)
+            if (partial.length() != spec.sizeBytes) download(spec, partial)
             dao.upsert(requireNotNull(dao.get(id)).copy(status = DownloadStatus.VERIFYING))
             setForeground(notification(spec, partial.length(), "Verifying vision projector"))
             require(partial.length() == spec.sizeBytes) { "Projector size verification failed." }
-            require(sha256(partial).equals(spec.sha256, true)) { "Projector checksum verification failed." }
+            if (!sha256(partial).equals(spec.sha256, true)) {
+                partial.delete()
+                error("Projector checksum failed. The corrupt download was discarded.")
+            }
             GgufValidator.validate(partial).getOrThrow()
-            if (destination.exists()) destination.delete()
-            require(partial.renameTo(destination)) { "Unable to finish the projector download." }
+            AtomicFileInstaller.replace(partial, destination)
             dao.upsert(
                 requireNotNull(dao.get(id)).copy(
                     localPath = destination.absolutePath,
@@ -80,6 +82,11 @@ class ProjectorDownloadWorker(
 
     private suspend fun download(spec: OfficialProjectorSpec, partial: File) {
         var existing = partial.length()
+        if (existing > spec.sizeBytes) {
+            partial.delete()
+            existing = 0
+        }
+        if (existing == spec.sizeBytes) return
         val connection = URL(spec.downloadUrl).openConnection() as HttpURLConnection
         try {
             connection.instanceFollowRedirects = true
@@ -99,6 +106,11 @@ class ProjectorDownloadWorker(
                 partial.delete()
                 existing = 0
             }
+            if (connection.responseCode == HttpURLConnection.HTTP_PARTIAL) {
+                require(validContentRange(connection.getHeaderField("Content-Range"), existing, spec.sizeBytes)) {
+                    "Download server returned an invalid byte range"
+                }
+            }
             RandomAccessFile(partial, "rw").use { output ->
                 output.seek(existing)
                 connection.inputStream.buffered(256 * 1024).use { input ->
@@ -111,6 +123,9 @@ class ProjectorDownloadWorker(
                         if (count < 0) break
                         output.write(buffer, 0, count)
                         downloaded += count
+                        require(downloaded <= spec.sizeBytes) {
+                            "Download exceeded the expected projector size"
+                        }
                         if (downloaded - lastPublished >= 8L * 1024 * 1024) {
                             publish(spec, downloaded)
                             lastPublished = downloaded
@@ -168,5 +183,16 @@ class ProjectorDownloadWorker(
             }
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun validContentRange(header: String?, start: Long, total: Long): Boolean {
+        val match = CONTENT_RANGE.matchEntire(header.orEmpty()) ?: return false
+        return match.groupValues[1].toLongOrNull() == start &&
+            match.groupValues[3].toLongOrNull() == total &&
+            (match.groupValues[2].toLongOrNull() ?: -1L) >= start
+    }
+
+    private companion object {
+        val CONTENT_RANGE = Regex("""bytes (\d+)-(\d+)/(\d+)""")
     }
 }

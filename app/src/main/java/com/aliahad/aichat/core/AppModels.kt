@@ -24,6 +24,16 @@ enum class GenerationStopReason {
     ERROR,
 }
 
+enum class TurnOrigin {
+    TYPED,
+    VOICE,
+}
+
+enum class InferenceExecutionProfile {
+    NORMAL,
+    CONCURRENT_SPEECH,
+}
+
 sealed interface GenerationEvent {
     data class Phase(val state: InferenceState) : GenerationEvent
     data class ThoughtDelta(val text: String) : GenerationEvent
@@ -275,6 +285,7 @@ data class ChatMessage(
     val content: String,
     val createdAt: Long,
     val status: MessageStatus,
+    val origin: TurnOrigin = TurnOrigin.TYPED,
     val stopReason: GenerationStopReason? = null,
     val continuationCount: Int = 0,
     val promptTokens: Int? = null,
@@ -381,6 +392,46 @@ enum class DownloadStatus {
     VERIFYING,
     READY,
     FAILED,
+}
+
+enum class SpeechAssetKind {
+    ASR,
+    TTS,
+}
+
+data class SpeechAssetRecord(
+    val id: String,
+    val kind: SpeechAssetKind,
+    val displayName: String,
+    val archiveFileName: String,
+    val localPath: String?,
+    val sourceUrl: String,
+    val expectedBytes: Long,
+    val sha256: String,
+    val downloadedBytes: Long,
+    val status: DownloadStatus,
+    val error: String?,
+)
+
+data class VoiceSettings(
+    val speakerId: Int = 1,
+    val speed: Float = 1.0f,
+) {
+    fun normalized(): VoiceSettings = copy(
+        speakerId = speakerId.coerceIn(0, 7),
+        speed = speed.coerceIn(0.7f, 1.3f),
+    )
+}
+
+sealed interface VoiceSessionState {
+    data class Unavailable(val reason: String) : VoiceSessionState
+    data object Idle : VoiceSessionState
+    data class Loading(val label: String) : VoiceSessionState
+    data class Listening(val partialTranscript: String = "") : VoiceSessionState
+    data class Finalizing(val transcript: String) : VoiceSessionState
+    data object Waiting : VoiceSessionState
+    data object Speaking : VoiceSessionState
+    data class Error(val message: String) : VoiceSessionState
 }
 
 data class ModelRecord(

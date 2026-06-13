@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.aliahad.aichat.AiChatApplication
 import com.aliahad.aichat.MainActivity
@@ -80,6 +81,7 @@ class ModelResidencyService : Service() {
         if (preloadJob?.isActive == true) return
         preloadJob = scope.launch {
             runCatching { controller.preloadAfterUnlock() }
+                .onFailure { Log.e(TAG, "Unable to preload the selected model", it) }
         }
     }
 
@@ -151,14 +153,17 @@ class ModelResidencyService : Service() {
     companion object {
         private const val CHANNEL_ID = "model_residency"
         private const val NOTIFICATION_ID = 2001
+        private const val TAG = "ModelResidency"
         const val ACTION_PRELOAD = "com.aliahad.aichat.action.PRELOAD_MODEL"
         const val ACTION_RETRY = "com.aliahad.aichat.action.RETRY_MODEL"
         const val ACTION_UNLOAD = "com.aliahad.aichat.action.UNLOAD_MODEL"
 
         fun start(context: Context) {
-            context.startForegroundService(
-                Intent(context, ModelResidencyService::class.java).setAction(ACTION_PRELOAD),
-            )
+            runCatching {
+                context.startForegroundService(
+                    Intent(context, ModelResidencyService::class.java).setAction(ACTION_PRELOAD),
+                )
+            }.onFailure { Log.e(TAG, "Unable to start model residency service", it) }
         }
     }
 }

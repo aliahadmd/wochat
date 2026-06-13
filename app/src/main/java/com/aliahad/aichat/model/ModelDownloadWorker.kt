@@ -46,7 +46,7 @@ class ModelDownloadWorker(
         try {
             setForeground(foregroundInfo(spec, partial.length(), "Preparing ${spec.displayName}"))
             dao.upsert(record.copy(status = DownloadStatus.DOWNLOADING, error = null))
-            download(spec, partial)
+            if (partial.length() != spec.sizeBytes) download(spec, partial)
             dao.upsert(
                 requireNotNull(dao.get(record.id)).copy(
                     downloadedBytes = partial.length(),
@@ -58,12 +58,12 @@ class ModelDownloadWorker(
             require(partial.length() == spec.sizeBytes) {
                 "Downloaded size ${partial.length()} does not match ${spec.sizeBytes}"
             }
-            require(sha256(partial).equals(spec.sha256, ignoreCase = true)) {
-                "Model checksum failed. Delete the partial download and retry."
+            if (!sha256(partial).equals(spec.sha256, ignoreCase = true)) {
+                partial.delete()
+                error("Model checksum failed. The corrupt download was discarded.")
             }
             GgufValidator.validate(partial).getOrThrow()
-            if (destination.exists()) destination.delete()
-            require(partial.renameTo(destination)) { "Unable to finalize the model file" }
+            AtomicFileInstaller.replace(partial, destination)
             val current = requireNotNull(dao.get(record.id))
             dao.upsert(
                 current.copy(
@@ -96,6 +96,11 @@ class ModelDownloadWorker(
 
     private suspend fun download(spec: OfficialModelSpec, partial: File) {
         var existing = partial.length()
+        if (existing > spec.sizeBytes) {
+            partial.delete()
+            existing = 0
+        }
+        if (existing == spec.sizeBytes) return
         val connection = URL(spec.downloadUrl).openConnection() as HttpURLConnection
         try {
             connection.instanceFollowRedirects = true
@@ -115,6 +120,11 @@ class ModelDownloadWorker(
                 partial.delete()
                 existing = 0
             }
+            if (connection.responseCode == HttpURLConnection.HTTP_PARTIAL) {
+                require(validContentRange(connection.getHeaderField("Content-Range"), existing, spec.sizeBytes)) {
+                    "Download server returned an invalid byte range"
+                }
+            }
             RandomAccessFile(partial, "rw").use { output ->
                 output.seek(existing)
                 connection.inputStream.buffered(DEFAULT_BUFFER_SIZE * 16).use { input ->
@@ -127,6 +137,9 @@ class ModelDownloadWorker(
                         if (read < 0) break
                         output.write(buffer, 0, read)
                         downloaded += read
+                        require(downloaded <= spec.sizeBytes) {
+                            "Download exceeded the expected model size"
+                        }
                         if (downloaded - lastPublished >= PROGRESS_STEP) {
                             publishProgress(spec, downloaded)
                             lastPublished = downloaded
@@ -206,5 +219,14 @@ class ModelDownloadWorker(
     private companion object {
         const val NOTIFICATION_ID_BASE = 41000
         const val PROGRESS_STEP = 16L * 1024 * 1024
+
+        fun validContentRange(header: String?, start: Long, total: Long): Boolean {
+            val match = CONTENT_RANGE.matchEntire(header.orEmpty()) ?: return false
+            return match.groupValues[1].toLongOrNull() == start &&
+                match.groupValues[3].toLongOrNull() == total &&
+                (match.groupValues[2].toLongOrNull() ?: -1L) >= start
+        }
+
+        val CONTENT_RANGE = Regex("""bytes (\d+)-(\d+)/(\d+)""")
     }
 }

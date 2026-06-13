@@ -9,11 +9,15 @@ import com.aliahad.aichat.model.GgufValidator
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.attachment.AttachmentTypeDetector
 import com.aliahad.aichat.core.AttachmentKind
+import com.aliahad.aichat.core.ActionRisk
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.ContextVerificationState
+import com.aliahad.aichat.core.DeviceAction
+import com.aliahad.aichat.core.DeviceActionKind
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.context.ContextCandidates
 import com.aliahad.aichat.context.ContextMemoryPolicy
+import com.aliahad.aichat.device.ActionPolicyEngine
 import com.aliahad.aichat.residency.ModelLoadSignature
 import com.aliahad.aichat.residency.ModelResidencyState
 import com.aliahad.aichat.residency.residencyContextDescription
@@ -170,9 +174,15 @@ class CoreLogicTest {
     fun officialModelCatalogContainsIndependentVerifiedArtifacts() {
         val models = ModelConstants.OFFICIAL_MODELS
 
-        assertEquals(2, models.size)
+        assertEquals(3, models.size)
         assertEquals(models.size, models.map { it.id }.distinct().size)
         assertEquals(models.size, models.map { it.fileName }.distinct().size)
+        assertEquals(3_349_514_112L, ModelConstants.GEMMA_4_E2B.sizeBytes)
+        assertEquals(
+            "3646b4c147cd235a44d91df1546d3b7d8e29b547dbe4e1f80856419aa455e6fd",
+            ModelConstants.GEMMA_4_E2B.sha256,
+        )
+        assertTrue(ModelConstants.GEMMA_4_E2B.downloadUrl.endsWith("gemma-4-E2B_q4_0-it.gguf"))
         assertEquals(5_154_939_136L, ModelConstants.GEMMA_4_E4B.sizeBytes)
         assertEquals(
             "e8b6a059ba86947a44ace84d6e5679795bc41862c25c30513142588f0e9dba1d",
@@ -186,7 +196,21 @@ class CoreLogicTest {
     fun officialProjectorCatalogMatchesModelsAndChecksums() {
         val projectors = ModelConstants.OFFICIAL_PROJECTORS
 
-        assertEquals(2, projectors.size)
+        assertEquals(3, projectors.size)
+        assertEquals(
+            ModelConstants.OFFICIAL_MODELS.map { it.id }.toSet(),
+            projectors.map { it.modelId }.toSet(),
+        )
+        assertEquals(ModelConstants.GEMMA_4_E2B.id, ModelConstants.GEMMA_4_E2B_PROJECTOR.modelId)
+        assertEquals(986_833_312L, ModelConstants.GEMMA_4_E2B_PROJECTOR.sizeBytes)
+        assertEquals(
+            "58c187648007cab392bd5678b87e862c3e8794017deb945feea2cf256195e96a",
+            ModelConstants.GEMMA_4_E2B_PROJECTOR.sha256,
+        )
+        assertTrue(
+            ModelConstants.GEMMA_4_E2B_PROJECTOR.downloadUrl
+                .endsWith("gemma-4-E2B-it-mmproj.gguf"),
+        )
         assertEquals(ModelConstants.GEMMA_4_E4B.id, ModelConstants.GEMMA_4_E4B_PROJECTOR.modelId)
         assertEquals(991_551_904L, ModelConstants.GEMMA_4_E4B_PROJECTOR.sizeBytes)
         assertEquals(
@@ -204,6 +228,28 @@ class CoreLogicTest {
         assertEquals(AttachmentKind.DOCX, AttachmentTypeDetector.detect("report.docx", "application/octet-stream"))
         assertEquals(null, AttachmentTypeDetector.detect("legacy.doc", "application/msword"))
         assertEquals(null, AttachmentTypeDetector.detect("archive.zip", "application/zip"))
+    }
+
+    @Test
+    fun deviceActionPolicyOnlyAllowsSafeUriSchemesWithoutConfirmation() {
+        fun risk(target: String?) = ActionPolicyEngine.classify(
+            DeviceAction(
+                id = "action",
+                kind = DeviceActionKind.OPEN_URI,
+                packageName = null,
+                target = target,
+                value = null,
+                risk = ActionRisk.LOW,
+            ),
+        )
+
+        assertEquals(ActionRisk.LOW, risk("https://example.com/path"))
+        assertEquals(ActionRisk.SENSITIVE, risk("tel:+15551234567"))
+        assertEquals(ActionRisk.SENSITIVE, risk("mailto:person@example.com"))
+        assertEquals(ActionRisk.BLOCKED, risk("intent://example/#Intent;scheme=https;end"))
+        assertEquals(ActionRisk.BLOCKED, risk("file:///data/local/tmp/private"))
+        assertEquals(ActionRisk.BLOCKED, risk("javascript:alert(1)"))
+        assertEquals(ActionRisk.BLOCKED, risk(null))
     }
 
     private fun contextProfile(

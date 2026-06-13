@@ -6,6 +6,7 @@ import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.GenerationEvent
 import com.aliahad.aichat.core.InferenceMetrics
 import com.aliahad.aichat.core.InferenceState
+import com.aliahad.aichat.core.InferenceExecutionProfile
 import com.aliahad.aichat.core.ModelCapabilities
 import com.aliahad.aichat.core.ModelLoadConfiguration
 import com.aliahad.aichat.core.UserTurn
@@ -27,7 +28,11 @@ interface InferenceEngine {
     suspend fun loadProjector(path: String, imageTokenBudget: Int): ModelCapabilities
     suspend fun unloadProjector()
     suspend fun restoreSession(conversationId: String, history: List<ChatTurn>, settings: GenerationSettings)
-    fun generate(turn: UserTurn, settings: GenerationSettings): Flow<GenerationEvent>
+    fun generate(
+        turn: UserTurn,
+        settings: GenerationSettings,
+        profile: InferenceExecutionProfile = InferenceExecutionProfile.NORMAL,
+    ): Flow<GenerationEvent>
     suspend fun countTokens(text: String): Int
     suspend fun verifyLoadedContext(): Int
     fun cancel()

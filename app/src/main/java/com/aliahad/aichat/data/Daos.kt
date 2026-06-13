@@ -57,6 +57,26 @@ interface ProjectorDao {
 }
 
 @Dao
+interface SpeechAssetDao {
+    @Query("SELECT * FROM speech_assets ORDER BY kind")
+    fun observeAll(): Flow<List<SpeechAssetEntity>>
+
+    @Query("SELECT * FROM speech_assets WHERE id = :id")
+    suspend fun get(id: String): SpeechAssetEntity?
+
+    @Query("SELECT * FROM speech_assets WHERE kind = :kind LIMIT 1")
+    suspend fun getByKind(kind: com.aliahad.aichat.core.SpeechAssetKind): SpeechAssetEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(asset: SpeechAssetEntity)
+
+    @Query(
+        "SELECT COUNT(*) FROM speech_assets WHERE status IN ('QUEUED', 'DOWNLOADING', 'VERIFYING')",
+    )
+    suspend fun activeTransferCount(): Int
+}
+
+@Dao
 interface AttachmentDao {
     @Query("SELECT * FROM attachments WHERE draftKey = :draftKey ORDER BY createdAt")
     fun observeDraft(draftKey: String): Flow<List<AttachmentEntity>>

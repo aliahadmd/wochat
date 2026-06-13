@@ -16,6 +16,7 @@ import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.data.AttachmentEntity
 import com.aliahad.aichat.data.MessageAttachmentEntity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -54,7 +55,7 @@ class DefaultAttachmentRepository(
 
     override suspend fun stage(draftKey: String, uri: Uri): Attachment = withContext(Dispatchers.IO) {
         val metadata = queryMetadata(uri)
-        require(metadata.size in 1..MAX_SINGLE_BYTES) { "File is empty or larger than 500 MB." }
+        require(metadata.size <= MAX_SINGLE_BYTES) { "File is larger than 500 MB." }
         val kind = AttachmentTypeDetector.detect(metadata.name, metadata.mime)
             ?: error("Unsupported file type. Use images, PDF, text/code, CSV, JSON, XML/HTML, DOCX, XLSX, or PPTX.")
         val id = UUID.randomUUID().toString()
@@ -70,7 +71,7 @@ class DefaultAttachmentRepository(
             originalPath = destination.absolutePath,
             previewPath = null,
             derivedImagePaths = "",
-            byteSize = metadata.size,
+            byteSize = metadata.size.coerceAtLeast(0),
             pageCount = null,
             selectedPages = "",
             imageTokenBudget = null,
@@ -82,15 +83,18 @@ class DefaultAttachmentRepository(
         dao.upsert(entity)
         try {
             context.contentResolver.openInputStream(uri)?.buffered()?.use { input ->
-                destination.outputStream().buffered().use { output -> input.copyTo(output, COPY_BUFFER) }
+                destination.outputStream().buffered().use { output ->
+                    copyWithLimit(input, output, MAX_SINGLE_BYTES)
+                }
             } ?: error("Unable to read the selected file.")
-            require(destination.length() <= MAX_SINGLE_BYTES) { "File is larger than 500 MB." }
+            require(destination.length() > 0) { "File is empty." }
             dao.upsert(entity.copy(byteSize = destination.length(), progress = 0.15f))
             enqueue(id)
             entity.copy(byteSize = destination.length(), progress = 0.15f).toDomain()
         } catch (error: Throwable) {
             destination.parentFile?.deleteRecursively()
-            dao.upsert(entity.copy(state = AttachmentProcessingState.FAILED, error = error.message))
+            dao.delete(id)
+            if (error is CancellationException) throw error
             throw error
         }
     }
@@ -238,6 +242,22 @@ class DefaultAttachmentRepository(
     }
 
     private data class Metadata(val name: String, val mime: String, val size: Long)
+
+    private fun copyWithLimit(
+        input: java.io.InputStream,
+        output: java.io.OutputStream,
+        maximumBytes: Long,
+    ) {
+        val buffer = ByteArray(COPY_BUFFER)
+        var total = 0L
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            require(total <= maximumBytes) { "File is larger than 500 MB." }
+            output.write(buffer, 0, count)
+        }
+    }
 
     private companion object {
         const val MAX_SINGLE_BYTES = 500L * 1024 * 1024

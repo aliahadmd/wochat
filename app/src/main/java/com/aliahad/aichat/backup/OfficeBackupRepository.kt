@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase as PlainSQLiteDatabase
 import android.net.Uri
+import android.util.Log
 import com.aliahad.aichat.BuildConfig
 import com.aliahad.aichat.core.BackupPreview
 import com.aliahad.aichat.core.GenerationSettings
@@ -96,13 +97,17 @@ class EncryptedOfficeBackupRepository(
             require(manifest.getInt("formatVersion") == FORMAT_VERSION) {
                 "This backup format is not supported"
             }
-            require(manifest.getInt("databaseVersion") in MIN_IMPORT_DATABASE_VERSION..AppDatabase.VERSION) {
+            val databaseVersion = manifest.getInt("databaseVersion")
+            require(databaseVersion in MIN_IMPORT_DATABASE_VERSION..AppDatabase.VERSION) {
                 "This Office database version is not supported"
             }
             require(snapshot.inputStream().use { input ->
                 val header = ByteArray(SQLITE_HEADER.size)
                 input.read(header) == header.size && header.contentEquals(SQLITE_HEADER)
             }) { "Backup database is invalid" }
+            require(validateSnapshot(snapshot) == databaseVersion) {
+                "Backup database version does not match its manifest"
+            }
             val counts = readCounts(snapshot)
             BackupPreview(
                 stagingPath = working.absolutePath,
@@ -127,24 +132,37 @@ class EncryptedOfficeBackupRepository(
     override suspend fun commitImport(preview: BackupPreview) = withContext(Dispatchers.IO) {
         val working = File(preview.stagingPath)
         val snapshot = File(working, DATABASE_ENTRY)
-        require(snapshot.isFile && working.canonicalPath.startsWith(context.cacheDir.canonicalPath)) {
+        require(
+            snapshot.isFile &&
+                BackupPathSafety.isManagedStagingDirectory(context.cacheDir, working),
+        ) {
             "Import staging data is unavailable"
         }
-        var committed = false
+        var dataMerged = false
+        var createdAttachments = emptyList<File>()
         try {
-            restoreAttachmentFilesAndPaths(working, snapshot)
+            createdAttachments = restoreAttachmentFilesAndPaths(working, snapshot)
             mergeSnapshot(snapshot)
-            database.backupImportInvalidationDao().notifyImportedTables()
-            importSettings(File(working, SETTINGS_ENTRY))
-            committed = true
+            dataMerged = true
+            runCatching {
+                database.backupImportInvalidationDao().notifyImportedTables()
+                importSettings(File(working, SETTINGS_ENTRY))
+            }.onFailure {
+                Log.e(TAG, "Office data imported, but post-import refresh failed", it)
+            }
         } finally {
-            if (committed) working.deleteRecursively()
+            if (dataMerged) {
+                working.deleteRecursively()
+            } else {
+                createdAttachments.forEach(File::delete)
+            }
         }
+        Unit
     }
 
     override suspend fun discardImport(preview: BackupPreview) = withContext(Dispatchers.IO) {
         val working = File(preview.stagingPath)
-        if (working.canonicalPath.startsWith(context.cacheDir.canonicalPath)) {
+        if (BackupPathSafety.isManagedStagingDirectory(context.cacheDir, working)) {
             working.deleteRecursively()
         }
     }
@@ -173,6 +191,7 @@ class EncryptedOfficeBackupRepository(
             plain.delete("models", null, null)
             plain.delete("projectors", null, null)
             plain.delete("model_context_profiles", null, null)
+            plain.delete("speech_assets", null, null)
             plain.query(
                 "attachments",
                 arrayOf("id", "originalPath"),
@@ -237,7 +256,9 @@ class EncryptedOfficeBackupRepository(
             require(magic.contentEquals(MAGIC)) { "Not an AIchat Office backup" }
             require(header.readInt() == FORMAT_VERSION) { "Unsupported Office backup version" }
             val iterations = header.readInt()
-            require(iterations >= MIN_KDF_ITERATIONS) { "Backup key protection is too weak" }
+            require(iterations in MIN_KDF_ITERATIONS..MAX_KDF_ITERATIONS) {
+                "Backup key protection settings are unsupported"
+            }
             val salt = ByteArray(16).also(header::readFully)
             val nonce = ByteArray(12).also(header::readFully)
             val cipher = Cipher.getInstance(CIPHER)
@@ -276,7 +297,8 @@ class EncryptedOfficeBackupRepository(
         }
     }
 
-    private fun restoreAttachmentFilesAndPaths(working: File, snapshot: File) {
+    private fun restoreAttachmentFilesAndPaths(working: File, snapshot: File): List<File> {
+        val created = mutableListOf<File>()
         val plain = PlainSQLiteDatabase.openDatabase(
             snapshot.absolutePath,
             null,
@@ -297,11 +319,21 @@ class EncryptedOfficeBackupRepository(
                 while (cursor.moveToNext()) {
                     val id = cursor.getString(idIndex)
                     val relative = cursor.getString(pathIndex)
+                    require(relative.startsWith("attachments/")) {
+                        "Backup attachment path is invalid"
+                    }
                     val source = safeDestination(working, relative)
                     if (!source.isFile) continue
-                    val destination = File(context.noBackupFilesDir, "attachments/$id/${source.name}")
+                    val destination = BackupPathSafety.attachmentDestination(
+                        context.noBackupFilesDir,
+                        id,
+                        source.name,
+                    )
                     destination.parentFile?.mkdirs()
-                    if (!destination.exists()) source.copyTo(destination)
+                    if (!destination.exists()) {
+                        source.copyTo(destination)
+                        created += destination
+                    }
                     plain.execSQL(
                         "UPDATE attachments SET originalPath = ?, previewPath = NULL, " +
                             "derivedImagePaths = '' WHERE id = ?",
@@ -312,6 +344,7 @@ class EncryptedOfficeBackupRepository(
         } finally {
             plain.close()
         }
+        return created
     }
 
     private fun mergeSnapshot(snapshot: File) {
@@ -490,6 +523,40 @@ class EncryptedOfficeBackupRepository(
         }
     }
 
+    private fun validateSnapshot(snapshot: File): Int {
+        val plain = PlainSQLiteDatabase.openDatabase(
+            snapshot.absolutePath,
+            null,
+            PlainSQLiteDatabase.OPEN_READONLY,
+        )
+        return try {
+            val integrity = plain.rawQuery("PRAGMA quick_check(1)", null).use {
+                require(it.moveToFirst()) { "Backup database integrity check returned no result" }
+                it.getString(0)
+            }
+            require(integrity.equals("ok", ignoreCase = true)) {
+                "Backup database integrity check failed"
+            }
+            val tables = plain.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type = 'table'",
+                null,
+            ).use { cursor ->
+                buildSet {
+                    while (cursor.moveToNext()) add(cursor.getString(0))
+                }
+            }
+            require(COUNT_TABLES.all(tables::contains)) {
+                "Backup database is missing required tables"
+            }
+            plain.rawQuery("PRAGMA user_version", null).use {
+                require(it.moveToFirst()) { "Backup database version is unavailable" }
+                it.getInt(0)
+            }
+        } finally {
+            plain.close()
+        }
+    }
+
     private fun createWorkingDirectory(prefix: String): File =
         File(context.cacheDir, "office-backup/$prefix-${UUID.randomUUID()}").apply {
             check(mkdirs()) { "Unable to prepare backup storage" }
@@ -531,12 +598,14 @@ class EncryptedOfficeBackupRepository(
     }
 
     private companion object {
+        const val TAG = "OfficeBackup"
         val MAGIC = "AICHATOFFICE".toByteArray(Charsets.US_ASCII)
         val SQLITE_HEADER = "SQLite format 3\u0000".toByteArray(Charsets.US_ASCII)
         const val FORMAT_VERSION = 1
         const val MIN_IMPORT_DATABASE_VERSION = 3
         const val KDF_ITERATIONS = 600_000
         const val MIN_KDF_ITERATIONS = 600_000
+        const val MAX_KDF_ITERATIONS = 2_000_000
         const val CIPHER = "AES/GCM/NoPadding"
         const val MANIFEST_ENTRY = "manifest.json"
         const val SETTINGS_ENTRY = "settings.json"

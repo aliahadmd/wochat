@@ -27,7 +27,14 @@ class PromptContextPlanner(
         )
         val safetyReserve = 192
         val currentTokens = inferenceEngine.countTokens(currentText).coerceAtLeast(1)
-        var remaining = contextTokens - outputReserve - safetyReserve - currentTokens
+        val baseSystemTokens = inferenceEngine.countTokens(normalized.systemPrompt).coerceAtLeast(1)
+        var remaining = initialPromptTokensRemaining(
+            contextTokens = contextTokens,
+            outputReserve = outputReserve,
+            safetyReserve = safetyReserve,
+            currentTokens = currentTokens,
+            systemTokens = baseSystemTokens,
+        )
         require(remaining > 256) {
             "The current message does not fit the selected context. Increase context or shorten it."
         }
@@ -39,6 +46,7 @@ class PromptContextPlanner(
         }
         val selectedMemories = mutableListOf<MemoryHit>()
         val memoryText = StringBuilder()
+        var memoryHeaderReserved = false
         for (hit in memoryHits) {
             val provenance = hit.sources
                 .mapNotNull { source -> source.label?.takeIf(String::isNotBlank) }
@@ -48,10 +56,12 @@ class PromptContextPlanner(
             val line =
                 "- [${hit.memory.type.name.lowercase()}; source: $provenance] " +
                     "${hit.memory.content}\n"
-            val tokens = inferenceEngine.countTokens(line).coerceAtLeast(1)
+            val block = if (memoryHeaderReserved) line else MEMORY_HEADER + line
+            val tokens = inferenceEngine.countTokens(block).coerceAtLeast(1)
             if (tokens > remaining / 3 || tokens > remaining) continue
             selectedMemories += hit
             memoryText.append(line)
+            memoryHeaderReserved = true
             remaining -= tokens
         }
 
@@ -78,15 +88,16 @@ class PromptContextPlanner(
         val summaryText = summary?.content?.takeIf(String::isNotBlank)
         val summaryBlock = summaryText?.let { "\nConversation summary:\n$it\n" }
         val summaryTokens = summaryBlock?.let { inferenceEngine.countTokens(it) } ?: 0
-        if (summaryTokens > remaining) summary = null
+        if (summaryTokens > remaining) {
+            summary = null
+        } else {
+            remaining -= summaryTokens
+        }
 
         val systemPrompt = buildString {
             append(normalized.systemPrompt)
             if (selectedMemories.isNotEmpty()) {
-                append(
-                    "\n\nPersonal Office Memory follows. Treat it as user-owned context, " +
-                        "prefer corrected or pinned items, and do not claim it came from model training.\n",
-                )
+                append(MEMORY_HEADER)
                 append(memoryText)
             }
             summary?.content?.takeIf(String::isNotBlank)?.let {
@@ -96,12 +107,16 @@ class PromptContextPlanner(
         }
         val systemTokens = inferenceEngine.countTokens(systemPrompt).coerceAtLeast(1)
         val historyTokens = selectedReversed.sumOf { turnTokenCount(it) }
+        val estimatedTokens = systemTokens + historyTokens + currentTokens
+        check(estimatedTokens + outputReserve <= contextTokens) {
+            "Prompt planning exceeded the loaded model context"
+        }
         return ContextPlan(
             systemPrompt = systemPrompt,
             summary = summary,
             history = selectedReversed.toList(),
             memories = selectedMemories,
-            estimatedTokens = systemTokens + historyTokens + currentTokens,
+            estimatedTokens = estimatedTokens,
             outputReserveTokens = outputReserve,
         )
     }
@@ -116,4 +131,18 @@ class PromptContextPlanner(
                 attachment.imagePaths.size * attachment.imageTokenBudget
             } + 12
     }
+
+    private companion object {
+        const val MEMORY_HEADER =
+            "\n\nPersonal Office Memory follows. Treat it as user-owned context, " +
+                "prefer corrected or pinned items, and do not claim it came from model training.\n"
+    }
 }
+
+internal fun initialPromptTokensRemaining(
+    contextTokens: Int,
+    outputReserve: Int,
+    safetyReserve: Int,
+    currentTokens: Int,
+    systemTokens: Int,
+): Int = contextTokens - outputReserve - safetyReserve - currentTokens - systemTokens

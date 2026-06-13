@@ -820,6 +820,22 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeCurrentContextSize
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeSetConcurrentSpeech(
+    JNIEnv *,
+    jobject,
+    jboolean enabled
+) {
+    if (context == nullptr) return;
+    const int normal_threads = std::clamp(
+        static_cast<int>(std::thread::hardware_concurrency()) - 2,
+        2,
+        6
+    );
+    const int threads = enabled ? std::min(normal_threads, 4) : normal_threads;
+    llama_set_n_threads(context, threads, threads);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeFinishGeneration(JNIEnv *, jobject) {
     commit_assistant_message();
 }
