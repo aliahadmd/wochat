@@ -11,6 +11,7 @@ import com.aliahad.aichat.device.PolicyControlledDeviceActionExecutor
 import com.aliahad.aichat.attachment.AttachmentRepository
 import com.aliahad.aichat.attachment.DefaultAttachmentRepository
 import com.aliahad.aichat.activity.ActivityRepository
+import com.aliahad.aichat.activity.OfficeAccessibilityService
 import com.aliahad.aichat.activity.RoomActivityRepository
 import com.aliahad.aichat.activity.OfficeWorkScheduler
 import com.aliahad.aichat.activity.PhoneSourceAccessManager
@@ -20,6 +21,7 @@ import com.aliahad.aichat.inference.InferenceEngine
 import com.aliahad.aichat.inference.NativeInferenceEngine
 import com.aliahad.aichat.model.DefaultModelRepository
 import com.aliahad.aichat.model.ModelRepository
+import com.aliahad.aichat.overlay.OverlayAssistantController
 import com.aliahad.aichat.memory.AppSearchMemoryIndexer
 import com.aliahad.aichat.memory.ConversationSummaryRepository
 import com.aliahad.aichat.memory.MemoryIndexer
@@ -99,6 +101,8 @@ class AppContainer(val application: Application) {
         private set
     lateinit var residencyController: ModelResidencyController
         private set
+    lateinit var overlayAssistantController: OverlayAssistantController
+        private set
     val modelRepository: ModelRepository = DefaultModelRepository(
         context = application,
         dao = database.modelDao(),
@@ -136,6 +140,15 @@ class AppContainer(val application: Application) {
             attachmentRepository = attachmentRepository,
             contextProfiles = contextProfileRepository,
             settingsRepository = settings,
+        )
+        overlayAssistantController = OverlayAssistantController(
+            context = application,
+            screenContextProvider = { OfficeAccessibilityService.active() },
+            residencyController = residencyController,
+            inferenceEngine = inferenceEngine,
+            settings = settings,
+            chatRepository = chatRepository,
+            deviceActionExecutor = deviceActionExecutor,
         )
     }
 

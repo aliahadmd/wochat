@@ -1,5 +1,6 @@
 package com.aliahad.aichat.settings
 
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -24,6 +25,15 @@ object DeviceSettingsNavigator {
         startOrFallback(context, request)
     }
 
+    @SuppressLint("BatteryLife")
+    fun requestIgnoreBatteryOptimizations(context: Context) {
+        val request = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:${context.packageName}"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startOrFallback(context, request)
+    }
+
     fun openUsageAccess(context: Context) {
         startOrFallback(
             context,
@@ -42,6 +52,16 @@ object DeviceSettingsNavigator {
         startOrFallback(
             context,
             Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }
+
+    fun openOverlayPermission(context: Context) {
+        startOrFallback(
+            context,
+            Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:${context.packageName}"),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
     }
 

@@ -1,6 +1,9 @@
 package com.aliahad.aichat
 
 import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aliahad.aichat.core.BackendMode
@@ -34,6 +37,9 @@ import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.core.UserTurn
 import com.aliahad.aichat.activity.OfficeWorkScheduler
+import com.aliahad.aichat.overlay.ActionBubbleService
+import com.aliahad.aichat.overlay.FloatingPromptTemplate
+import com.aliahad.aichat.overlay.OverlayPermissionStatus
 import com.aliahad.aichat.residency.ModelResidencyState
 import com.aliahad.aichat.inference.VisionDetailProfile
 import com.aliahad.aichat.inference.VisionBudgetPlanner
@@ -47,6 +53,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -56,6 +63,7 @@ enum class AppPage {
     CHAT,
     MEMORY,
     SKILLS,
+    FLOATING_PROMPTS,
     SETTINGS,
 }
 
@@ -104,6 +112,7 @@ data class MainUiState(
     val skills: List<SkillRecord> = emptyList(),
     val selectedSkillIds: List<String> = emptyList(),
     val messageSkills: Map<String, List<SkillPromptBlock>> = emptyMap(),
+    val floatingPromptTemplates: List<FloatingPromptTemplate> = emptyList(),
     val draftKey: String = "",
     val selectedConversationId: String? = null,
     val page: AppPage = AppPage.CHAT,
@@ -116,6 +125,10 @@ data class MainUiState(
     val contextProfiles: List<ModelContextProfile> = emptyList(),
     val memoryEnabled: Boolean = true,
     val collectionPaused: Boolean = false,
+    val floatingAssistantEnabled: Boolean = false,
+    val overlayPermissionStatus: OverlayPermissionStatus = OverlayPermissionStatus(),
+    val batteryOptimizationIgnored: Boolean = false,
+    val modelCatalogLoaded: Boolean = false,
     val phoneSourceStatuses: Map<ActivitySource, PhoneSourceStatus> = emptyMap(),
     val phoneSourceStats: Map<ActivitySource, ActivitySourceStats> = emptyMap(),
     val thinking: ThinkingUiState? = null,
@@ -156,8 +169,10 @@ class MainViewModel(
             }
         }
         viewModelScope.launch {
+            runCatching { container.modelRepository.ensureOfficialRecords() }
+                .onFailure(::showError)
             container.modelRepository.models.collectLatest { models ->
-                _uiState.update { it.copy(models = models) }
+                _uiState.update { it.copy(models = models, modelCatalogLoaded = true) }
             }
         }
         viewModelScope.launch {
@@ -174,6 +189,11 @@ class MainViewModel(
                         selectedSkillIds = it.selectedSkillIds.filter(enabledIds::contains),
                     )
                 }
+            }
+        }
+        viewModelScope.launch {
+            container.settings.floatingPromptTemplates.collectLatest { templates ->
+                _uiState.update { it.copy(floatingPromptTemplates = templates) }
             }
         }
         observeDraft(_uiState.value.draftKey)
@@ -223,6 +243,27 @@ class MainViewModel(
             }
         }
         viewModelScope.launch {
+            container.settings.floatingAssistantEnabled.distinctUntilChanged().collectLatest { enabled ->
+                val status = currentOverlayPermissionStatus()
+                _uiState.update {
+                    it.copy(
+                        floatingAssistantEnabled = enabled,
+                        overlayPermissionStatus = status,
+                    )
+                }
+                if (enabled) {
+                    if (status.canDrawOverlays) {
+                        ActionBubbleService.start(container.application)
+                    } else {
+                        ActionBubbleService.stop(container.application)
+                        showError(IllegalStateException(overlayPermissionMessage(status)))
+                    }
+                } else {
+                    ActionBubbleService.stop(container.application)
+                }
+            }
+        }
+        viewModelScope.launch {
             container.activityRepository.sourceStats.collectLatest { stats ->
                 _uiState.update { state ->
                     state.copy(phoneSourceStats = stats.associateBy(ActivitySourceStats::source))
@@ -230,6 +271,8 @@ class MainViewModel(
             }
         }
         refreshPhoneSourceAccess()
+        refreshOverlayPermissionStatus()
+        refreshBackgroundPersistenceStatus()
     }
 
     fun setPage(page: AppPage) {
@@ -828,6 +871,51 @@ class MainViewModel(
         }
     }
 
+    fun createFloatingPromptTemplate(label: String, prompt: String, enabled: Boolean = true) {
+        viewModelScope.launch {
+            runCatching {
+                container.settings.createFloatingPromptTemplate(label, prompt, enabled)
+            }.onFailure(::showError)
+        }
+    }
+
+    fun updateFloatingPromptTemplate(
+        id: String,
+        label: String,
+        prompt: String,
+        enabled: Boolean,
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                container.settings.updateFloatingPromptTemplate(id, label, prompt, enabled)
+            }.onFailure(::showError)
+        }
+    }
+
+    fun setFloatingPromptTemplateEnabled(id: String, enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching {
+                container.settings.setFloatingPromptTemplateEnabled(id, enabled)
+            }.onFailure(::showError)
+        }
+    }
+
+    fun deleteFloatingPromptTemplate(id: String) {
+        viewModelScope.launch {
+            runCatching {
+                container.settings.deleteFloatingPromptTemplate(id)
+            }.onFailure(::showError)
+        }
+    }
+
+    fun resetFloatingPromptTemplates() {
+        viewModelScope.launch {
+            runCatching {
+                container.settings.resetFloatingPromptTemplates()
+            }.onFailure(::showError)
+        }
+    }
+
     fun setMemoryEnabled(enabled: Boolean) {
         viewModelScope.launch { container.settings.setMemoryEnabled(enabled) }
     }
@@ -852,6 +940,59 @@ class MainViewModel(
                 .forEach { OfficeWorkScheduler.collectNow(container.application, it.source) }
         }
     }
+
+    fun refreshOverlayPermissionStatus() {
+        _uiState.update { it.copy(overlayPermissionStatus = currentOverlayPermissionStatus()) }
+        val state = _uiState.value
+        if (state.floatingAssistantEnabled && state.overlayPermissionStatus.canDrawOverlays) {
+            ActionBubbleService.start(container.application)
+        }
+    }
+
+    fun refreshBackgroundPersistenceStatus() {
+        _uiState.update {
+            it.copy(batteryOptimizationIgnored = isIgnoringBatteryOptimizations())
+        }
+    }
+
+    fun setFloatingAssistantEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            if (enabled) {
+                val status = currentOverlayPermissionStatus()
+                _uiState.update { it.copy(overlayPermissionStatus = status) }
+                if (!status.canDrawOverlays) {
+                    showError(IllegalStateException(overlayPermissionMessage(status)))
+                    return@launch
+                }
+                if (!status.accessibilityEnabled) {
+                    showError(IllegalStateException(overlayPermissionMessage(status)))
+                }
+            }
+            container.settings.setFloatingAssistantEnabled(enabled)
+        }
+    }
+
+    private fun currentOverlayPermissionStatus(): OverlayPermissionStatus =
+        OverlayPermissionStatus(
+            canDrawOverlays = Settings.canDrawOverlays(container.application),
+            accessibilityEnabled = container.phoneSourceAccessManager.hasAccess(ActivitySource.ACCESSIBILITY),
+            notificationsEnabled = NotificationManagerCompat.from(container.application).areNotificationsEnabled(),
+        )
+
+    private fun overlayPermissionMessage(status: OverlayPermissionStatus): String = when {
+        !status.canDrawOverlays && !status.accessibilityEnabled ->
+            "Grant Draw over other apps for the bubble. Grant Screen context access before executing screen prompts."
+        !status.canDrawOverlays ->
+            "Grant Draw over other apps before enabling the floating assistant."
+        !status.accessibilityEnabled ->
+            "Grant Screen context access before executing screen prompts."
+        else -> "Floating assistant permissions are ready."
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean =
+        container.application
+            .getSystemService(PowerManager::class.java)
+            .isIgnoringBatteryOptimizations(container.application.packageName)
 
     private fun collectFromGrantedSources(statuses: Map<ActivitySource, PhoneSourceStatus>) {
         statuses.values

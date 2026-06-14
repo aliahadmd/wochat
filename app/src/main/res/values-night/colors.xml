@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="aichat_window_background">#1B1F1D</color>
+    <color name="aichat_status_bar">#1B1F1D</color>
+    <color name="aichat_navigation_bar">#1B1F1D</color>
+</resources>

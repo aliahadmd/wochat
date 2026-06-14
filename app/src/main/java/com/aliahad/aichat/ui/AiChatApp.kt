@@ -141,6 +141,10 @@ import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.model.formatBytes
+import com.aliahad.aichat.overlay.FloatingPromptTemplate
+import com.aliahad.aichat.overlay.MAX_FLOATING_PROMPT_LABEL_CHARS
+import com.aliahad.aichat.overlay.MAX_FLOATING_PROMPT_TEXT_CHARS
+import com.aliahad.aichat.overlay.OverlayPermissionStatus
 import com.aliahad.aichat.residency.ModelResidencyState
 import com.aliahad.aichat.settings.DeviceSettingsNavigator
 import com.aliahad.aichat.skill.MAX_SELECTED_SKILLS
@@ -207,6 +211,10 @@ fun AiChatApp(
                     actions.setPage(AppPage.SKILLS)
                     scope.launch { drawerState.close() }
                 },
+                onFloatingPrompts = {
+                    actions.setPage(AppPage.FLOATING_PROMPTS)
+                    scope.launch { drawerState.close() }
+                },
                 onSettings = {
                     actions.setPage(AppPage.SETTINGS)
                     scope.launch { drawerState.close() }
@@ -228,6 +236,7 @@ fun AiChatApp(
                             AppPage.SETTINGS -> Text("Settings")
                             AppPage.MEMORY -> Text("Office Memory")
                             AppPage.SKILLS -> Text("Skills")
+                            AppPage.FLOATING_PROMPTS -> Text("Float Prompts")
                             AppPage.CHAT -> Box(
                                 modifier = Modifier.fillMaxWidth(),
                                 contentAlignment = Alignment.Center,
@@ -292,6 +301,11 @@ fun AiChatApp(
                     modifier = Modifier.padding(padding),
                 )
                 AppPage.SKILLS -> SkillsScreen(
+                    state = state,
+                    actions = actions,
+                    modifier = Modifier.padding(padding),
+                )
+                AppPage.FLOATING_PROMPTS -> FloatingPromptManagerScreen(
                     state = state,
                     actions = actions,
                     modifier = Modifier.padding(padding),
@@ -431,6 +445,7 @@ private fun ConversationDrawer(
     onDelete: (String) -> Unit,
     onMemory: () -> Unit,
     onSkills: () -> Unit,
+    onFloatingPrompts: () -> Unit,
     onSettings: () -> Unit,
 ) {
     ModalDrawerSheet(modifier = Modifier.width(320.dp)) {
@@ -493,6 +508,11 @@ private fun ConversationDrawer(
                 Spacer(Modifier.width(8.dp))
                 Text("Skills")
             }
+            TextButton(onClick = onFloatingPrompts, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Info, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Float prompts")
+            }
             TextButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.Settings, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -522,7 +542,11 @@ private fun ChatScreen(
     var input by remember { mutableStateOf("") }
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var previewAttachment by remember { mutableStateOf<Attachment?>(null) }
-    val selectedModel = state.models.firstOrNull { it.selected }
+    val selectedModel = if (state.modelCatalogLoaded) {
+        state.models.firstOrNull { it.selected }
+    } else {
+        null
+    }
     val visionRequired = state.draftAttachments.any {
         it.kind == AttachmentKind.IMAGE || it.derivedImagePaths.isNotEmpty()
     }
@@ -538,12 +562,16 @@ private fun ChatScreen(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        if (selectedModel == null) {
+        if (!state.modelCatalogLoaded) {
+            ModelCatalogLoadingBanner()
+        } else if (selectedModel == null) {
             ModelRequiredBanner(onOpenSettings)
         } else {
             InferenceStatusBar(state, selectedModel)
         }
-        if (state.messages.isEmpty()) {
+        if (!state.modelCatalogLoaded) {
+            StartupChatPlaceholder(modifier = Modifier.weight(1f))
+        } else if (state.messages.isEmpty()) {
             EmptyChat(
                 modelName = selectedModel?.displayName,
                 modifier = Modifier.weight(1f),
@@ -572,7 +600,7 @@ private fun ChatScreen(
             input = input,
             onInputChange = { input = it },
             sending = state.isSending,
-            enabled = selectedModel != null,
+            enabled = state.modelCatalogLoaded && selectedModel != null,
             attachments = state.draftAttachments,
             skills = state.skills,
             selectedSkillIds = state.selectedSkillIds,
@@ -622,6 +650,25 @@ private fun ChatScreen(
 }
 
 @Composable
+private fun ModelCatalogLoadingBanner() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "Loading local model catalog...",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun ModelRequiredBanner(onOpenSettings: () -> Unit) {
     Row(
         modifier = Modifier
@@ -632,6 +679,25 @@ private fun ModelRequiredBanner(onOpenSettings: () -> Unit) {
     ) {
         Text("A local GGUF model is required.", modifier = Modifier.weight(1f))
         TextButton(onClick = onOpenSettings) { Text("Set up") }
+    }
+}
+
+@Composable
+private fun StartupChatPlaceholder(modifier: Modifier = Modifier) {
+    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator()
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Preparing AIchat",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "Checking your local models and background services.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -2404,6 +2470,282 @@ private fun skillFieldError(
 }
 
 @Composable
+private fun FloatingPromptManagerScreen(
+    state: MainUiState,
+    actions: MainViewModel,
+    modifier: Modifier = Modifier,
+) {
+    var creating by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<FloatingPromptTemplate?>(null) }
+    var pendingDelete by remember { mutableStateOf<FloatingPromptTemplate?>(null) }
+    var confirmReset by remember { mutableStateOf(false) }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    SectionTitle("Float Prompts", "Quick templates for the floating bubble")
+                }
+                Button(onClick = { creating = true }) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("New")
+                }
+            }
+            Text(
+                "Enabled templates appear in the floating bubble. The bubble shows two rows " +
+                    "and two columns at a time, then scrolls horizontally when you add more.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        if (state.floatingPromptTemplates.isEmpty()) {
+            item {
+                Card {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("No prompt templates", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Create one or restore the defaults to make the bubble fast again.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { creating = true }) { Text("Create") }
+                            TextButton(onClick = { confirmReset = true }) { Text("Restore defaults") }
+                        }
+                    }
+                }
+            }
+        } else {
+            items(state.floatingPromptTemplates, key = FloatingPromptTemplate::id) { template ->
+                FloatingPromptTemplateCard(
+                    template = template,
+                    onEdit = { editing = template },
+                    onEnabledChange = {
+                        actions.setFloatingPromptTemplateEnabled(template.id, it)
+                    },
+                    onDelete = { pendingDelete = template },
+                )
+            }
+            item {
+                OutlinedButton(
+                    onClick = { confirmReset = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Restore default templates")
+                }
+            }
+        }
+    }
+
+    if (creating) {
+        FloatingPromptTemplateDialog(
+            title = "Create float prompt",
+            template = null,
+            onDismiss = { creating = false },
+            onSave = { label, prompt, enabled ->
+                actions.createFloatingPromptTemplate(label, prompt, enabled)
+                creating = false
+            },
+        )
+    }
+    editing?.let { template ->
+        FloatingPromptTemplateDialog(
+            title = "Edit float prompt",
+            template = template,
+            onDismiss = { editing = null },
+            onSave = { label, prompt, enabled ->
+                actions.updateFloatingPromptTemplate(template.id, label, prompt, enabled)
+                editing = null
+            },
+        )
+    }
+    pendingDelete?.let { template ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete ${template.label}?") },
+            text = {
+                Text("This removes the template from the floating bubble. It does not affect past answers.")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    actions.deleteFloatingPromptTemplate(template.id)
+                    pendingDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+            },
+        )
+    }
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Restore default templates?") },
+            text = {
+                Text("This replaces your current float prompt templates with Reply, Proofread, Summarize, and Translate.")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    actions.resetFloatingPromptTemplates()
+                    confirmReset = false
+                }) { Text("Restore") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReset = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun FloatingPromptTemplateCard(
+    template: FloatingPromptTemplate,
+    onEdit: () -> Unit,
+    onEnabledChange: (Boolean) -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(template.label, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (template.enabled) "Visible in bubble" else "Hidden from bubble",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (template.enabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                Switch(
+                    checked = template.enabled,
+                    onCheckedChange = onEnabledChange,
+                )
+            }
+            Text(
+                template.prompt,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onEdit) { Text("Edit") }
+                TextButton(onClick = onDelete) { Text("Delete") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FloatingPromptTemplateDialog(
+    title: String,
+    template: FloatingPromptTemplate?,
+    onDismiss: () -> Unit,
+    onSave: (String, String, Boolean) -> Unit,
+) {
+    var label by remember(template?.id) { mutableStateOf(template?.label.orEmpty()) }
+    var prompt by remember(template?.id) { mutableStateOf(template?.prompt.orEmpty()) }
+    var enabled by remember(template?.id) { mutableStateOf(template?.enabled ?: true) }
+    var submitted by remember(template?.id) { mutableStateOf(false) }
+    val trimmedLabel = label.trim()
+    val trimmedPrompt = prompt.trim()
+    val labelError = skillFieldError(
+        value = trimmedLabel,
+        label = "Template name",
+        maxChars = MAX_FLOATING_PROMPT_LABEL_CHARS,
+        showRequired = submitted,
+    )
+    val promptError = skillFieldError(
+        value = trimmedPrompt,
+        label = "Template prompt",
+        maxChars = MAX_FLOATING_PROMPT_TEXT_CHARS,
+        showRequired = submitted,
+    )
+    val hasValidationErrors = trimmedLabel.isEmpty() ||
+        trimmedLabel.length > MAX_FLOATING_PROMPT_LABEL_CHARS ||
+        trimmedPrompt.isEmpty() ||
+        trimmedPrompt.length > MAX_FLOATING_PROMPT_TEXT_CHARS
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 520.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item {
+                    OutlinedTextField(
+                        value = label,
+                        onValueChange = { label = it },
+                        label = { Text("Button label") },
+                        singleLine = true,
+                        isError = labelError != null,
+                        supportingText = {
+                            Text(labelError ?: "${label.length}/$MAX_FLOATING_PROMPT_LABEL_CHARS")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = prompt,
+                        onValueChange = { prompt = it },
+                        label = { Text("Prompt inserted into bubble") },
+                        minLines = 5,
+                        maxLines = 10,
+                        isError = promptError != null,
+                        supportingText = {
+                            Text(promptError ?: "${prompt.length}/$MAX_FLOATING_PROMPT_TEXT_CHARS")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Show in floating bubble")
+                            Text(
+                                "Disable to keep the template saved but hidden.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(checked = enabled, onCheckedChange = { enabled = it })
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    submitted = true
+                    if (!hasValidationErrors) onSave(trimmedLabel, trimmedPrompt, enabled)
+                },
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
 private fun SettingsScreen(
     state: MainUiState,
     actions: MainViewModel,
@@ -2494,7 +2836,14 @@ private fun SettingsScreen(
                 OutlinedButton(onClick = actions::retryPreload) { Text("Retry preload") }
                 TextButton(onClick = actions::unloadModel) { Text("Unload") }
             }
-            DevicePersistenceSettings()
+            DevicePersistenceSettings(state.batteryOptimizationIgnored)
+        }
+        item {
+            FloatingAssistantSettings(
+                enabled = state.floatingAssistantEnabled,
+                status = state.overlayPermissionStatus,
+                onToggle = actions::setFloatingAssistantEnabled,
+            )
         }
         item {
             ContextProfileCard(
@@ -2571,24 +2920,145 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun DevicePersistenceSettings() {
+private fun FloatingAssistantSettings(
+    enabled: Boolean,
+    status: OverlayPermissionStatus,
+    onToggle: (Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+    SectionTitle("Floating Assistant", "Read-only help over other apps")
+    Spacer(Modifier.height(10.dp))
+    Card {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Show floating AIchat bubble", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Tap it over another app to ask about the current visible screen. " +
+                            "Execute scans downward, writes a copyable answer, and never sends or pastes for you.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = onToggle)
+            }
+            FloatingPermissionRow(
+                title = "Draw over other apps",
+                granted = status.canDrawOverlays,
+                detail = if (status.canDrawOverlays) {
+                    "Overlay permission granted"
+                } else {
+                    "Required for the bubble"
+                },
+                actionLabel = "Open",
+                onAction = { DeviceSettingsNavigator.openOverlayPermission(context) },
+            )
+            FloatingPermissionRow(
+                title = "Screen context access",
+                granted = status.accessibilityEnabled,
+                detail = if (status.accessibilityEnabled) {
+                    "Accessibility service can read visible text"
+                } else {
+                    "Required to capture the current screen"
+                },
+                actionLabel = "Open",
+                onAction = { DeviceSettingsNavigator.openAccessibility(context) },
+            )
+            FloatingPermissionRow(
+                title = "Notifications",
+                granted = status.notificationsEnabled,
+                detail = if (status.notificationsEnabled) {
+                    "Foreground-service notification can be shown"
+                } else {
+                    "Recommended so the stop control is visible"
+                },
+                actionLabel = "Open",
+                onAction = { DeviceSettingsNavigator.openAppPermissions(context) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun FloatingPermissionRow(
+    title: String,
+    granted: Boolean,
+    detail: String,
+    actionLabel: String,
+    onAction: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            if (granted) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
+            contentDescription = null,
+            tint = if (granted) sourceGrantedColor() else MaterialTheme.colorScheme.error,
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        OutlinedButton(onClick = onAction) {
+            Text(actionLabel)
+        }
+    }
+}
+
+@Composable
+private fun DevicePersistenceSettings(batteryOptimizationIgnored: Boolean) {
     val context = LocalContext.current
     Spacer(Modifier.height(10.dp))
     Text(
         "HyperOS permissions",
         style = MaterialTheme.typography.labelLarge,
     )
-    Text(
-        "Allow auto-start and unrestricted battery use so reboot preloading has the best chance to run.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = { DeviceSettingsNavigator.openAutoStart(context) }) {
-            Text("Auto-start")
-        }
-        OutlinedButton(onClick = { DeviceSettingsNavigator.openBatterySettings(context) }) {
-            Text("Battery")
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FloatingPermissionRow(
+            title = "Battery unrestricted",
+            granted = batteryOptimizationIgnored,
+            detail = if (batteryOptimizationIgnored) {
+                "Android is not applying Doze battery optimization to AIchat"
+            } else {
+                "Recommended for keeping the resident model and bubble alive longer"
+            },
+            actionLabel = if (batteryOptimizationIgnored) "Open" else "Allow",
+            onAction = {
+                if (batteryOptimizationIgnored) {
+                    DeviceSettingsNavigator.openBatterySettings(context)
+                } else {
+                    DeviceSettingsNavigator.requestIgnoreBatteryOptimizations(context)
+                }
+            },
+        )
+        Text(
+            "Use Home or Minimize to leave AIchat running. HyperOS treats swiping AIchat away " +
+                "from Recents like a force-stop and can disable Screen context access, so AIchat " +
+                "hides its task from Recents.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "Also allow auto-start and unrestricted battery use. No Android app can restart itself " +
+                "after the user force-stops it from system settings or a phone cleaner.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { DeviceSettingsNavigator.openAutoStart(context) }) {
+                Text("Auto-start")
+            }
+            OutlinedButton(onClick = { DeviceSettingsNavigator.openBatterySettings(context) }) {
+                Text("Battery settings")
+            }
         }
     }
 }

@@ -244,6 +244,10 @@ class EncryptedOfficeBackupRepository(
             .put("memoryEnabled", settings.memoryEnabled.first())
             .put("collectionPaused", settings.collectionPaused.first())
             .put("actionAllowlist", settings.actionAllowlist.first().joinToString(","))
+            .put(
+                "floatingPromptTemplates",
+                settings.encodeFloatingPromptTemplates(settings.floatingPromptTemplates.first()),
+            )
     }
 
     private fun decryptAndExtract(uri: Uri, passphrase: CharArray, working: File) {
@@ -519,6 +523,11 @@ class EncryptedOfficeBackupRepository(
                 .filter(String::isNotEmpty)
                 .toSet(),
         )
+        if (json.has("floatingPromptTemplates")) {
+            settings.setFloatingPromptTemplates(
+                settings.decodeFloatingPromptTemplates(json.optString("floatingPromptTemplates")),
+            )
+        }
     }
 
     private fun readCounts(snapshot: File): Map<String, Long> {

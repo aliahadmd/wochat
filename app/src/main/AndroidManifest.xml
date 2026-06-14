@@ -4,8 +4,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -52,10 +54,20 @@
         <service
             android:name=".residency.ModelResidencyService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the user's selected local LLM loaded for on-device chat." />
+        </service>
+        <service
+            android:name=".overlay.ActionBubbleService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Shows a user-enabled floating assistant bubble over other apps." />
         </service>
         <service
             android:name=".activity.OfficeNotificationListenerService"
@@ -99,6 +111,7 @@
         </receiver>
         <activity
             android:name=".MainActivity"
+            android:excludeFromRecents="true"
             android:exported="true"
             android:theme="@style/Theme.Aichat"
             android:windowSoftInputMode="adjustResize">

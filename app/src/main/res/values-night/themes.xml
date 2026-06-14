@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Aichat" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.Aichat" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/aichat_window_background</item>
         <item name="android:statusBarColor">@color/aichat_status_bar</item>
         <item name="android:navigationBarColor">@color/aichat_navigation_bar</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
     </style>

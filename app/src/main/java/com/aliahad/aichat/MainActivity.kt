@@ -220,6 +220,8 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.refreshPhoneSourceAccess()
+        viewModel.refreshOverlayPermissionStatus()
+        viewModel.refreshBackgroundPersistenceStatus()
     }
 
     override fun onStop() {
