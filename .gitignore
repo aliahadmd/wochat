@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+/release-signing/
+/.claude/settings.local.json
+/.idea/deviceManager.xml

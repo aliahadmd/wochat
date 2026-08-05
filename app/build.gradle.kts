@@ -4,6 +4,38 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val releaseKeystore = rootProject.file("release-signing/AIchat-release.jks")
+val releaseKeyAlias = "aichat-release"
+val releaseKeychainService = "com.aliahad.aichat.release-signing"
+val isMacOs = providers.systemProperty("os.name")
+    .map { it.startsWith("Mac", ignoreCase = true) }
+    .getOrElse(false)
+
+val keychainReleasePassword = if (isMacOs) {
+    providers.exec {
+        isIgnoreExitValue = true
+        commandLine(
+            "security",
+            "find-generic-password",
+            "-w",
+            "-a",
+            releaseKeyAlias,
+            "-s",
+            releaseKeychainService,
+        )
+    }.standardOutput.asText.map { it.trim() }
+} else {
+    providers.provider { "" }
+}
+
+val releaseStorePasswordProvider = providers.environmentVariable("AICHAT_RELEASE_STORE_PASSWORD")
+    .orElse(keychainReleasePassword)
+val releaseStorePassword = releaseStorePasswordProvider.orNull?.takeIf(String::isNotBlank)
+val releaseKeyPassword = providers.environmentVariable("AICHAT_RELEASE_KEY_PASSWORD")
+    .orElse(releaseStorePasswordProvider)
+    .orNull
+    ?.takeIf(String::isNotBlank)
+
 android {
     namespace = "com.aliahad.aichat"
     compileSdk {
@@ -18,7 +50,7 @@ android {
         minSdk = 33
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
         buildConfigField(
             "String",
             "LLAMA_RUNTIME_REVISION",
@@ -52,6 +84,15 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = releaseKeystore
+            storePassword = releaseStorePassword.orEmpty()
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword.orEmpty()
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -59,6 +100,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "src/main/keepRules/rules.keep"

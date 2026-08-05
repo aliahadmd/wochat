@@ -90,6 +90,27 @@ The debug APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+### Release signing
+
+Production releases use `release-signing/AIchat-release.jks`, which is excluded
+from Git. On the release Mac, the password is stored in the system Keychain under
+service `com.aliahad.aichat.release-signing` and account `aichat-release`.
+Back up the keystore securely: losing it prevents future APK updates from using
+the same signing identity.
+
+For CI or another workstation, restore the keystore to the same path and set:
+
+```text
+AICHAT_RELEASE_STORE_PASSWORD
+AICHAT_RELEASE_KEY_PASSWORD
+```
+
+Build the signed, optimized APK with:
+
+```bash
+./gradlew assembleRelease
+```
+
 To run connected instrumentation tests:
 
 ```bash
@@ -152,4 +173,3 @@ is installed.
 The first release focuses on dependable private chat, multimodal input, local
 memory, skills, backups, and robust on-device inference. Model weights are
 downloaded separately and remain subject to their upstream terms.
-
