@@ -1,9 +1,11 @@
 package com.aliahad.aichat.model
 
 import android.content.Context
-import android.net.Uri
 import android.os.StatFs
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -23,16 +25,15 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
-import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 interface ModelRepository {
     val models: Flow<List<ModelRecord>>
     val projectors: Flow<List<ProjectorRecord>>
     fun modelsDirectory(): File
     suspend fun ensureOfficialRecords()
-    suspend fun startOfficialDownload(id: String)
+    suspend fun startOfficialDownload(id: String, allowMetered: Boolean = false)
     suspend fun pauseOfficialDownload(id: String)
-    suspend fun importModel(uri: Uri): ModelRecord
     suspend fun selectModel(id: String)
     suspend fun selectedModel(): ModelRecord?
     suspend fun ensureSha256(model: ModelRecord): ModelRecord
@@ -40,7 +41,7 @@ interface ModelRepository {
     suspend fun deleteModel(id: String)
     suspend fun testHuggingFaceToken(token: String): Result<Unit>
     suspend fun projectorForModel(modelId: String): ProjectorRecord?
-    suspend fun startProjectorDownload(id: String)
+    suspend fun startProjectorDownload(id: String, allowMetered: Boolean = false)
     suspend fun pauseProjectorDownload(id: String)
     suspend fun deleteProjector(id: String)
 }
@@ -55,17 +56,36 @@ class DefaultModelRepository(
     private val workManager = WorkManager.getInstance(context)
 
     override val models: Flow<List<ModelRecord>> =
-        dao.observeAll().map { rows -> rows.map(ModelRecordEntity::toDomain) }
+        dao.observeAll().map { rows ->
+            rows.filter { it.id == ModelConstants.GEMMA_4_E4B.id }
+                .map(ModelRecordEntity::toDomain)
+        }
     override val projectors: Flow<List<ProjectorRecord>> =
-        projectorDao.observeAll().map { rows -> rows.map(ProjectorRecordEntity::toDomain) }
+        projectorDao.observeAll().map { rows ->
+            rows.filter { it.id == ModelConstants.GEMMA_4_E4B_PROJECTOR.id }
+                .map(ProjectorRecordEntity::toDomain)
+        }
 
     override fun modelsDirectory(): File =
         File(context.noBackupFilesDir, "models").apply { mkdirs() }
 
     override suspend fun ensureOfficialRecords() {
+        retireUnsupportedArtifacts()
         ModelConstants.OFFICIAL_MODELS.forEach { spec ->
             val existing = dao.get(spec.id)
             val finalFile = File(modelsDirectory(), spec.fileName)
+            val part = File(modelsDirectory(), "${spec.fileName}.part")
+            val metadataChanged = existing != null && (
+                existing.fileName != spec.fileName ||
+                    existing.sourceRepo != spec.repository ||
+                    existing.expectedBytes != spec.sizeBytes ||
+                    !existing.sha256.equals(spec.sha256, ignoreCase = true)
+                )
+            if (metadataChanged) {
+                workManager.cancelUniqueWork(spec.workName)
+                part.delete()
+                existing?.localPath?.let(::File)?.takeUnless { isPathInUse(it.absolutePath) }?.delete()
+            }
             val fileReady = finalFile.exists() && finalFile.length() == spec.sizeBytes
             if (existing == null) {
                 dao.upsert(
@@ -84,7 +104,8 @@ class DefaultModelRepository(
                     ),
                 )
             } else {
-                val localFileExists = existing.localPath?.let(::File)?.exists() == true
+                val localFileExists = !metadataChanged &&
+                    existing.localPath?.let(::File)?.let { it.exists() && it.length() == spec.sizeBytes } == true
                 val reconciled = existing.copy(
                     displayName = spec.displayName,
                     fileName = spec.fileName,
@@ -99,15 +120,15 @@ class DefaultModelRepository(
                     downloadedBytes = when {
                         fileReady -> finalFile.length()
                         localFileExists -> existing.downloadedBytes
-                        else -> File(modelsDirectory(), "${spec.fileName}.part").length()
+                        else -> part.length()
                     },
                     status = when {
                         fileReady -> DownloadStatus.READY
                         localFileExists -> existing.status
-                        existing.status in ACTIVE_DOWNLOAD_STATES -> existing.status
+                        !metadataChanged && existing.status in ACTIVE_DOWNLOAD_STATES -> existing.status
                         else -> DownloadStatus.NOT_DOWNLOADED
                     },
-                    error = if (fileReady) null else existing.error,
+                    error = if (fileReady || metadataChanged) null else existing.error,
                     selected = existing.selected && (fileReady || localFileExists),
                 )
                 if (reconciled != existing) dao.upsert(reconciled)
@@ -116,8 +137,19 @@ class DefaultModelRepository(
         ModelConstants.OFFICIAL_PROJECTORS.forEach { spec ->
             val existing = projectorDao.get(spec.id)
             val finalFile = File(modelsDirectory(), spec.fileName)
-            val fileReady = finalFile.exists() && finalFile.length() == spec.sizeBytes
             val part = File(modelsDirectory(), "${spec.fileName}.part")
+            val metadataChanged = existing != null && (
+                existing.fileName != spec.fileName ||
+                    existing.sourceRepo != spec.repository ||
+                    existing.expectedBytes != spec.sizeBytes ||
+                    !existing.sha256.equals(spec.sha256, ignoreCase = true)
+                )
+            if (metadataChanged) {
+                workManager.cancelUniqueWork(spec.workName)
+                part.delete()
+                existing?.localPath?.let(::File)?.takeUnless { isPathInUse(it.absolutePath) }?.delete()
+            }
+            val fileReady = finalFile.exists() && finalFile.length() == spec.sizeBytes
             projectorDao.upsert(
                 ProjectorRecordEntity(
                     id = spec.id,
@@ -131,16 +163,17 @@ class DefaultModelRepository(
                     downloadedBytes = if (fileReady) finalFile.length() else part.length(),
                     status = when {
                         fileReady -> DownloadStatus.READY
-                        existing?.status in ACTIVE_DOWNLOAD_STATES -> requireNotNull(existing).status
+                        !metadataChanged && existing?.status in ACTIVE_DOWNLOAD_STATES ->
+                            requireNotNull(existing).status
                         else -> DownloadStatus.NOT_DOWNLOADED
                     },
-                    error = if (fileReady) null else existing?.error,
+                    error = if (fileReady || metadataChanged) null else existing?.error,
                 ),
             )
         }
     }
 
-    override suspend fun startOfficialDownload(id: String) {
+    override suspend fun startOfficialDownload(id: String, allowMetered: Boolean) {
         ensureOfficialRecords()
         val spec = requireNotNull(ModelConstants.officialModel(id)) { "Official model not found" }
         val record = requireNotNull(dao.get(id)) { "Model record not found" }
@@ -156,10 +189,15 @@ class DefaultModelRepository(
                 downloadedBytes = part.length(),
                 status = DownloadStatus.QUEUED,
                 error = null,
+                bytesPerSecond = 0,
+                etaSeconds = null,
+                retryAttempt = 0,
             ),
         )
         val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
             .setInputData(workDataOf(ModelConstants.WORK_INPUT_MODEL_ID to id))
+            .setConstraints(downloadConstraints(allowMetered))
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
             .build()
         workManager.enqueueUniqueWork(
             spec.workName,
@@ -177,43 +215,10 @@ class DefaultModelRepository(
                     downloadedBytes = File(modelsDirectory(), "${it.fileName}.part").length(),
                     status = DownloadStatus.PAUSED,
                     error = null,
+                    bytesPerSecond = 0,
+                    etaSeconds = null,
                 ),
             )
-        }
-    }
-
-    override suspend fun importModel(uri: Uri): ModelRecord = withContext(Dispatchers.IO) {
-        val id = "import-${UUID.randomUUID()}"
-        val displayName = queryDisplayName(uri)?.removeSuffix(".gguf") ?: "Imported model"
-        val fileName = "${safeFileName(displayName)}-${id.takeLast(8)}.gguf"
-        val destination = File(modelsDirectory(), fileName)
-        val temporary = File(modelsDirectory(), "$fileName.part")
-        try {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                GgufValidator.validateStream(input)
-            } ?: error("Unable to open selected file")
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                temporary.outputStream().buffered().use { output -> input.copyTo(output, DEFAULT_BUFFER_SIZE * 16) }
-            } ?: error("Unable to open selected file")
-            GgufValidator.validate(temporary).getOrThrow()
-            AtomicFileInstaller.replace(temporary, destination)
-            ModelRecord(
-                id = id,
-                displayName = displayName,
-                fileName = fileName,
-                localPath = destination.absolutePath,
-                sourceRepo = null,
-                expectedBytes = destination.length(),
-                sha256 = sha256(destination),
-                downloadedBytes = destination.length(),
-                status = DownloadStatus.READY,
-                error = null,
-                selected = false,
-            ).also { dao.upsert(it.toEntity()) }
-        } catch (error: Throwable) {
-            temporary.delete()
-            destination.delete()
-            throw error
         }
     }
 
@@ -276,7 +281,7 @@ class DefaultModelRepository(
     override suspend fun projectorForModel(modelId: String): ProjectorRecord? =
         projectorDao.getForModel(modelId)?.toDomain()
 
-    override suspend fun startProjectorDownload(id: String) {
+    override suspend fun startProjectorDownload(id: String, allowMetered: Boolean) {
         ensureOfficialRecords()
         val spec = requireNotNull(ModelConstants.officialProjector(id)) { "Official projector not found" }
         val record = requireNotNull(projectorDao.get(id)) { "Projector record not found" }
@@ -291,10 +296,15 @@ class DefaultModelRepository(
                 downloadedBytes = part.length(),
                 status = DownloadStatus.QUEUED,
                 error = null,
+                bytesPerSecond = 0,
+                etaSeconds = null,
+                retryAttempt = 0,
             ),
         )
         val request = OneTimeWorkRequestBuilder<ProjectorDownloadWorker>()
             .setInputData(workDataOf(ModelConstants.WORK_INPUT_PROJECTOR_ID to id))
+            .setConstraints(downloadConstraints(allowMetered))
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
             .build()
         workManager.enqueueUniqueWork(spec.workName, ExistingWorkPolicy.REPLACE, request)
     }
@@ -308,6 +318,8 @@ class DefaultModelRepository(
                     downloadedBytes = File(modelsDirectory(), "${it.fileName}.part").length(),
                     status = DownloadStatus.PAUSED,
                     error = null,
+                    bytesPerSecond = 0,
+                    etaSeconds = null,
                 ),
             )
         }
@@ -331,16 +343,37 @@ class DefaultModelRepository(
         )
     }
 
-    private fun queryDisplayName(uri: Uri): String? {
-        context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor ->
-                if (cursor.moveToFirst()) return cursor.getString(0)
+    private suspend fun retireUnsupportedArtifacts() = withContext(Dispatchers.IO) {
+        val supportedModel = ModelConstants.GEMMA_4_E4B
+        val supportedProjector = ModelConstants.GEMMA_4_E4B_PROJECTOR
+        dao.getAll().filter { it.id != supportedModel.id }.forEach { record ->
+            workManager.cancelUniqueWork("official-model-download-${record.id}")
+            val inUse = record.localPath?.let(isPathInUse) == true
+            if (!inUse) {
+                record.localPath?.let(::File)?.delete()
+                File(modelsDirectory(), "${record.fileName}.part").delete()
+                dao.delete(record.id)
             }
-        return uri.lastPathSegment
+        }
+        projectorDao.getAll().filter { it.id != supportedProjector.id }.forEach { record ->
+            workManager.cancelUniqueWork("official-projector-download-${record.id}")
+            val inUse = record.localPath?.let(isPathInUse) == true
+            if (!inUse) {
+                record.localPath?.let(::File)?.delete()
+                File(modelsDirectory(), "${record.fileName}.part").delete()
+                projectorDao.delete(record.id)
+            }
+        }
+        val allowedNames = setOf(
+            supportedModel.fileName,
+            "${supportedModel.fileName}.part",
+            supportedProjector.fileName,
+            "${supportedProjector.fileName}.part",
+        )
+        modelsDirectory().listFiles().orEmpty()
+            .filter { it.isFile && it.name !in allowedNames && !isPathInUse(it.absolutePath) }
+            .forEach(File::delete)
     }
-
-    private fun safeFileName(value: String): String =
-        value.lowercase().replace(Regex("[^a-z0-9._-]+"), "-").trim('-').ifEmpty { "model" }
 
     private companion object {
         const val MIN_FREE_SPACE = 2L * 1024 * 1024 * 1024
@@ -351,21 +384,27 @@ class DefaultModelRepository(
             DownloadStatus.PAUSED,
         )
     }
+
+    private fun downloadConstraints(allowMetered: Boolean): Constraints =
+        Constraints.Builder()
+            .setRequiredNetworkType(if (allowMetered) NetworkType.CONNECTED else NetworkType.UNMETERED)
+            .setRequiresStorageNotLow(true)
+            .build()
 }
 
 internal fun ModelRecordEntity.toDomain() = ModelRecord(
     id, displayName, fileName, localPath, sourceRepo, expectedBytes, sha256,
-    downloadedBytes, status, error, selected,
+    downloadedBytes, status, error, selected, bytesPerSecond, etaSeconds, retryAttempt,
 )
 
 internal fun ModelRecord.toEntity() = ModelRecordEntity(
     id, displayName, fileName, localPath, sourceRepo, expectedBytes, sha256,
-    downloadedBytes, status, error, selected,
+    downloadedBytes, status, error, selected, bytesPerSecond, etaSeconds, retryAttempt,
 )
 
 internal fun ProjectorRecordEntity.toDomain() = ProjectorRecord(
     id, modelId, displayName, fileName, localPath, sourceRepo, expectedBytes, sha256,
-    downloadedBytes, status, error,
+    downloadedBytes, status, error, bytesPerSecond, etaSeconds, retryAttempt,
 )
 
 fun formatBytes(bytes: Long): String {

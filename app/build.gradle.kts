@@ -46,7 +46,7 @@ android {
                     "-DGGML_LLAMAFILE=OFF",
                     "-DGGML_NATIVE=OFF",
                     "-DGGML_OPENMP=ON",
-                    "-DGGML_VULKAN=OFF"
+                    "-DGGML_VULKAN=ON"
                 )
             }
         }
@@ -72,6 +72,7 @@ android {
     }
 
     buildFeatures {
+        aidl = true
         buildConfig = true
         compose = true
     }
@@ -116,6 +117,7 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.sqlite)
     implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.health.connect.client)
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
     implementation(libs.commons.compress)

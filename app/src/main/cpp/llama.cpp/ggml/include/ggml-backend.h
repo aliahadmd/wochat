@@ -251,6 +251,7 @@ extern "C" {
 
     // Load a backend from a dynamic library and register it
     GGML_API ggml_backend_reg_t ggml_backend_load(const char * path);
+    GGML_API ggml_backend_reg_t ggml_backend_load_best_from_path(const char * name, const char * dir_path);
     // Unload a backend if loaded dynamically and unregister it
     GGML_API void               ggml_backend_unload(ggml_backend_reg_t reg);
     // Load all known backends from dynamic libraries

@@ -47,6 +47,7 @@ class AttachmentProcessingWorker(
                         pageCount = result.pageCount,
                         selectedPages = result.selectedPages.sorted().joinToString(","),
                         imageTokenBudget = result.imageTokenBudget,
+                        durationMillis = result.durationMillis,
                         state = AttachmentProcessingState.READY,
                         progress = 1f,
                         error = null,

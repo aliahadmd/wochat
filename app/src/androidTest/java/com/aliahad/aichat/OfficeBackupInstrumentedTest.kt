@@ -7,8 +7,11 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aliahad.aichat.core.MessageRole
+import com.aliahad.aichat.core.AttachmentKind
+import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.data.AppDatabase
+import com.aliahad.aichat.data.AttachmentEntity
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -19,6 +22,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class OfficeBackupInstrumentedTest {
@@ -100,6 +104,36 @@ class OfficeBackupInstrumentedTest {
                 ),
             )
             val before = application.container.memoryRepository.memories.first()
+            val attachmentId = "backup-audio-${UUID.randomUUID()}"
+            val attachmentFile = File(
+                application.noBackupFilesDir,
+                "attachments/$attachmentId/recording.wav",
+            ).apply {
+                parentFile?.mkdirs()
+                writeBytes(byteArrayOf(0x52, 0x49, 0x46, 0x46))
+            }
+            application.container.database.attachmentDao().upsert(
+                AttachmentEntity(
+                    id = attachmentId,
+                    conversationId = null,
+                    draftKey = "backup-audio",
+                    displayName = "recording.wav",
+                    mimeType = "audio/wav",
+                    kind = AttachmentKind.AUDIO,
+                    originalPath = attachmentFile.absolutePath,
+                    previewPath = null,
+                    derivedImagePaths = "",
+                    byteSize = attachmentFile.length(),
+                    pageCount = null,
+                    selectedPages = "",
+                    imageTokenBudget = null,
+                    state = AttachmentProcessingState.READY,
+                    progress = 1f,
+                    error = null,
+                    createdAt = System.currentTimeMillis(),
+                    durationMillis = 5_500L,
+                ),
+            )
             val backup = File(application.cacheDir, "office-round-trip.aichatoffice").apply {
                 delete()
             }
@@ -109,6 +143,8 @@ class OfficeBackupInstrumentedTest {
             assertTrue(backup.length() > 0)
             chatRepository.deleteConversation(conversation.id)
             skillRepository.delete(skill.id)
+            application.container.database.attachmentDao().delete(attachmentId)
+            attachmentFile.delete()
 
             val preview = repository.prepareImport(Uri.fromFile(backup), passphrase.toCharArray())
             assertEquals(before.size.toLong(), preview.memories)
@@ -125,6 +161,11 @@ class OfficeBackupInstrumentedTest {
                 skill.name,
                 skillRepository.blocksForMessage(user.id).first().name,
             )
+            val restoredAttachment = application.container.database.attachmentDao().get(attachmentId)
+            assertEquals(5_500L, restoredAttachment?.durationMillis ?: -1L)
+            assertTrue(restoredAttachment?.originalPath?.let { File(it) }?.isFile == true)
+            application.container.database.attachmentDao().delete(attachmentId)
+            restoredAttachment?.originalPath?.let { File(it) }?.delete()
             backup.delete()
         }
     }

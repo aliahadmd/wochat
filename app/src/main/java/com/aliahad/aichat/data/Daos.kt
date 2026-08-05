@@ -47,6 +47,9 @@ interface ProjectorDao {
     @Query("SELECT * FROM projectors WHERE modelId = :modelId LIMIT 1")
     suspend fun getForModel(modelId: String): ProjectorRecordEntity?
 
+    @Query("SELECT * FROM projectors")
+    suspend fun getAll(): List<ProjectorRecordEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(projector: ProjectorRecordEntity)
 
@@ -54,6 +57,9 @@ interface ProjectorDao {
         "SELECT COUNT(*) FROM projectors WHERE status IN ('QUEUED', 'DOWNLOADING', 'VERIFYING')",
     )
     suspend fun activeTransferCount(): Int
+
+    @Query("DELETE FROM projectors WHERE id = :id")
+    suspend fun delete(id: String)
 }
 
 @Dao
@@ -203,6 +209,9 @@ interface ModelDao {
     @Query("SELECT * FROM models WHERE selected = 1 LIMIT 1")
     suspend fun getSelected(): ModelRecordEntity?
 
+    @Query("SELECT * FROM models")
+    suspend fun getAll(): List<ModelRecordEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(model: ModelRecordEntity)
 
@@ -241,11 +250,13 @@ interface ModelContextProfileDao {
     @Query(
         "SELECT * FROM model_context_profiles WHERE modelId = :modelId " +
             "AND deviceFingerprint = :deviceFingerprint " +
+            "AND backend = :backend " +
             "ORDER BY updatedAt DESC LIMIT 1",
     )
     suspend fun latestForModel(
         modelId: String,
         deviceFingerprint: String,
+        backend: com.aliahad.aichat.core.BackendMode,
     ): ModelContextProfileEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -330,12 +341,6 @@ interface BackupImportInvalidationDao {
     suspend fun touchCollectorCheckpoints()
 
     @Query(
-        "UPDATE action_audits SET createdAt = createdAt " +
-            "WHERE rowid = (SELECT rowid FROM action_audits LIMIT 1)",
-    )
-    suspend fun touchActionAudits()
-
-    @Query(
         "UPDATE skills SET updatedAt = updatedAt " +
             "WHERE rowid = (SELECT rowid FROM skills LIMIT 1)",
     )
@@ -361,7 +366,6 @@ interface BackupImportInvalidationDao {
         touchMemorySummaries()
         touchActivityEvents()
         touchCollectorCheckpoints()
-        touchActionAudits()
         touchSkills()
         touchMessageSkillInvocations()
     }

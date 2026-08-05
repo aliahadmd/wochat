@@ -36,6 +36,12 @@ sealed interface GenerationEvent {
     data class Phase(val state: InferenceState) : GenerationEvent
     data class ThoughtDelta(val text: String) : GenerationEvent
     data class AnswerDelta(val text: String) : GenerationEvent
+    data class BackendFallback(
+        val from: BackendMode,
+        val to: BackendMode,
+        val stage: BackendFailureStage,
+        val discardPartialOutput: Boolean = true,
+    ) : GenerationEvent
     data class Completed(
         val reason: GenerationStopReason,
         val answerTokens: Int,
@@ -47,6 +53,20 @@ enum class BackendMode {
     AUTO,
     CPU,
     VULKAN,
+}
+
+enum class BackendFailureStage {
+    CONNECT,
+    LOAD,
+    PROJECTOR,
+    RESTORE,
+    PROMPT,
+    MEDIA,
+    DECODE,
+    VERIFY,
+    BENCHMARK,
+    SERVICE_DIED,
+    UNKNOWN,
 }
 
 enum class ChatQualityMode {
@@ -119,30 +139,9 @@ data class ActivitySourceStats(
     val lastEventAt: Long?,
 )
 
-enum class ActionRisk {
-    LOW,
-    SENSITIVE,
-    BLOCKED,
-}
-
-enum class DeviceActionKind {
-    OPEN_APP,
-    OPEN_URI,
-    TAP_NODE,
-    SET_TEXT,
-    SCROLL,
-    BACK,
-    HOME,
-    SEND,
-    DELETE,
-    PURCHASE,
-    CHANGE_PERMISSION,
-    CHANGE_ACCOUNT,
-    HEALTH_WRITE,
-}
-
 enum class AttachmentKind {
     IMAGE,
+    AUDIO,
     PDF,
     TEXT,
     CODE,
@@ -181,6 +180,7 @@ data class Attachment(
     val progress: Float,
     val error: String?,
     val createdAt: Long,
+    val durationMillis: Long? = null,
 )
 
 data class AttachmentContext(
@@ -190,7 +190,12 @@ data class AttachmentContext(
     val imagePaths: List<String>,
     val selectedPages: Set<Int>,
     val imageTokenBudget: Int,
-)
+    val audioPaths: List<String> = emptyList(),
+    val audioTokenEstimate: Int = 0,
+) {
+    val mediaPaths: List<String>
+        get() = imagePaths + audioPaths
+}
 
 data class ModelCapabilities(
     val vision: Boolean,
@@ -202,6 +207,13 @@ data class MultimodalSettings(
     val qualityMode: ChatQualityMode,
     val imageTokenBudget: Int,
 )
+
+enum class MultimodalRequirement {
+    NONE,
+    VISION,
+    AUDIO,
+    BOTH,
+}
 
 data class UserTurn(
     val conversationId: String,
@@ -256,6 +268,8 @@ data class ModelLoadConfiguration(
     val declaredContextTokens: Int,
     val backend: BackendMode = BackendMode.CPU,
     val temperature: Float,
+    val modelId: String? = null,
+    val modelSha256: String? = null,
 )
 
 enum class ContextVerificationState {
@@ -292,6 +306,23 @@ data class ContextVerificationMetrics(
     val pssBytes: Long,
     val rssBytes: Long,
     val swapBytes: Long,
+)
+
+data class BackendBenchmark(
+    val id: String,
+    val modelId: String,
+    val modelSha256: String,
+    val deviceFingerprint: String,
+    val backend: BackendMode,
+    val llamaRevision: String,
+    val loadMillis: Long?,
+    val promptTokensPerSecond: Double?,
+    val generationTokensPerSecond: Double?,
+    val peakPssBytes: Long?,
+    val thermalDelta: Int?,
+    val success: Boolean,
+    val failureReason: String?,
+    val measuredAt: Long,
 )
 
 data class ChatMessage(
@@ -374,15 +405,6 @@ data class ContextPlan(
     val outputReserveTokens: Int,
 )
 
-data class DeviceAction(
-    val id: String,
-    val kind: DeviceActionKind,
-    val packageName: String?,
-    val target: String?,
-    val value: String?,
-    val risk: ActionRisk,
-)
-
 data class BackupManifest(
     val formatVersion: Int,
     val createdAt: Long,
@@ -423,6 +445,9 @@ data class ModelRecord(
     val status: DownloadStatus,
     val error: String?,
     val selected: Boolean,
+    val bytesPerSecond: Long = 0,
+    val etaSeconds: Long? = null,
+    val retryAttempt: Int = 0,
 )
 
 data class ProjectorRecord(
@@ -437,6 +462,9 @@ data class ProjectorRecord(
     val downloadedBytes: Long,
     val status: DownloadStatus,
     val error: String?,
+    val bytesPerSecond: Long = 0,
+    val etaSeconds: Long? = null,
+    val retryAttempt: Int = 0,
 )
 
 sealed interface InferenceState {
@@ -448,6 +476,12 @@ sealed interface InferenceState {
     data object EvaluatingPrompt : InferenceState
     data object EncodingMedia : InferenceState
     data object Generating : InferenceState
+    data class Recovering(
+        val modelName: String,
+        val from: BackendMode,
+        val to: BackendMode,
+        val stage: BackendFailureStage,
+    ) : InferenceState
     data class Error(val message: String) : InferenceState
 }
 
@@ -456,4 +490,11 @@ data class InferenceMetrics(
     val historyRestoreMillis: Long? = null,
     val promptEvaluationMillis: Long? = null,
     val firstTokenMillis: Long? = null,
+)
+
+data class InferenceBenchmarkSample(
+    val loadMillis: Long,
+    val promptTokensPerSecond: Double,
+    val generationTokensPerSecond: Double,
+    val peakPssBytes: Long? = null,
 )

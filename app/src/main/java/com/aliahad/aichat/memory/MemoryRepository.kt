@@ -130,7 +130,7 @@ class RoomMemoryRepository(
                 val indexBoost = indexRanks[row.id]?.let { rank ->
                     0.28f * (1f - rank.toFloat() / indexedIds.size.coerceAtLeast(1))
                 } ?: 0f
-                val score =
+                val lexicalScore =
                     overlap * 0.48f +
                         phrase +
                         indexBoost +
@@ -138,17 +138,22 @@ class RoomMemoryRepository(
                         row.confidence * 0.04f +
                         recency * 0.03f +
                         if (row.pinned) 0.25f else 0f
-                row to score
+                RankedMemoryRow(
+                    row = row,
+                    score = lexicalScore,
+                    lexicalScore = lexicalScore,
+                )
             }
-            .filter { terms.isEmpty() || it.second > 0.08f }
-            .sortedByDescending { it.second }
+            .filter { terms.isEmpty() || it.lexicalScore > 0.08f }
+            .sortedByDescending(RankedMemoryRow::score)
             .take(query.limit.coerceIn(1, 24))
             .toList()
-        val memoryHits = ranked.map { (row, score) ->
+        val memoryHits = ranked.map { rankedRow ->
+            val row = rankedRow.row
             val sources = dao.sources(row.id).map(MemorySourceEntity::toDomain)
             MemoryHit(
                 memory = row.toDomain(),
-                score = score.coerceIn(0f, 1.5f),
+                score = rankedRow.score.coerceIn(0f, 1.5f),
                 sources = sources,
                 reason = when {
                     row.pinned -> "Pinned memory"
@@ -183,6 +188,12 @@ class RoomMemoryRepository(
             .sortedByDescending(MemoryHit::score)
             .take(query.limit.coerceIn(1, 24))
     }
+
+    private data class RankedMemoryRow(
+        val row: MemoryItemEntity,
+        val score: Float,
+        val lexicalScore: Float,
+    )
 
     override suspend fun correct(id: String, content: String, reason: String?): MemoryItem {
         val previous = requireNotNull(dao.get(id)) { "Memory not found" }
@@ -259,7 +270,9 @@ class RoomMemoryRepository(
     override suspend fun forgetActivitySource(source: ActivitySource) {
         val ids = dao.activityMemoryIds(source.name)
         dao.markActivitySourceDeleted(source.name, System.currentTimeMillis())
-        ids.forEach { id -> runCatching { indexer.remove(id) } }
+        ids.forEach { id ->
+            runCatching { indexer.remove(id) }
+        }
     }
 
     private suspend fun insertIfAbsent(

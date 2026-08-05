@@ -191,6 +191,7 @@ class EncryptedOfficeBackupRepository(
             plain.delete("models", null, null)
             plain.delete("projectors", null, null)
             plain.delete("model_context_profiles", null, null)
+            plain.delete("model_benchmarks", null, null)
             plain.execSQL("PRAGMA user_version = ${AppDatabase.VERSION}")
             plain.query(
                 "attachments",
@@ -243,11 +244,7 @@ class EncryptedOfficeBackupRepository(
             .put("systemPrompt", generation.systemPrompt)
             .put("memoryEnabled", settings.memoryEnabled.first())
             .put("collectionPaused", settings.collectionPaused.first())
-            .put("actionAllowlist", settings.actionAllowlist.first().joinToString(","))
-            .put(
-                "floatingPromptTemplates",
-                settings.encodeFloatingPromptTemplates(settings.floatingPromptTemplates.first()),
-            )
+            .put("allowMeteredModelDownloads", settings.allowMeteredModelDownloads.first())
     }
 
     private fun decryptAndExtract(uri: Uri, passphrase: CharArray, working: File) {
@@ -516,18 +513,9 @@ class EncryptedOfficeBackupRepository(
         )
         settings.setMemoryEnabled(json.optBoolean("memoryEnabled", true))
         settings.setCollectionPaused(json.optBoolean("collectionPaused", true))
-        settings.setActionAllowlist(
-            json.optString("actionAllowlist")
-                .split(',')
-                .map(String::trim)
-                .filter(String::isNotEmpty)
-                .toSet(),
+        settings.setAllowMeteredModelDownloads(
+            json.optBoolean("allowMeteredModelDownloads", false),
         )
-        if (json.has("floatingPromptTemplates")) {
-            settings.setFloatingPromptTemplates(
-                settings.decodeFloatingPromptTemplates(json.optString("floatingPromptTemplates")),
-            )
-        }
     }
 
     private fun readCounts(snapshot: File): Map<String, Long> {
@@ -659,7 +647,6 @@ class EncryptedOfficeBackupRepository(
             "memory_summaries",
             "activity_events",
             "collector_checkpoints",
-            "action_audits",
         )
     }
 }

@@ -11,9 +11,7 @@ import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.core.ChatQualityMode
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
-import com.aliahad.aichat.core.ActionRisk
 import com.aliahad.aichat.core.ActivitySource
-import com.aliahad.aichat.core.DeviceActionKind
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.MemorySensitivity
 import com.aliahad.aichat.core.MemorySourceKind
@@ -112,13 +110,16 @@ data class ModelRecordEntity(
     val status: DownloadStatus,
     val error: String?,
     val selected: Boolean,
+    @ColumnInfo(defaultValue = "0") val bytesPerSecond: Long = 0,
+    val etaSeconds: Long? = null,
+    @ColumnInfo(defaultValue = "0") val retryAttempt: Int = 0,
 )
 
 @Entity(
     tableName = "model_context_profiles",
     indices = [
         Index("modelId"),
-        Index(value = ["modelSha256", "deviceFingerprint"], unique = true),
+        Index(value = ["modelSha256", "deviceFingerprint", "backend"], unique = true),
     ],
 )
 data class ModelContextProfileEntity(
@@ -142,6 +143,33 @@ data class ModelContextProfileEntity(
     val updatedAt: Long,
 )
 
+@Entity(
+    tableName = "model_benchmarks",
+    indices = [
+        Index("modelId"),
+        Index(
+            value = ["modelSha256", "deviceFingerprint", "backend", "llamaRevision"],
+            unique = true,
+        ),
+    ],
+)
+data class ModelBenchmarkEntity(
+    @PrimaryKey val id: String,
+    val modelId: String,
+    val modelSha256: String,
+    val deviceFingerprint: String,
+    val backend: BackendMode,
+    val llamaRevision: String,
+    val loadMillis: Long?,
+    val promptTokensPerSecond: Double?,
+    val generationTokensPerSecond: Double?,
+    val peakPssBytes: Long?,
+    val thermalDelta: Int?,
+    val success: Boolean,
+    val failureReason: String?,
+    val measuredAt: Long,
+)
+
 @Entity(tableName = "projectors", indices = [Index("modelId", unique = true)])
 data class ProjectorRecordEntity(
     @PrimaryKey val id: String,
@@ -155,6 +183,9 @@ data class ProjectorRecordEntity(
     val downloadedBytes: Long,
     val status: DownloadStatus,
     val error: String?,
+    @ColumnInfo(defaultValue = "0") val bytesPerSecond: Long = 0,
+    val etaSeconds: Long? = null,
+    @ColumnInfo(defaultValue = "0") val retryAttempt: Int = 0,
 )
 
 @Entity(
@@ -187,6 +218,7 @@ data class AttachmentEntity(
     val progress: Float,
     val error: String?,
     val createdAt: Long,
+    val durationMillis: Long? = null,
 )
 
 @Entity(
@@ -378,18 +410,4 @@ data class CollectorCheckpointEntity(
     val lastCollectedAt: Long,
     val lastCompactedAt: Long?,
     val error: String?,
-)
-
-@Entity(tableName = "action_audits", indices = [Index("createdAt"), Index("packageName")])
-data class ActionAuditEntity(
-    @PrimaryKey val id: String,
-    val actionKind: DeviceActionKind,
-    val packageName: String?,
-    val target: String?,
-    val risk: ActionRisk,
-    val planJson: String,
-    val result: String?,
-    val success: Boolean?,
-    val createdAt: Long,
-    val completedAt: Long?,
 )

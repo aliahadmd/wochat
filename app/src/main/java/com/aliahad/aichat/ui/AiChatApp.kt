@@ -15,6 +15,7 @@ import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -47,13 +48,14 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
@@ -79,6 +81,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -89,6 +93,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -101,7 +106,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
@@ -114,9 +118,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.aliahad.aichat.AppPage
-import com.aliahad.aichat.MainUiState
-import com.aliahad.aichat.MainViewModel
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
 import com.aliahad.aichat.ThinkingUiState
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.Attachment
@@ -141,12 +146,20 @@ import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.model.formatBytes
-import com.aliahad.aichat.overlay.FloatingPromptTemplate
-import com.aliahad.aichat.overlay.MAX_FLOATING_PROMPT_LABEL_CHARS
-import com.aliahad.aichat.overlay.MAX_FLOATING_PROMPT_TEXT_CHARS
-import com.aliahad.aichat.overlay.OverlayPermissionStatus
 import com.aliahad.aichat.residency.ModelResidencyState
-import com.aliahad.aichat.settings.DeviceSettingsNavigator
+import com.aliahad.aichat.ui.navigation.AppRoute
+import com.aliahad.aichat.ui.viewmodel.AppShellUiState
+import com.aliahad.aichat.ui.viewmodel.AppShellViewModel
+import com.aliahad.aichat.ui.viewmodel.ChatUiState
+import com.aliahad.aichat.ui.viewmodel.ChatViewModel
+import com.aliahad.aichat.ui.viewmodel.MemoryUiState
+import com.aliahad.aichat.ui.viewmodel.MemoryViewModel
+import com.aliahad.aichat.ui.viewmodel.ModelSetupUiState
+import com.aliahad.aichat.ui.viewmodel.ModelSetupViewModel
+import com.aliahad.aichat.ui.viewmodel.SkillsUiState
+import com.aliahad.aichat.ui.viewmodel.SkillsViewModel
+import com.aliahad.aichat.ui.theme.EmeraldDark
+import com.aliahad.aichat.ui.theme.EmeraldLight
 import com.aliahad.aichat.skill.MAX_SELECTED_SKILLS
 import com.aliahad.aichat.skill.MAX_SKILL_DESCRIPTION_CHARS
 import com.aliahad.aichat.skill.MAX_SKILL_INSTRUCTIONS_CHARS
@@ -163,25 +176,60 @@ import java.util.Date
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AiChatApp(
-    state: MainUiState,
-    actions: MainViewModel,
-    onImportModel: () -> Unit,
+    launchDestination: AppRoute,
+    shellState: AppShellUiState,
+    chatState: ChatUiState,
+    modelState: ModelSetupUiState,
+    memoryState: MemoryUiState,
+    skillsState: SkillsUiState,
+    shellActions: AppShellViewModel,
+    chatActions: ChatViewModel,
+    modelActions: ModelSetupViewModel,
+    memoryActions: MemoryViewModel,
+    skillsActions: SkillsViewModel,
     onAddPhotos: () -> Unit,
     onAddFiles: () -> Unit,
     onTakePhoto: () -> Unit,
     onExportOffice: (String) -> Unit,
     onImportOffice: () -> Unit,
     onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
+    onExportDiagnostics: () -> Unit,
 ) {
+    val chat = chatState
+    val models = modelState
+    val memory = memoryState
+    val skills = skillsState
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val snackbarHost = remember { SnackbarHostState() }
+    val navController = rememberNavController()
+    val currentBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = currentBackStackEntry?.destination?.route
+        ?.let(AppRoute::fromRoute)
+        ?: launchDestination
     var showSkillSheet by remember { mutableStateOf(false) }
+    var settingsSection by remember { mutableStateOf(SettingsSection.MODELS) }
+    val navigateTo: (AppRoute) -> Unit = { destination ->
+        if (navController.currentDestination?.route != destination.route) {
+            navController.navigate(destination.route) {
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
 
-    LaunchedEffect(state.error) {
-        state.error?.let {
+    LaunchedEffect(shellState.error) {
+        shellState.error?.let {
             snackbarHost.showSnackbar(it)
-            actions.clearError()
+            shellActions.clearError()
+        }
+    }
+    LaunchedEffect(shellState.pendingNavigation) {
+        shellState.pendingNavigation?.let { destination ->
+            if (navController.currentDestination?.route != destination.route) {
+                navController.navigate(destination.route) { launchSingleTop = true }
+            }
+            shellActions.consumeNavigation()
         }
     }
 
@@ -189,34 +237,25 @@ fun AiChatApp(
         drawerState = drawerState,
         drawerContent = {
             ConversationDrawer(
-                state = state,
+                state = chat,
                 onNewChat = {
-                    actions.newConversation()
+                    chatActions.newConversation()
+                    navigateTo(AppRoute.CHAT)
                     scope.launch { drawerState.close() }
                 },
                 onNewTemporaryChat = {
-                    actions.newTemporaryConversation()
+                    chatActions.newTemporaryConversation()
+                    navigateTo(AppRoute.CHAT)
                     scope.launch { drawerState.close() }
                 },
                 onSelect = {
-                    actions.selectConversation(it)
+                    chatActions.selectConversation(it)
+                    navigateTo(AppRoute.CHAT)
                     scope.launch { drawerState.close() }
                 },
-                onDelete = actions::deleteConversation,
-                onMemory = {
-                    actions.setPage(AppPage.MEMORY)
-                    scope.launch { drawerState.close() }
-                },
-                onSkills = {
-                    actions.setPage(AppPage.SKILLS)
-                    scope.launch { drawerState.close() }
-                },
-                onFloatingPrompts = {
-                    actions.setPage(AppPage.FLOATING_PROMPTS)
-                    scope.launch { drawerState.close() }
-                },
+                onDelete = chatActions::deleteConversation,
                 onSettings = {
-                    actions.setPage(AppPage.SETTINGS)
+                    navigateTo(AppRoute.SETTINGS)
                     scope.launch { drawerState.close() }
                 },
             )
@@ -226,40 +265,33 @@ fun AiChatApp(
             snackbarHost = { SnackbarHost(snackbarHost) },
             topBar = {
                 TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                        titleContentColor = MaterialTheme.colorScheme.onBackground,
+                        navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
                             Icon(Icons.Default.Menu, contentDescription = "Open conversations")
                         }
                     },
                     title = {
-                        when (state.page) {
-                            AppPage.SETTINGS -> Text("Settings")
-                            AppPage.MEMORY -> Text("Office Memory")
-                            AppPage.SKILLS -> Text("Skills")
-                            AppPage.FLOATING_PROMPTS -> Text("Float Prompts")
-                            AppPage.CHAT -> Box(
-                                modifier = Modifier.fillMaxWidth(),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                ModelSelectorDropdown(
-                                    models = state.models,
-                                    enabled = !state.isSending,
-                                    onSelect = actions::selectModel,
-                                    onManageModels = { actions.setPage(AppPage.SETTINGS) },
-                                )
-                            }
+                        when (currentRoute) {
+                            AppRoute.SETTINGS -> Text("Settings")
+                            AppRoute.CHAT -> Text("AIchat")
                         }
                     },
                     actions = {
-                        if (state.page == AppPage.CHAT) {
+                        if (currentRoute == AppRoute.CHAT) {
                             IconButton(
                                 onClick = { showSkillSheet = true },
-                                enabled = !state.isSending,
+                                enabled = !chat.isSending,
                             ) {
                                 Icon(
                                     Icons.Default.CheckCircle,
                                     contentDescription = "Select skills",
-                                    tint = if (state.selectedSkillIds.isNotEmpty()) {
+                                    tint = if (chat.selectedSkillIds.isNotEmpty()) {
                                         MaterialTheme.colorScheme.primary
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -267,7 +299,7 @@ fun AiChatApp(
                                 )
                             }
                         } else {
-                            IconButton(onClick = { actions.setPage(AppPage.CHAT) }) {
+                            IconButton(onClick = { navigateTo(AppRoute.CHAT) }) {
                                 Icon(Icons.Default.Close, contentDescription = "Close settings")
                             }
                         }
@@ -275,185 +307,87 @@ fun AiChatApp(
                 )
             },
         ) { padding ->
-            when (state.page) {
-                AppPage.CHAT -> ChatScreen(
-                    state = state,
-                    onSend = { actions.sendMessage(it) },
-                    onStop = actions::stopGeneration,
-                    onContinue = actions::continueResponse,
-                    onToggleThinking = actions::toggleThinking,
-                    onOpenSettings = { actions.setPage(AppPage.SETTINGS) },
-                    onToggleSkill = actions::toggleSelectedSkill,
+            NavHost(
+                navController = navController,
+                startDestination = launchDestination.route,
+                modifier = Modifier.testTag("app-nav-host"),
+            ) {
+                composable(AppRoute.CHAT.route) { ChatScreen(
+                    state = chat,
+                    onSend = { chatActions.sendMessage(it) },
+                    onStop = chatActions::stopGeneration,
+                    onContinue = chatActions::continueResponse,
+                    onToggleThinking = chatActions::toggleThinking,
+                    onOpenSettings = { navigateTo(AppRoute.SETTINGS) },
+                    onToggleSkill = chatActions::toggleSelectedSkill,
                     onAddPhotos = onAddPhotos,
                     onAddFiles = onAddFiles,
                     onTakePhoto = onTakePhoto,
-                    onRemoveAttachment = actions::removeAttachment,
-                    onRetryAttachment = actions::retryAttachment,
-                    onSelectPages = actions::selectAttachmentPages,
+                    onRemoveAttachment = chatActions::removeAttachment,
+                    onRetryAttachment = chatActions::retryAttachment,
+                    onSelectPages = chatActions::selectAttachmentPages,
                     modifier = Modifier.padding(padding),
-                )
-                AppPage.MEMORY -> MemoryCenter(
-                    state = state,
-                    actions = actions,
+                ) }
+                composable(AppRoute.SETTINGS.route) { SettingsHub(
+                    section = settingsSection,
+                    onSectionChange = { settingsSection = it },
+                    modelState = models,
+                    modelActions = modelActions,
+                    memoryState = memory,
+                    memoryActions = memoryActions,
+                    skillsState = skills,
+                    skillsActions = skillsActions,
+                    onExportDiagnostics = onExportDiagnostics,
                     onExportOffice = onExportOffice,
                     onImportOffice = onImportOffice,
                     onRequestPhoneSourceAccess = onRequestPhoneSourceAccess,
                     modifier = Modifier.padding(padding),
-                )
-                AppPage.SKILLS -> SkillsScreen(
-                    state = state,
-                    actions = actions,
-                    modifier = Modifier.padding(padding),
-                )
-                AppPage.FLOATING_PROMPTS -> FloatingPromptManagerScreen(
-                    state = state,
-                    actions = actions,
-                    modifier = Modifier.padding(padding),
-                )
-                AppPage.SETTINGS -> SettingsScreen(
-                    state = state,
-                    actions = actions,
-                    onImportModel = onImportModel,
-                    modifier = Modifier.padding(padding),
-                )
+                ) }
             }
         }
     }
 
     if (showSkillSheet) {
         SkillPickerSheet(
-            skills = state.skills,
-            selectedSkillIds = state.selectedSkillIds,
-            onToggleSkill = actions::toggleSelectedSkill,
-            onClearSkills = actions::clearSelectedSkills,
+            skills = chat.skills,
+            selectedSkillIds = chat.selectedSkillIds,
+            onToggleSkill = chatActions::toggleSelectedSkill,
+            onClearSkills = chatActions::clearSelectedSkills,
             onOpenSkills = {
                 showSkillSheet = false
-                actions.setPage(AppPage.SKILLS)
+                settingsSection = SettingsSection.SKILLS
+                navigateTo(AppRoute.SETTINGS)
             },
             onDismiss = { showSkillSheet = false },
         )
     }
 
-    state.pendingProjectorId?.let { id ->
-        state.projectors.firstOrNull { it.id == id }?.let { projector ->
+    models.pendingProjectorId?.let { id ->
+        models.projectors.firstOrNull { it.id == id }?.let { projector ->
             ProjectorDownloadDialog(
                 projector = projector,
-                onDownload = { actions.startProjectorDownload(projector.id) },
-                onDismiss = actions::dismissProjectorPrompt,
+                onDownload = { modelActions.startProjectorDownload(projector.id) },
+                onDismiss = modelActions::dismissProjectorPrompt,
             )
         }
     }
-}
-
-@Composable
-private fun ModelSelectorDropdown(
-    models: List<ModelRecord>,
-    enabled: Boolean,
-    onSelect: (String) -> Unit,
-    onManageModels: () -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val selected = models.firstOrNull(ModelRecord::selected)
-    Box {
-        OutlinedButton(
-            onClick = { expanded = true },
-            enabled = enabled,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp)
-                .heightIn(min = 42.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Text(
-                selected?.let(::modelMenuLabel) ?: "Select model",
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Icon(Icons.Default.KeyboardArrowDown, contentDescription = null)
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            models.forEach { model ->
-                val ready = model.status == DownloadStatus.READY && model.localPath != null
-                DropdownMenuItem(
-                    text = {
-                        Column {
-                            Text(
-                                modelMenuLabel(model),
-                                fontWeight = if (model.selected) FontWeight.SemiBold else null,
-                            )
-                            Text(
-                                modelSelectionStatus(model),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    },
-                    onClick = {
-                        expanded = false
-                        onSelect(model.id)
-                    },
-                    enabled = ready && !model.selected,
-                    leadingIcon = {
-                        if (model.selected) {
-                            Icon(Icons.Default.Check, contentDescription = null)
-                        } else {
-                            Icon(Icons.Default.Storage, contentDescription = null)
-                        }
-                    },
-                )
-            }
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text("Manage models") },
-                onClick = {
-                    expanded = false
-                    onManageModels()
-                },
-                leadingIcon = {
-                    Icon(Icons.Default.Settings, contentDescription = null)
-                },
-            )
-        }
-    }
-}
-
-private fun modelMenuLabel(model: ModelRecord): String =
-    model.displayName
-        .removeSuffix(" IT Q4")
-        .removeSuffix(" Q4")
-
-private fun modelSelectionStatus(model: ModelRecord): String = when (model.status) {
-    DownloadStatus.READY -> if (model.selected) "Active" else "Installed"
-    DownloadStatus.NOT_DOWNLOADED -> "Not downloaded"
-    DownloadStatus.QUEUED -> "Queued"
-    DownloadStatus.DOWNLOADING -> "Downloading ${formatBytes(model.downloadedBytes)}"
-    DownloadStatus.PAUSED -> "Paused at ${formatBytes(model.downloadedBytes)}"
-    DownloadStatus.VERIFYING -> "Verifying"
-    DownloadStatus.FAILED -> "Download failed"
 }
 
 @Composable
 private fun ConversationDrawer(
-    state: MainUiState,
+    state: ChatUiState,
     onNewChat: () -> Unit,
     onNewTemporaryChat: () -> Unit,
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
-    onMemory: () -> Unit,
-    onSkills: () -> Unit,
-    onFloatingPrompts: () -> Unit,
     onSettings: () -> Unit,
 ) {
-    ModalDrawerSheet(modifier = Modifier.width(320.dp)) {
+    ModalDrawerSheet(modifier = Modifier.width(304.dp)) {
         Column(
             modifier = Modifier
                 .fillMaxHeight()
                 .statusBarsPadding()
-                .padding(12.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             Button(onClick = onNewChat, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.Add, contentDescription = null)
@@ -498,25 +432,10 @@ private fun ConversationDrawer(
                 }
             }
             HorizontalDivider()
-            TextButton(onClick = onMemory, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.Storage, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Office Memory")
-            }
-            TextButton(onClick = onSkills, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.CheckCircle, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Skills")
-            }
-            TextButton(onClick = onFloatingPrompts, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.Info, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Float prompts")
-            }
             TextButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.Settings, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Models and settings")
+                Text("Settings")
             }
         }
     }
@@ -524,7 +443,7 @@ private fun ConversationDrawer(
 
 @Composable
 private fun ChatScreen(
-    state: MainUiState,
+    state: ChatUiState,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
     onContinue: () -> Unit,
@@ -547,17 +466,19 @@ private fun ChatScreen(
     } else {
         null
     }
-    val visionRequired = state.draftAttachments.any {
-        it.kind == AttachmentKind.IMAGE || it.derivedImagePaths.isNotEmpty()
+    val mediaRequired = state.draftAttachments.any {
+        it.kind == AttachmentKind.IMAGE ||
+            it.kind == AttachmentKind.AUDIO ||
+            it.derivedImagePaths.isNotEmpty()
     }
     val selectedProjector = selectedModel?.let { model ->
         state.projectors.firstOrNull { it.modelId == model.id }
     }
-    val visionBlockingReason = when {
-        !visionRequired -> null
-        selectedProjector == null -> "The selected model has no configured vision projector."
+    val mediaBlockingReason = when {
+        !mediaRequired -> null
+        selectedProjector == null -> "The selected model has no configured multimedia projector."
         selectedProjector.status != DownloadStatus.READY ->
-            "Install ${selectedProjector.displayName} to send images."
+            "Install ${selectedProjector.displayName} to send image or audio attachments."
         else -> null
     }
 
@@ -609,7 +530,7 @@ private fun ChatScreen(
             onRemoveAttachment = onRemoveAttachment,
             onRetryAttachment = onRetryAttachment,
             onPreviewAttachment = { previewAttachment = it },
-            blockingReason = visionBlockingReason,
+            blockingReason = mediaBlockingReason,
             onSend = {
                 if (input.isNotBlank() || state.draftAttachments.isNotEmpty()) {
                     onSend(input)
@@ -702,7 +623,7 @@ private fun StartupChatPlaceholder(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun InferenceStatusBar(state: MainUiState, model: ModelRecord) {
+private fun InferenceStatusBar(state: ChatUiState, model: ModelRecord) {
     val status = when (val inference = state.inferenceState) {
         InferenceState.Uninitialized -> "Starting engine"
         InferenceState.Idle -> residencyLabel(state.residencyState)
@@ -714,6 +635,8 @@ private fun InferenceStatusBar(state: MainUiState, model: ModelRecord) {
         InferenceState.Generating -> state.inferenceMetrics.firstTokenMillis?.let {
             "Generating · first token ${formatMillis(it)}"
         } ?: "Waiting for first token"
+        is InferenceState.Recovering ->
+            "Recovering on ${inference.to.name.lowercase().replaceFirstChar(Char::uppercase)}"
         is InferenceState.Error -> inference.message
     }
     Row(
@@ -891,8 +814,8 @@ internal fun MessageBubble(
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth(if (isUser) 0.86f else 1f)
-                .clip(RoundedCornerShape(18.dp))
+                .fillMaxWidth(if (isUser) 0.82f else 1f)
+                .clip(RoundedCornerShape(10.dp))
                 .background(
                     if (isUser) MaterialTheme.colorScheme.primaryContainer
                     else MaterialTheme.colorScheme.surfaceContainerLow,
@@ -1058,21 +981,22 @@ private fun ThinkingPanel(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        AnimatedVisibility(
-            visible = thinking.expanded && displayText.isNotBlank(),
-            enter = fadeIn(tween(if (animationsEnabled) 160 else 0)),
-            exit = fadeOut(tween(if (animationsEnabled) 120 else 0)),
-        ) {
-            Text(
-                displayText,
+        if (thinking.expanded && displayText.isNotBlank()) {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
-                    .clearAndSetSemantics {}
                     .testTag("thinking-content"),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            ) {
+                Text(
+                    displayText,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clearAndSetSemantics {},
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -1163,48 +1087,48 @@ private fun Composer(
             )
         }
         Row(verticalAlignment = Alignment.Bottom) {
-        IconButton(
-            onClick = onAttach,
-            enabled = enabled && !sending && attachments.size < 20,
-            modifier = Modifier.size(50.dp),
-        ) {
-            Icon(Icons.Default.AttachFile, contentDescription = "Add attachment")
-        }
-        OutlinedTextField(
-            value = input,
-            onValueChange = onInputChange,
-            enabled = enabled && !sending,
-            placeholder = {
-                Text(
-                    if (enabled) "Message your local model" else "Set up a model first",
-                )
-            },
-            modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(22.dp),
-            minLines = 1,
-            maxLines = 6,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-            keyboardActions = KeyboardActions(),
-        )
-        Spacer(Modifier.width(8.dp))
-        IconButton(
-            onClick = if (sending) onStop else onSend,
-            enabled = sending || (
-                enabled &&
-                    (input.isNotBlank() || attachments.isNotEmpty()) &&
-                    attachments.all { it.state == AttachmentProcessingState.READY } &&
-                    blockingReason == null
-                ),
-            modifier = Modifier
-                .size(50.dp)
-                .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(50)),
-        ) {
-            Icon(
-                if (sending) Icons.Default.Stop else Icons.AutoMirrored.Filled.Send,
-                contentDescription = if (sending) "Stop generation" else "Send",
-                tint = MaterialTheme.colorScheme.onPrimary,
+            IconButton(
+                onClick = onAttach,
+                enabled = enabled && !sending && attachments.size < 20,
+                modifier = Modifier.size(50.dp),
+            ) {
+                Icon(Icons.Default.AttachFile, contentDescription = "Add attachment")
+            }
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInputChange,
+                enabled = enabled && !sending,
+                placeholder = {
+                    Text(
+                        if (enabled) "Message your local model" else "Set up a model first",
+                    )
+                },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(22.dp),
+                minLines = 1,
+                maxLines = 6,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                keyboardActions = KeyboardActions(),
             )
-        }
+            Spacer(Modifier.width(8.dp))
+            IconButton(
+                onClick = if (sending) onStop else onSend,
+                enabled = sending || (
+                    enabled &&
+                        (input.isNotBlank() || attachments.isNotEmpty()) &&
+                        attachments.all { it.state == AttachmentProcessingState.READY } &&
+                        blockingReason == null
+                ),
+                modifier = Modifier
+                    .size(50.dp)
+                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(50)),
+            ) {
+                Icon(
+                    if (sending) Icons.Default.Stop else Icons.AutoMirrored.Filled.Send,
+                    contentDescription = if (sending) "Stop generation" else "Send",
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
         }
     }
 }
@@ -1351,7 +1275,7 @@ private fun DraftAttachmentTray(
                     AnimatedContent(attachment.state, label = "attachment-state") { state ->
                         when (state) {
                             AttachmentProcessingState.READY -> Text(
-                                attachment.pageCount?.let { "$it pages" } ?: formatBytes(attachment.byteSize),
+                                attachmentSummary(attachment),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1405,7 +1329,7 @@ private fun MessageAttachmentGrid(
                     Column(Modifier.weight(1f)) {
                         Text(attachment.displayName, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(
-                            attachment.pageCount?.let { "$it pages" } ?: formatBytes(attachment.byteSize),
+                            attachmentSummary(attachment),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1435,12 +1359,26 @@ private fun AttachmentThumbnail(attachment: Attachment, modifier: Modifier = Mod
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                if (attachment.kind == AttachmentKind.PDF) Icons.Default.PictureAsPdf
-                else Icons.AutoMirrored.Filled.InsertDriveFile,
+                when (attachment.kind) {
+                    AttachmentKind.PDF -> Icons.Default.PictureAsPdf
+                    AttachmentKind.AUDIO -> Icons.Default.Mic
+                    else -> Icons.AutoMirrored.Filled.InsertDriveFile
+                },
                 contentDescription = null,
             )
         }
     }
+}
+
+private fun attachmentSummary(attachment: Attachment): String = when {
+    attachment.durationMillis != null -> formatMediaDuration(attachment.durationMillis)
+    attachment.pageCount != null -> "${attachment.pageCount} pages"
+    else -> formatBytes(attachment.byteSize)
+}
+
+private fun formatMediaDuration(durationMillis: Long): String {
+    val totalSeconds = durationMillis.coerceAtLeast(0L) / 1_000L
+    return "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1584,8 +1522,8 @@ private fun ProjectorDownloadDialog(
 
 @Composable
 private fun MemoryCenter(
-    state: MainUiState,
-    actions: MainViewModel,
+    state: MemoryUiState,
+    actions: MemoryViewModel,
     onExportOffice: (String) -> Unit,
     onImportOffice: () -> Unit,
     onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
@@ -2103,7 +2041,7 @@ private fun PhoneSourceStatusBadge(state: PhoneSourceAccessState) {
 
 @Composable
 private fun sourceGrantedColor(): Color =
-    if (isSystemInDarkTheme()) Color(0xFF8DE5B5) else Color(0xFF146C43)
+    if (isSystemInDarkTheme()) EmeraldDark else EmeraldLight
 
 private fun formatSourceTimestamp(timestamp: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(timestamp))
@@ -2191,8 +2129,8 @@ private fun MemoryEditorDialog(
 
 @Composable
 private fun SkillsScreen(
-    state: MainUiState,
-    actions: MainViewModel,
+    state: SkillsUiState,
+    actions: SkillsViewModel,
     modifier: Modifier = Modifier,
 ) {
     var editingSkill by remember { mutableStateOf<SkillRecord?>(null) }
@@ -2469,287 +2407,87 @@ private fun skillFieldError(
     else -> null
 }
 
+private enum class SettingsSection(val label: String) {
+    MODELS("Models"),
+    RUNTIME("Runtime"),
+    MEMORY("Memory"),
+    SKILLS("Skills"),
+}
+
 @Composable
-private fun FloatingPromptManagerScreen(
-    state: MainUiState,
-    actions: MainViewModel,
+private fun SettingsHub(
+    section: SettingsSection,
+    onSectionChange: (SettingsSection) -> Unit,
+    modelState: ModelSetupUiState,
+    modelActions: ModelSetupViewModel,
+    memoryState: MemoryUiState,
+    memoryActions: MemoryViewModel,
+    skillsState: SkillsUiState,
+    skillsActions: SkillsViewModel,
+    onExportDiagnostics: () -> Unit,
+    onExportOffice: (String) -> Unit,
+    onImportOffice: () -> Unit,
+    onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var creating by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<FloatingPromptTemplate?>(null) }
-    var pendingDelete by remember { mutableStateOf<FloatingPromptTemplate?>(null) }
-    var confirmReset by remember { mutableStateOf(false) }
-
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    SectionTitle("Float Prompts", "Quick templates for the floating bubble")
-                }
-                Button(onClick = { creating = true }) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("New")
-                }
-            }
-            Text(
-                "Enabled templates appear in the floating bubble. The bubble shows two rows " +
-                    "and two columns at a time, then scrolls horizontally when you add more.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-        if (state.floatingPromptTemplates.isEmpty()) {
-            item {
-                Card {
-                    Column(
-                        modifier = Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text("No prompt templates", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "Create one or restore the defaults to make the bubble fast again.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = { creating = true }) { Text("Create") }
-                            TextButton(onClick = { confirmReset = true }) { Text("Restore defaults") }
-                        }
-                    }
-                }
-            }
-        } else {
-            items(state.floatingPromptTemplates, key = FloatingPromptTemplate::id) { template ->
-                FloatingPromptTemplateCard(
-                    template = template,
-                    onEdit = { editing = template },
-                    onEnabledChange = {
-                        actions.setFloatingPromptTemplateEnabled(template.id, it)
-                    },
-                    onDelete = { pendingDelete = template },
-                )
-            }
-            item {
-                OutlinedButton(
-                    onClick = { confirmReset = true },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Restore default templates")
-                }
-            }
-        }
-    }
-
-    if (creating) {
-        FloatingPromptTemplateDialog(
-            title = "Create float prompt",
-            template = null,
-            onDismiss = { creating = false },
-            onSave = { label, prompt, enabled ->
-                actions.createFloatingPromptTemplate(label, prompt, enabled)
-                creating = false
-            },
-        )
-    }
-    editing?.let { template ->
-        FloatingPromptTemplateDialog(
-            title = "Edit float prompt",
-            template = template,
-            onDismiss = { editing = null },
-            onSave = { label, prompt, enabled ->
-                actions.updateFloatingPromptTemplate(template.id, label, prompt, enabled)
-                editing = null
-            },
-        )
-    }
-    pendingDelete?.let { template ->
-        AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("Delete ${template.label}?") },
-            text = {
-                Text("This removes the template from the floating bubble. It does not affect past answers.")
-            },
-            confirmButton = {
-                Button(onClick = {
-                    actions.deleteFloatingPromptTemplate(template.id)
-                    pendingDelete = null
-                }) { Text("Delete") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
-            },
-        )
-    }
-    if (confirmReset) {
-        AlertDialog(
-            onDismissRequest = { confirmReset = false },
-            title = { Text("Restore default templates?") },
-            text = {
-                Text("This replaces your current float prompt templates with Reply, Proofread, Summarize, and Translate.")
-            },
-            confirmButton = {
-                Button(onClick = {
-                    actions.resetFloatingPromptTemplates()
-                    confirmReset = false
-                }) { Text("Restore") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmReset = false }) { Text("Cancel") }
-            },
-        )
-    }
-}
-
-@Composable
-private fun FloatingPromptTemplateCard(
-    template: FloatingPromptTemplate,
-    onEdit: () -> Unit,
-    onEnabledChange: (Boolean) -> Unit,
-    onDelete: () -> Unit,
-) {
-    Card {
-        Column(
+    Row(modifier = modifier.fillMaxSize()) {
+        NavigationRail(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .fillMaxHeight()
+                .testTag("settings-navigation"),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(template.label, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        if (template.enabled) "Visible in bubble" else "Hidden from bubble",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (template.enabled) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                }
-                Switch(
-                    checked = template.enabled,
-                    onCheckedChange = onEnabledChange,
+            SettingsSection.entries.forEach { destination ->
+                NavigationRailItem(
+                    selected = section == destination,
+                    onClick = { onSectionChange(destination) },
+                    icon = {
+                        Icon(
+                            when (destination) {
+                                SettingsSection.MODELS -> Icons.Default.Storage
+                                SettingsSection.RUNTIME -> Icons.Default.Settings
+                                SettingsSection.MEMORY -> Icons.Default.Info
+                                SettingsSection.SKILLS -> Icons.Default.CheckCircle
+                            },
+                            contentDescription = null,
+                        )
+                    },
+                    label = { Text(destination.label) },
+                    alwaysShowLabel = true,
                 )
             }
-            Text(
-                template.prompt,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onEdit) { Text("Edit") }
-                TextButton(onClick = onDelete) { Text("Delete") }
+        }
+        Box(modifier = Modifier.weight(1f)) {
+            when (section) {
+                SettingsSection.MODELS,
+                SettingsSection.RUNTIME,
+                -> SettingsScreen(
+                    state = modelState,
+                    actions = modelActions,
+                    section = section,
+                    onExportDiagnostics = onExportDiagnostics,
+                )
+                SettingsSection.MEMORY -> MemoryCenter(
+                    state = memoryState,
+                    actions = memoryActions,
+                    onExportOffice = onExportOffice,
+                    onImportOffice = onImportOffice,
+                    onRequestPhoneSourceAccess = onRequestPhoneSourceAccess,
+                )
+                SettingsSection.SKILLS -> SkillsScreen(
+                    state = skillsState,
+                    actions = skillsActions,
+                )
             }
         }
     }
-}
-
-@Composable
-private fun FloatingPromptTemplateDialog(
-    title: String,
-    template: FloatingPromptTemplate?,
-    onDismiss: () -> Unit,
-    onSave: (String, String, Boolean) -> Unit,
-) {
-    var label by remember(template?.id) { mutableStateOf(template?.label.orEmpty()) }
-    var prompt by remember(template?.id) { mutableStateOf(template?.prompt.orEmpty()) }
-    var enabled by remember(template?.id) { mutableStateOf(template?.enabled ?: true) }
-    var submitted by remember(template?.id) { mutableStateOf(false) }
-    val trimmedLabel = label.trim()
-    val trimmedPrompt = prompt.trim()
-    val labelError = skillFieldError(
-        value = trimmedLabel,
-        label = "Template name",
-        maxChars = MAX_FLOATING_PROMPT_LABEL_CHARS,
-        showRequired = submitted,
-    )
-    val promptError = skillFieldError(
-        value = trimmedPrompt,
-        label = "Template prompt",
-        maxChars = MAX_FLOATING_PROMPT_TEXT_CHARS,
-        showRequired = submitted,
-    )
-    val hasValidationErrors = trimmedLabel.isEmpty() ||
-        trimmedLabel.length > MAX_FLOATING_PROMPT_LABEL_CHARS ||
-        trimmedPrompt.isEmpty() ||
-        trimmedPrompt.length > MAX_FLOATING_PROMPT_TEXT_CHARS
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            LazyColumn(
-                modifier = Modifier.heightIn(max = 520.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                item {
-                    OutlinedTextField(
-                        value = label,
-                        onValueChange = { label = it },
-                        label = { Text("Button label") },
-                        singleLine = true,
-                        isError = labelError != null,
-                        supportingText = {
-                            Text(labelError ?: "${label.length}/$MAX_FLOATING_PROMPT_LABEL_CHARS")
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                item {
-                    OutlinedTextField(
-                        value = prompt,
-                        onValueChange = { prompt = it },
-                        label = { Text("Prompt inserted into bubble") },
-                        minLines = 5,
-                        maxLines = 10,
-                        isError = promptError != null,
-                        supportingText = {
-                            Text(promptError ?: "${prompt.length}/$MAX_FLOATING_PROMPT_TEXT_CHARS")
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Show in floating bubble")
-                            Text(
-                                "Disable to keep the template saved but hidden.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(checked = enabled, onCheckedChange = { enabled = it })
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    submitted = true
-                    if (!hasValidationErrors) onSave(trimmedLabel, trimmedPrompt, enabled)
-                },
-            ) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
 }
 
 @Composable
 private fun SettingsScreen(
-    state: MainUiState,
-    actions: MainViewModel,
-    onImportModel: () -> Unit,
+    state: ModelSetupUiState,
+    actions: ModelSetupViewModel,
+    section: SettingsSection,
+    onExportDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var pendingDownload by remember { mutableStateOf<ModelRecord?>(null) }
@@ -2761,55 +2499,140 @@ private fun SettingsScreen(
             .maxByOrNull(ModelContextProfile::updatedAt)
     }
     LazyColumn(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("settings-list"),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        item {
-            SectionTitle("Models", "Weights stay in private app storage")
-        }
-        items(state.models, key = { it.id }) { model ->
-            ModelCard(
-                model = model,
-                contextProfile = state.contextProfiles
-                    .filter { it.modelId == model.id }
-                    .maxByOrNull(ModelContextProfile::updatedAt),
-                onDownload = { pendingDownload = model },
-                onPause = { actions.pauseDownload(model.id) },
-                onSelect = { actions.selectModel(model.id) },
-                onDelete = { actions.deleteModel(model.id) },
-            )
-        }
-        item {
-            SectionTitle("Vision projectors", "Matching image component for each Gemma model")
-        }
-        items(state.projectors, key = { it.id }) { projector ->
-            ProjectorCard(
-                projector = projector,
-                onDownload = { actions.startProjectorDownload(projector.id) },
-                onPause = { actions.pauseProjectorDownload(projector.id) },
-                onDelete = { actions.deleteProjector(projector.id) },
-            )
-        }
-        item {
-            OutlinedButton(onClick = onImportModel, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.FolderOpen, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Import local GGUF")
+        if (section == SettingsSection.MODELS) {
+            item {
+                SectionTitle("Gemma 4 E4B", "The only supported local model; weights stay in private storage")
+            }
+            item {
+                Card {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Download network", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (state.allowMeteredModelDownloads) {
+                                    "Wi-Fi and mobile/metered networks"
+                                } else {
+                                    "Wi-Fi or another unmetered network only"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = state.allowMeteredModelDownloads,
+                            onCheckedChange = actions::setAllowMeteredModelDownloads,
+                        )
+                    }
+                }
+            }
+            items(state.models, key = { it.id }) { model ->
+                ModelCard(
+                    model = model,
+                    allowMeteredDownloads = state.allowMeteredModelDownloads,
+                    contextProfile = state.contextProfiles
+                        .filter { it.modelId == model.id }
+                        .maxByOrNull(ModelContextProfile::updatedAt),
+                    onDownload = { pendingDownload = model },
+                    onRetry = { actions.startDownload(model.id) },
+                    onPause = { actions.pauseDownload(model.id) },
+                    onSelect = { actions.selectModel(model.id) },
+                    onDelete = { actions.deleteModel(model.id) },
+                )
+            }
+            item {
+                SectionTitle("Vision projector", "Matching image component for Gemma 4 E4B")
+            }
+            items(state.projectors, key = { it.id }) { projector ->
+                ProjectorCard(
+                    projector = projector,
+                    allowMeteredDownloads = state.allowMeteredModelDownloads,
+                    onDownload = { actions.startProjectorDownload(projector.id) },
+                    onRetry = { actions.startProjectorDownload(projector.id) },
+                    onPause = { actions.pauseProjectorDownload(projector.id) },
+                    onDelete = { actions.deleteProjector(projector.id) },
+                )
+            }
+            item {
+                SectionTitle("Hugging Face", "Optional token for gated downloads")
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(state.tokenMasked ?: "No token saved", modifier = Modifier.weight(1f))
+                    if (state.tokenMasked != null) {
+                        TextButton(onClick = actions::clearToken) { Text("Clear") }
+                    }
+                    Button(onClick = { showTokenDialog = true }) {
+                        Text(if (state.tokenMasked == null) "Add token" else "Replace")
+                    }
+                }
+                Text(
+                    "The official Gemma download is public and does not need a token.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
-        item {
+        if (section == SettingsSection.RUNTIME) {
+            item {
+                ContextProfileCard(
+                    model = selectedModel,
+                    profile = selectedProfile,
+                    residencyState = state.residencyState,
+                    reverifyEnabled = selectedModel?.status == DownloadStatus.READY &&
+                        selectedProfile?.state != ContextVerificationState.VERIFYING &&
+                        !state.isSending,
+                    onReverify = actions::reverifyContext,
+                )
+            }
+            item {
             SectionTitle("Inference", "Tuned for the connected Redmi K80 Pro")
             Spacer(Modifier.height(10.dp))
             Text("Backend", style = MaterialTheme.typography.labelLarge)
-            FilterChip(
-                selected = true,
-                onClick = { actions.updateBackend(BackendMode.CPU) },
-                label = { Text("CPU (unrestricted)") },
-                leadingIcon = {
-                    Icon(Icons.Default.Check, contentDescription = null, Modifier.size(16.dp))
-                },
-            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BackendMode.entries.forEach { backend ->
+                    FilterChip(
+                        selected = state.backendMode == backend,
+                        onClick = { actions.updateBackend(backend) },
+                        label = { Text(backend.name.lowercase().replaceFirstChar(Char::uppercase)) },
+                        leadingIcon = if (state.backendMode == backend) {
+                            { Icon(Icons.Default.Check, contentDescription = null, Modifier.size(16.dp)) }
+                        } else null,
+                    )
+                }
+            }
+            Button(
+                onClick = actions::optimizeForThisPhone,
+                enabled = selectedModel?.status == DownloadStatus.READY &&
+                    !state.isOptimizingBackend && !state.isSending,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.isOptimizingBackend) "Benchmarking CPU and Vulkan…" else "Optimize for this phone")
+            }
+            state.benchmarks.forEach { benchmark ->
+                Text(
+                    if (benchmark.success) {
+                        "${benchmark.backend.name}: " +
+                            "${"%.1f".format(benchmark.generationTokensPerSecond ?: 0.0)} tok/s · " +
+                            "${benchmark.loadMillis ?: 0} ms load"
+                    } else {
+                        "${benchmark.backend.name}: ${benchmark.failureReason ?: "benchmark failed"}"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (benchmark.success) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else MaterialTheme.colorScheme.error,
+                )
+            }
             Text(
                 "Context is selected automatically per model from successful tests on this phone. " +
                     "The 16 GB memory extension is storage-backed swap; HyperOS may still enforce " +
@@ -2836,49 +2659,20 @@ private fun SettingsScreen(
                 OutlinedButton(onClick = actions::retryPreload) { Text("Retry preload") }
                 TextButton(onClick = actions::unloadModel) { Text("Unload") }
             }
-            DevicePersistenceSettings(state.batteryOptimizationIgnored)
-        }
-        item {
-            FloatingAssistantSettings(
-                enabled = state.floatingAssistantEnabled,
-                status = state.overlayPermissionStatus,
-                onToggle = actions::setFloatingAssistantEnabled,
-            )
-        }
-        item {
-            ContextProfileCard(
-                model = selectedModel,
-                profile = selectedProfile,
-                residencyState = state.residencyState,
-                reverifyEnabled = selectedModel?.status == DownloadStatus.READY &&
-                    selectedProfile?.state != ContextVerificationState.VERIFYING &&
-                    !state.isSending,
-                onReverify = actions::reverifyContext,
-            )
-        }
-        item {
-            GenerationSettingsEditor(
-                settings = state.generationSettings,
-                onChange = actions::updateGeneration,
-            )
-        }
-        item {
-            SectionTitle("Hugging Face", "Optional for private or gated repositories")
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(state.tokenMasked ?: "No token saved", modifier = Modifier.weight(1f))
-                if (state.tokenMasked != null) {
-                    TextButton(onClick = actions::clearToken) { Text("Clear") }
-                }
-                Button(onClick = { showTokenDialog = true }) {
-                    Text(if (state.tokenMasked == null) "Add token" else "Replace")
+            }
+            item {
+                GenerationSettingsEditor(
+                    settings = state.generationSettings,
+                    onChange = actions::updateGeneration,
+                )
+            }
+            item {
+                SectionTitle("Diagnostics", "Private device and runtime state; no chats or source content")
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = onExportDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                    Text("Export diagnostics JSON")
                 }
             }
-            Text(
-                "The official Gemma download is public and does not need a token.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
         item {
             Spacer(Modifier.height(24.dp))
@@ -2890,10 +2684,21 @@ private fun SettingsScreen(
             onDismissRequest = { pendingDownload = null },
             title = { Text("Download ${model.displayName}?") },
             text = {
-                Text(
-                    "This downloads ${formatBytes(model.expectedBytes ?: 0)} over the current network. " +
-                        "Keep the phone charged; the download can be paused and resumed.",
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "This downloads ${formatBytes(model.expectedBytes ?: 0)}. " +
+                            "Interrupted transfers resume automatically from the verified partial file.",
+                    )
+                    Text(
+                        if (state.allowMeteredModelDownloads) {
+                            "Network: Wi-Fi or mobile/metered. You can change this above."
+                        } else {
+                            "Network: unmetered only. Enable mobile/metered downloads above if needed."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             },
             confirmButton = {
                 Button(onClick = {
@@ -2916,150 +2721,6 @@ private fun SettingsScreen(
                 showTokenDialog = false
             },
         )
-    }
-}
-
-@Composable
-private fun FloatingAssistantSettings(
-    enabled: Boolean,
-    status: OverlayPermissionStatus,
-    onToggle: (Boolean) -> Unit,
-) {
-    val context = LocalContext.current
-    SectionTitle("Floating Assistant", "Read-only help over other apps")
-    Spacer(Modifier.height(10.dp))
-    Card {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Show floating AIchat bubble", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "Tap it over another app to ask about the current visible screen. " +
-                            "Execute scans downward, writes a copyable answer, and never sends or pastes for you.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = enabled, onCheckedChange = onToggle)
-            }
-            FloatingPermissionRow(
-                title = "Draw over other apps",
-                granted = status.canDrawOverlays,
-                detail = if (status.canDrawOverlays) {
-                    "Overlay permission granted"
-                } else {
-                    "Required for the bubble"
-                },
-                actionLabel = "Open",
-                onAction = { DeviceSettingsNavigator.openOverlayPermission(context) },
-            )
-            FloatingPermissionRow(
-                title = "Screen context access",
-                granted = status.accessibilityEnabled,
-                detail = if (status.accessibilityEnabled) {
-                    "Accessibility service can read visible text"
-                } else {
-                    "Required to capture the current screen"
-                },
-                actionLabel = "Open",
-                onAction = { DeviceSettingsNavigator.openAccessibility(context) },
-            )
-            FloatingPermissionRow(
-                title = "Notifications",
-                granted = status.notificationsEnabled,
-                detail = if (status.notificationsEnabled) {
-                    "Foreground-service notification can be shown"
-                } else {
-                    "Recommended so the stop control is visible"
-                },
-                actionLabel = "Open",
-                onAction = { DeviceSettingsNavigator.openAppPermissions(context) },
-            )
-        }
-    }
-}
-
-@Composable
-private fun FloatingPermissionRow(
-    title: String,
-    granted: Boolean,
-    detail: String,
-    actionLabel: String,
-    onAction: () -> Unit,
-) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(
-            if (granted) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
-            contentDescription = null,
-            tint = if (granted) sourceGrantedColor() else MaterialTheme.colorScheme.error,
-        )
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                detail,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        OutlinedButton(onClick = onAction) {
-            Text(actionLabel)
-        }
-    }
-}
-
-@Composable
-private fun DevicePersistenceSettings(batteryOptimizationIgnored: Boolean) {
-    val context = LocalContext.current
-    Spacer(Modifier.height(10.dp))
-    Text(
-        "HyperOS permissions",
-        style = MaterialTheme.typography.labelLarge,
-    )
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        FloatingPermissionRow(
-            title = "Battery unrestricted",
-            granted = batteryOptimizationIgnored,
-            detail = if (batteryOptimizationIgnored) {
-                "Android is not applying Doze battery optimization to AIchat"
-            } else {
-                "Recommended for keeping the resident model and bubble alive longer"
-            },
-            actionLabel = if (batteryOptimizationIgnored) "Open" else "Allow",
-            onAction = {
-                if (batteryOptimizationIgnored) {
-                    DeviceSettingsNavigator.openBatterySettings(context)
-                } else {
-                    DeviceSettingsNavigator.requestIgnoreBatteryOptimizations(context)
-                }
-            },
-        )
-        Text(
-            "Use Home or Minimize to leave AIchat running. HyperOS treats swiping AIchat away " +
-                "from Recents like a force-stop and can disable Screen context access, so AIchat " +
-                "hides its task from Recents.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            "Also allow auto-start and unrestricted battery use. No Android app can restart itself " +
-                "after the user force-stops it from system settings or a phone cleaner.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { DeviceSettingsNavigator.openAutoStart(context) }) {
-                Text("Auto-start")
-            }
-            OutlinedButton(onClick = { DeviceSettingsNavigator.openBatterySettings(context) }) {
-                Text("Battery settings")
-            }
-        }
     }
 }
 
@@ -3210,8 +2871,10 @@ private fun formatVerificationDate(timestamp: Long): String =
 @Composable
 private fun ModelCard(
     model: ModelRecord,
+    allowMeteredDownloads: Boolean,
     contextProfile: ModelContextProfile?,
     onDownload: () -> Unit,
+    onRetry: () -> Unit,
     onPause: () -> Unit,
     onSelect: () -> Unit,
     onDelete: () -> Unit,
@@ -3271,6 +2934,30 @@ private fun ModelCard(
                         "${formatBytes(model.downloadedBytes)} of ${formatBytes(total)}",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                if (model.bytesPerSecond > 0) {
+                    Text(
+                        "${formatTransferRate(model.bytesPerSecond)}" +
+                            (model.etaSeconds?.let { " · ${formatEta(it)} remaining" } ?: ""),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (model.status == DownloadStatus.QUEUED && model.retryAttempt > 0) {
+                    Text(
+                        "Retry ${model.retryAttempt} scheduled · tap Retry now to skip the delay",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (model.status == DownloadStatus.QUEUED) {
+                    Text(
+                        if (allowMeteredDownloads) {
+                            "Waiting for a network connection and Android's download scheduler"
+                        } else {
+                            "Waiting for an unmetered network and Android's download scheduler"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             model.error?.let {
                 Spacer(Modifier.height(8.dp))
@@ -3302,22 +2989,34 @@ private fun ModelCard(
                     }
                     DownloadStatus.VERIFYING -> Unit
                 }
+                if (model.status == DownloadStatus.QUEUED) {
+                    TextButton(onClick = onRetry) { Text("Retry now") }
+                }
             }
         }
     }
 }
 
 private fun officialModelSummary(modelId: String): String? = when (modelId) {
-    ModelConstants.GEMMA_4_E2B.id -> "Smallest and fastest Gemma 4 option for mobile"
     ModelConstants.GEMMA_4_E4B.id -> "Balanced mobile model · 4.5B effective parameters"
-    ModelConstants.GEMMA_4_12B.id -> "Most capable option for detailed responses"
     else -> null
+}
+
+private fun formatTransferRate(bytesPerSecond: Long): String =
+    "${formatBytes(bytesPerSecond)}/s"
+
+private fun formatEta(seconds: Long): String = when {
+    seconds >= 3_600 -> "${seconds / 3_600}h ${(seconds % 3_600) / 60}m"
+    seconds >= 60 -> "${seconds / 60}m ${seconds % 60}s"
+    else -> "${seconds}s"
 }
 
 @Composable
 private fun ProjectorCard(
     projector: ProjectorRecord,
+    allowMeteredDownloads: Boolean,
     onDownload: () -> Unit,
+    onRetry: () -> Unit,
     onPause: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -3354,9 +3053,31 @@ private fun ProjectorCard(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "${formatBytes(projector.downloadedBytes)} of ${formatBytes(projector.expectedBytes)}",
+                    "${projector.status.name.lowercase().replaceFirstChar(Char::uppercase)} · " +
+                        "${formatBytes(projector.downloadedBytes)} of ${formatBytes(projector.expectedBytes)}",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                if (projector.bytesPerSecond > 0) {
+                    Text(
+                        "${formatTransferRate(projector.bytesPerSecond)}" +
+                            (projector.etaSeconds?.let { " · ${formatEta(it)} remaining" } ?: ""),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (projector.status == DownloadStatus.QUEUED) {
+                    Text(
+                        when {
+                            projector.retryAttempt > 0 ->
+                                "Retry ${projector.retryAttempt} scheduled · tap Retry now to skip the delay"
+                            allowMeteredDownloads ->
+                                "Waiting for a network connection and Android's download scheduler"
+                            else ->
+                                "Waiting for an unmetered network and Android's download scheduler"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             projector.error?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -3382,6 +3103,9 @@ private fun ProjectorCard(
                     Text("Delete")
                 }
                 DownloadStatus.VERIFYING -> Unit
+            }
+            if (projector.status == DownloadStatus.QUEUED) {
+                TextButton(onClick = onRetry) { Text("Retry now") }
             }
         }
     }
@@ -3458,7 +3182,7 @@ private fun NumberField(
 
 @Composable
 private fun SectionTitle(title: String, subtitle: String) {
-    Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
     Text(
         subtitle,
         style = MaterialTheme.typography.bodySmall,

@@ -15,6 +15,8 @@ import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelLoadConfiguration
 import com.aliahad.aichat.core.ModelRecord
+import com.aliahad.aichat.core.InferenceState
+import com.aliahad.aichat.core.MultimodalRequirement
 import com.aliahad.aichat.inference.InferenceEngine
 import com.aliahad.aichat.model.ModelRepository
 import com.aliahad.aichat.settings.AppSettingsRepository
@@ -49,6 +51,7 @@ sealed interface ModelResidencyState {
         val declaredContextSize: Int,
         val loadMillis: Long,
         val visionReady: Boolean = false,
+        val audioReady: Boolean = false,
         val verifiedContextSize: Int = 0,
         val contextVerificationState: ContextVerificationState =
             ContextVerificationState.UNVERIFIED,
@@ -60,6 +63,7 @@ data class ModelLoadSignature(
     val path: String,
     val contextSize: Int,
     val temperature: Float,
+    val backend: BackendMode = BackendMode.CPU,
     val projectorPath: String? = null,
     val imageTokenBudget: Int? = null,
 )
@@ -100,9 +104,17 @@ class ModelResidencyController(
     suspend fun ensureLoaded(
         requireVision: Boolean = false,
         imageTokenBudget: Int = 280,
+    ): ModelLoadConfiguration = ensureLoaded(
+        requirement = if (requireVision) MultimodalRequirement.VISION else MultimodalRequirement.NONE,
+        imageTokenBudget = imageTokenBudget,
+    )
+
+    suspend fun ensureLoaded(
+        requirement: MultimodalRequirement,
+        imageTokenBudget: Int = 280,
     ): ModelLoadConfiguration = try {
         val configuration = mutex.withLock {
-            ensureLoadedLocked(requireVision, imageTokenBudget)
+            ensureLoadedLocked(requirement, imageTokenBudget)
         }
         scheduleVerification()
         configuration
@@ -179,7 +191,7 @@ class ModelResidencyController(
             inferenceEngine.loadedProjectorPath == path
 
     private suspend fun ensureLoadedLocked(
-        requireVision: Boolean,
+        requirement: MultimodalRequirement,
         imageTokenBudget: Int,
     ): ModelLoadConfiguration {
         val unresolved = selectedOrReadyModel()
@@ -194,37 +206,40 @@ class ModelResidencyController(
         val model = modelRepository.ensureSha256(unresolved)
         val modelPath = requireNotNull(model.localPath)
         var profile = contextProfiles.resolve(model)
-        val resolvedContext = maxOf(
+        var resolvedContext = maxOf(
             profile.verifiedContextTokens,
             RoomContextProfileRepository.SAFE_CONTEXT_TOKENS,
         ).let { value ->
             profile.declaredContextTokens.takeIf { it > 0 }?.let { value.coerceAtMost(it) } ?: value
         }
         val generation = settingsRepository.generationSettings.first().normalized()
-        val projector = if (requireVision) {
+        val projector = if (requirement != MultimodalRequirement.NONE) {
             requireNotNull(modelRepository.projectorForModel(model.id)) {
-                "This model has no configured vision projector."
+                "This model has no configured multimedia projector."
             }.also {
                 require(it.status == DownloadStatus.READY && it.localPath != null) {
-                    "Download ${it.displayName} before sending images."
+                    "Download ${it.displayName} before sending image or audio attachments."
                 }
             }
         } else {
             null
         }
         val previous = loadedSignature
-        val baseMatches = previous != null &&
-            previous.path == modelPath &&
-            previous.contextSize == resolvedContext &&
-            previous.temperature == generation.temperature &&
-            inferenceEngine.loadedModelPath == modelPath &&
-            inferenceEngine.activeContextSize == resolvedContext
-        val retainedProjectorPath = if (!requireVision && baseMatches) {
+        val baseMatches = previous?.matchesLoadedBase(
+            expectedPath = modelPath,
+            expectedContextSize = resolvedContext,
+            expectedTemperature = generation.temperature,
+            expectedBackend = profile.backend,
+            actualBackend = (inferenceEngine.state.value as? InferenceState.Ready)?.backend,
+            loadedPath = inferenceEngine.loadedModelPath,
+            activeContextSize = inferenceEngine.activeContextSize,
+        ) == true
+        val retainedProjectorPath = if (requirement == MultimodalRequirement.NONE && baseMatches) {
             previous.projectorPath
         } else {
             projector?.localPath
         }
-        val retainedImageBudget = if (!requireVision && baseMatches) {
+        val retainedImageBudget = if (requirement == MultimodalRequirement.NONE && baseMatches) {
             previous.imageTokenBudget
         } else {
             projector?.let { imageTokenBudget }
@@ -233,6 +248,7 @@ class ModelResidencyController(
             path = modelPath,
             contextSize = resolvedContext,
             temperature = generation.temperature,
+            backend = profile.backend,
             projectorPath = retainedProjectorPath,
             imageTokenBudget = retainedImageBudget,
         )
@@ -246,10 +262,55 @@ class ModelResidencyController(
                 configuration = ModelLoadConfiguration(
                     contextTokens = resolvedContext,
                     declaredContextTokens = profile.declaredContextTokens,
+                    backend = profile.backend,
                     temperature = generation.temperature,
+                    modelId = model.id,
+                    modelSha256 = model.sha256,
                 ),
             )
             loadedSignature = signature.copy(projectorPath = null, imageTokenBudget = null)
+            val actualBackend = (inferenceEngine.state.value as? InferenceState.Ready)?.backend
+                ?: profile.backend
+            if (actualBackend != signature.backend) {
+                profile = contextProfiles.resolve(model)
+                check(profile.backend == actualBackend) {
+                    "Backend recovery selected $actualBackend but settings resolved ${profile.backend}."
+                }
+                resolvedContext = maxOf(
+                    profile.verifiedContextTokens,
+                    RoomContextProfileRepository.SAFE_CONTEXT_TOKENS,
+                ).let { value ->
+                    profile.declaredContextTokens.takeIf { it > 0 }
+                        ?.let { value.coerceAtMost(it) }
+                        ?: value
+                }
+                if (inferenceEngine.activeContextSize != resolvedContext) {
+                    inferenceEngine.unload()
+                    inferenceEngine.loadModel(
+                        path = modelPath,
+                        displayName = model.displayName,
+                        configuration = ModelLoadConfiguration(
+                            contextTokens = resolvedContext,
+                            declaredContextTokens = profile.declaredContextTokens,
+                            backend = actualBackend,
+                            temperature = generation.temperature,
+                            modelId = model.id,
+                            modelSha256 = model.sha256,
+                        ),
+                    )
+                    check((inferenceEngine.state.value as? InferenceState.Ready)?.backend == actualBackend) {
+                        "CPU recovery could not reload the matching context profile."
+                    }
+                }
+                signature = signature.copy(
+                    backend = actualBackend,
+                    contextSize = inferenceEngine.activeContextSize,
+                )
+                loadedSignature = signature.copy(projectorPath = null, imageTokenBudget = null)
+                if (settingsRepository.backendMode.first() == BackendMode.AUTO) {
+                    settingsRepository.setChosenAutoBackend(actualBackend)
+                }
+            }
             profile = contextProfiles.recordDeclared(profile, inferenceEngine.modelContextLimit)
             if (inferenceEngine.activeContextSize != resolvedContext) {
                 signature = signature.copy(contextSize = inferenceEngine.activeContextSize)
@@ -258,25 +319,41 @@ class ModelResidencyController(
         }
         if (signature.projectorPath != null &&
             (inferenceEngine.loadedProjectorPath != signature.projectorPath ||
-                previous?.imageTokenBudget != signature.imageTokenBudget)
+                previous?.imageTokenBudget != signature.imageTokenBudget ||
+                inferenceEngine.loadedCapabilities == null)
         ) {
             inferenceEngine.loadProjector(
                 signature.projectorPath,
                 requireNotNull(signature.imageTokenBudget),
             )
         }
+        val capabilities = inferenceEngine.loadedCapabilities
+        if (requirement in setOf(MultimodalRequirement.VISION, MultimodalRequirement.BOTH)) {
+            require(capabilities?.vision == true) {
+                "The selected projector does not support image input. Download a vision-capable Gemma 4 projector."
+            }
+        }
+        if (requirement in setOf(MultimodalRequirement.AUDIO, MultimodalRequirement.BOTH)) {
+            require(capabilities?.audio == true) {
+                "The selected projector does not support audio input. Download an audio-capable Gemma 4 projector."
+            }
+        }
         loadedSignature = signature
         val configuration = ModelLoadConfiguration(
             contextTokens = signature.contextSize,
             declaredContextTokens = profile.declaredContextTokens,
+            backend = signature.backend,
             temperature = generation.temperature,
+            modelId = model.id,
+            modelSha256 = model.sha256,
         )
         _state.value = ModelResidencyState.Ready(
             modelName = model.displayName,
             contextSize = signature.contextSize,
             declaredContextSize = profile.declaredContextTokens,
             loadMillis = mark.elapsedNow().inWholeMilliseconds,
-            visionReady = signature.projectorPath != null,
+            visionReady = capabilities?.vision == true,
+            audioReady = capabilities?.audio == true,
             verifiedContextSize = profile.verifiedContextTokens,
             contextVerificationState = profile.state,
         )
@@ -288,7 +365,7 @@ class ModelResidencyController(
         val model = selectedReadyModel() ?: return
         try {
             mutex.withLock {
-                ensureLoadedLocked(false, 280)
+                ensureLoadedLocked(MultimodalRequirement.NONE, 280)
             }
             var profile = contextProfiles.resolve(model)
             val candidates = ContextCandidates.remaining(profile)
@@ -313,7 +390,7 @@ class ModelResidencyController(
         } finally {
             if (activeInferenceUsers.get() == 0 && userManager.isUserUnlocked) {
                 runCatching {
-                    mutex.withLock { ensureLoadedLocked(false, 280) }
+                    mutex.withLock { ensureLoadedLocked(MultimodalRequirement.NONE, 280) }
                 }
             }
         }
@@ -337,9 +414,15 @@ class ModelResidencyController(
                         configuration = ModelLoadConfiguration(
                             contextTokens = candidate,
                             declaredContextTokens = profile.declaredContextTokens,
+                            backend = profile.backend,
                             temperature = 0f,
+                            modelId = model.id,
+                            modelSha256 = model.sha256,
                         ),
                     )
+                    check((inferenceEngine.state.value as? InferenceState.Ready)?.backend == profile.backend) {
+                        "${profile.backend} context verification switched to the CPU fallback."
+                    }
                     check(inferenceEngine.activeContextSize == candidate) {
                         "llama.cpp allocated ${inferenceEngine.activeContextSize} instead of $candidate tokens."
                     }
@@ -347,8 +430,13 @@ class ModelResidencyController(
                         path = model.localPath,
                         contextSize = candidate,
                         temperature = 0f,
+                        backend = profile.backend,
                     )
-                    inferenceEngine.verifyLoadedContext()
+                    val generated = inferenceEngine.verifyLoadedContext()
+                    check((inferenceEngine.state.value as? InferenceState.Ready)?.backend == profile.backend) {
+                        "${profile.backend} context verification did not finish on its requested backend."
+                    }
+                    generated
                 }
             }
             runtimeMonitor.requireStable(metrics)
@@ -417,3 +505,20 @@ class ModelResidencyController(
         const val TAG = "ModelResidency"
     }
 }
+
+internal fun ModelLoadSignature.matchesLoadedBase(
+    expectedPath: String,
+    expectedContextSize: Int,
+    expectedTemperature: Float,
+    expectedBackend: BackendMode,
+    actualBackend: BackendMode?,
+    loadedPath: String?,
+    activeContextSize: Int,
+): Boolean =
+    path == expectedPath &&
+        contextSize == expectedContextSize &&
+        temperature == expectedTemperature &&
+        backend == expectedBackend &&
+        actualBackend == expectedBackend &&
+        loadedPath == expectedPath &&
+        activeContextSize == expectedContextSize

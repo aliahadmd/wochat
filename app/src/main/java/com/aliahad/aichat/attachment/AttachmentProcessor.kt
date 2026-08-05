@@ -34,6 +34,7 @@ internal data class AttachmentProcessingResult(
     val selectedPages: Set<Int>,
     val imageTokenBudget: Int?,
     val chunks: List<AttachmentChunkEntity>,
+    val durationMillis: Long? = null,
 )
 
 internal class AttachmentProcessor(
@@ -41,11 +42,28 @@ internal class AttachmentProcessor(
 ) {
     fun process(entity: AttachmentEntity): AttachmentProcessingResult = when (entity.kind) {
         AttachmentKind.IMAGE -> processImage(entity)
+        AttachmentKind.AUDIO -> processAudio(entity)
         AttachmentKind.PDF -> processPdf(entity)
         AttachmentKind.DOCX,
         AttachmentKind.XLSX,
         AttachmentKind.PPTX -> processOoxml(entity)
         else -> processText(entity)
+    }
+
+    private fun processAudio(entity: AttachmentEntity): AttachmentProcessingResult {
+        val metadata = AudioAttachmentInspector().inspect(
+            file = File(entity.originalPath),
+            displayName = entity.displayName,
+        )
+        return AttachmentProcessingResult(
+            previewPath = null,
+            imagePaths = emptyList(),
+            pageCount = null,
+            selectedPages = emptySet(),
+            imageTokenBudget = null,
+            chunks = emptyList(),
+            durationMillis = metadata.durationMillis,
+        )
     }
 
     fun renderSelectedPdfPages(entity: AttachmentEntity, pages: Set<Int>): List<String> {

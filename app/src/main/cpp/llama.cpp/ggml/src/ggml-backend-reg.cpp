@@ -552,6 +552,10 @@ static ggml_backend_reg_t ggml_backend_load_best(const char * name, bool silent,
     return get_reg().load_backend(best_path, silent);
 }
 
+ggml_backend_reg_t ggml_backend_load_best_from_path(const char * name, const char * dir_path) {
+    return ggml_backend_load_best(name, false, dir_path);
+}
+
 void ggml_backend_load_all() {
     ggml_backend_load_all_from_path(nullptr);
 }

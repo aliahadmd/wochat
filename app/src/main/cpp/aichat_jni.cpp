@@ -574,10 +574,16 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeInit(
     JNIEnv * env,
     jobject,
-    jstring native_lib_dir
+    jstring native_lib_dir,
+    jint backend
 ) {
     const std::string path = from_jstring(env, native_lib_dir);
-    ggml_backend_load_all_from_path(path.c_str());
+    // Never register the Vulkan plugin in the main process. Some upstream Vulkan
+    // fatal paths call exit(1); Vulkan is loaded only by the private :vulkan service.
+    ggml_backend_load_best_from_path("cpu", path.c_str());
+    if (backend == 2) {
+        ggml_backend_load_best_from_path("vulkan", path.c_str());
+    }
     llama_backend_init();
     LOGI("%s", llama_print_system_info());
 }

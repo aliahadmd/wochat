@@ -3,12 +3,14 @@ package com.aliahad.aichat.inference
 import android.content.Context
 import android.os.PowerManager
 import com.aliahad.aichat.core.BackendMode
+import com.aliahad.aichat.core.BackendFailureStage
 import com.aliahad.aichat.core.ChatTurn
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.GenerationEvent
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.InferenceMetrics
 import com.aliahad.aichat.core.InferenceExecutionProfile
+import com.aliahad.aichat.core.InferenceBenchmarkSample
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.ModelCapabilities
@@ -28,6 +30,7 @@ import kotlin.time.TimeSource
 
 class NativeInferenceEngine(
     context: Context,
+    private val nativeBackend: BackendMode = BackendMode.CPU,
 ) : InferenceEngine {
     @OptIn(ExperimentalCoroutinesApi::class)
     private val dispatcher = Dispatchers.IO.limitedParallelism(1)
@@ -49,6 +52,8 @@ class NativeInferenceEngine(
         private set
     override var loadedProjectorPath: String? = null
         private set
+    override var loadedCapabilities: ModelCapabilities? = null
+        private set
     override var modelContextLimit: Int = 0
         private set
     override var activeContextSize: Int = 0
@@ -58,8 +63,9 @@ class NativeInferenceEngine(
     private var activeConversationId: String? = null
 
     init {
+        require(nativeBackend != BackendMode.AUTO) { "A native engine must use one concrete backend." }
         System.loadLibrary("aichat-native")
-        nativeInit(context.applicationInfo.nativeLibraryDir)
+        nativeInit(context.applicationInfo.nativeLibraryDir, nativeBackend.nativeCode)
         _state.value = InferenceState.Idle
     }
 
@@ -76,11 +82,14 @@ class NativeInferenceEngine(
         displayName: String,
         configuration: ModelLoadConfiguration,
     ) = withContext(dispatcher) {
-        val selected = BackendMode.CPU
+        val selected = configuration.backend.let { if (it == BackendMode.AUTO) nativeBackend else it }
+        require(selected == nativeBackend) {
+            "$nativeBackend engine cannot load the $selected backend."
+        }
         _state.value = InferenceState.Loading(displayName)
         val mark = TimeSource.Monotonic.markNow()
         holdCpu()
-        val error = try {
+        val loadError = try {
             nativeLoad(
                 path,
                 selected.nativeCode,
@@ -90,9 +99,9 @@ class NativeInferenceEngine(
         } finally {
             releaseCpu()
         }
-        if (error != null) {
-            _state.value = InferenceState.Error(error)
-            error(error)
+        if (loadError != null) {
+            _state.value = InferenceState.Error(loadError)
+            throw BackendInferenceException(selected, BackendFailureStage.LOAD, loadError)
         }
         loadedBackend = selected
         loadedModelPath = path
@@ -100,6 +109,7 @@ class NativeInferenceEngine(
         modelContextLimit = nativeModelContextLimit()
         activeContextSize = nativeCurrentContextSize()
         loadedProjectorPath = null
+        loadedCapabilities = null
         activeConversationId = null
         _metrics.value = _metrics.value.copy(
             modelLoadMillis = mark.elapsedNow().inWholeMilliseconds,
@@ -113,7 +123,9 @@ class NativeInferenceEngine(
     ): ModelCapabilities = withContext(dispatcher) {
         holdCpu()
         try {
-            nativeLoadProjector(path, imageTokenBudget)?.let { error(it) }
+            nativeLoadProjector(path, imageTokenBudget)?.let {
+                throw BackendInferenceException(loadedBackend, BackendFailureStage.PROJECTOR, it)
+            }
         } finally {
             releaseCpu()
         }
@@ -123,12 +135,13 @@ class NativeInferenceEngine(
             vision = flags and 1 != 0,
             audio = flags and 2 != 0,
             contextLimit = modelContextLimit,
-        )
+        ).also { loadedCapabilities = it }
     }
 
     override suspend fun unloadProjector() = withContext(dispatcher) {
         nativeUnloadProjector()
         loadedProjectorPath = null
+        loadedCapabilities = null
         activeConversationId = null
     }
 
@@ -153,10 +166,10 @@ class NativeInferenceEngine(
         try {
             nativeRestore(prompt, emptyArray(), emptyArray(), settings.thinkingEnabled)?.let {
                 _state.value = InferenceState.Error(it)
-                error(it)
+                throw BackendInferenceException(loadedBackend, BackendFailureStage.RESTORE, it)
             }
             history.forEach { turn ->
-                val mediaPaths = turn.attachments.flatMap { it.imagePaths }
+                val mediaPaths = turn.attachments.flatMap { it.mediaPaths }
                 val content = turn.withAttachmentText()
                 val error = if (turn.message.role == MessageRole.USER && mediaPaths.isNotEmpty()) {
                     nativeAppendHistoryMedia(turn.message.role.nativeRole, content, mediaPaths.toTypedArray())
@@ -165,7 +178,7 @@ class NativeInferenceEngine(
                 }
                 error?.let {
                     _state.value = InferenceState.Error(it)
-                    error(it)
+                    throw BackendInferenceException(loadedBackend, BackendFailureStage.RESTORE, it)
                 }
             }
         } finally {
@@ -189,7 +202,7 @@ class NativeInferenceEngine(
         cancelled = false
         holdCpu()
         try {
-            val mediaPaths = turn.attachments.flatMap { it.imagePaths }
+            val mediaPaths = turn.attachments.flatMap { it.mediaPaths }
             _state.value = if (mediaPaths.isEmpty()) {
                 InferenceState.EvaluatingPrompt
             } else {
@@ -205,7 +218,11 @@ class NativeInferenceEngine(
             }
             beginError?.let {
                 _state.value = InferenceState.Error(it)
-                error(it)
+                throw BackendInferenceException(
+                    loadedBackend,
+                    if (mediaPaths.isEmpty()) BackendFailureStage.PROMPT else BackendFailureStage.MEDIA,
+                    it,
+                )
             }
             _metrics.value = _metrics.value.copy(
                 promptEvaluationMillis = promptMark.elapsedNow().inWholeMilliseconds,
@@ -223,6 +240,13 @@ class NativeInferenceEngine(
                     val token = nativeNextToken()
                     if (token == null) {
                         stopReason = nativeLastStopReason().toStopReason()
+                        if (stopReason == GenerationStopReason.DECODE_ERROR) {
+                            throw BackendInferenceException(
+                                loadedBackend,
+                                BackendFailureStage.DECODE,
+                                "$loadedBackend decode failed.",
+                            )
+                        }
                         val answerTokens = nativeGeneratedAnswerTokens().coerceAtLeast(0)
                         if (stopReason == GenerationStopReason.TOKEN_LIMIT &&
                             answerTokens < settings.maxAnswerTokens &&
@@ -294,6 +318,7 @@ class NativeInferenceEngine(
         loadedModelPath = null
         loadedModelName = null
         loadedProjectorPath = null
+        loadedCapabilities = null
         modelContextLimit = 0
         activeContextSize = 0
         activeConversationId = null
@@ -305,21 +330,55 @@ class NativeInferenceEngine(
         path: String,
         displayName: String,
         settings: GenerationSettings,
-    ): Map<BackendMode, Double> = withContext(dispatcher) {
-        val results = linkedMapOf<BackendMode, Double>()
+    ): Map<BackendMode, InferenceBenchmarkSample> = withContext(dispatcher) {
+        val results = linkedMapOf<BackendMode, InferenceBenchmarkSample>()
         holdCpu()
         try {
-            for (backend in listOf(BackendMode.CPU)) {
-                val error = nativeLoad(path, backend.nativeCode, 1024, settings.temperature)
-                if (error != null) continue
-                nativeRestore("Answer briefly.", emptyArray(), emptyArray(), false)
-                nativeBeginUserPrompt("Reply with one word.", 8)
-                val mark = TimeSource.Monotonic.markNow()
-                var tokens = 0
-                while (nativeNextToken() != null) tokens++
-                val seconds = mark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1) / 1000.0
-                results[backend] = tokens / seconds
-                nativeUnload()
+            for (backend in listOf(nativeBackend)) {
+                try {
+                    val loadMark = TimeSource.Monotonic.markNow()
+                    nativeLoad(path, backend.nativeCode, 1024, settings.temperature)?.let {
+                        throw BackendInferenceException(backend, BackendFailureStage.BENCHMARK, it)
+                    }
+                    val loadMillis = loadMark.elapsedNow().inWholeMilliseconds
+                    nativeRestore(
+                        "You are running a local performance check. Answer directly.",
+                        emptyArray(),
+                        emptyArray(),
+                        false,
+                    )?.let {
+                        throw BackendInferenceException(backend, BackendFailureStage.BENCHMARK, it)
+                    }
+                    val promptMark = TimeSource.Monotonic.markNow()
+                    nativeBeginUserPrompt("Reply with exactly the word ready.", 8)?.let {
+                        throw BackendInferenceException(backend, BackendFailureStage.BENCHMARK, it)
+                    }
+                    val promptMillis = promptMark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1)
+                    val generationMark = TimeSource.Monotonic.markNow()
+                    var tokens = 0
+                    while (nativeNextToken() != null) tokens++
+                    val benchmarkStop = nativeLastStopReason().toStopReason()
+                    check(tokens > 0) { "$backend generated no tokens during its benchmark." }
+                    check(benchmarkStop in setOf(
+                        GenerationStopReason.EOG,
+                        GenerationStopReason.TOKEN_LIMIT,
+                    )) { "$backend benchmark ended with $benchmarkStop." }
+                    val seconds = generationMark.elapsedNow().inWholeMilliseconds
+                        .coerceAtLeast(1) / 1000.0
+                    results[backend] = InferenceBenchmarkSample(
+                        loadMillis = loadMillis,
+                        promptTokensPerSecond = 8.0 / (promptMillis / 1000.0),
+                        generationTokensPerSecond = tokens / seconds,
+                    )
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Throwable) {
+                    // A missing result is persisted by the runner as a backend failure. Keep
+                    // benchmarking so a Vulkan fault can never discard the safe CPU result.
+                } finally {
+                    runCatching { nativeFinishGeneration() }
+                    runCatching { nativeUnload() }
+                }
             }
         } finally {
             releaseCpu()
@@ -327,6 +386,7 @@ class NativeInferenceEngine(
         loadedModelPath = null
         loadedModelName = null
         loadedProjectorPath = null
+        loadedCapabilities = null
         activeConversationId = null
         activeContextSize = 0
         _state.value = InferenceState.Idle
@@ -348,11 +408,15 @@ class NativeInferenceEngine(
                 emptyArray(),
                 emptyArray(),
                 false,
-            )?.let { error(it) }
+            )?.let {
+                throw BackendInferenceException(loadedBackend, BackendFailureStage.VERIFY, it)
+            }
             nativeBeginUserPrompt(
                 "Reply with exactly the word verified.",
                 VERIFICATION_TOKEN_LIMIT,
-            )?.let { error(it) }
+            )?.let {
+                throw BackendInferenceException(loadedBackend, BackendFailureStage.VERIFY, it)
+            }
             var generated = 0
             while (true) {
                 val token = nativeNextToken() ?: break
@@ -381,7 +445,7 @@ class NativeInferenceEngine(
         nativeShutdown()
     }
 
-    private external fun nativeInit(nativeLibDir: String)
+    private external fun nativeInit(nativeLibDir: String, backend: Int)
     private external fun nativeLoad(
         modelPath: String,
         backend: Int,

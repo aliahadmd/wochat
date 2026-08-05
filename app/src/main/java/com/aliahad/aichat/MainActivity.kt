@@ -4,9 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.net.Uri
-import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
-import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -16,43 +14,46 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aliahad.aichat.ui.AiChatApp
 import com.aliahad.aichat.ui.theme.AichatTheme
 import com.aliahad.aichat.residency.ModelResidencyService
 import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.settings.DeviceSettingsNavigator
+import androidx.health.connect.client.PermissionController
+import com.aliahad.aichat.ui.viewmodel.AiChatViewModelFactory
+import com.aliahad.aichat.ui.viewmodel.AppShellViewModel
+import com.aliahad.aichat.ui.viewmodel.ChatViewModel
+import com.aliahad.aichat.ui.viewmodel.MemoryViewModel
+import com.aliahad.aichat.ui.viewmodel.ModelSetupViewModel
+import com.aliahad.aichat.ui.viewmodel.SkillsViewModel
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: MainViewModel by viewModels {
-        object : ViewModelProvider.Factory {
-            @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                MainViewModel((application as AiChatApplication).container) as T
-        }
-    }
+    private lateinit var viewModelFactory: AiChatViewModelFactory
+    private val appShellViewModel: AppShellViewModel by viewModels { viewModelFactory }
+    private val chatViewModel: ChatViewModel by viewModels { viewModelFactory }
+    private val modelSetupViewModel: ModelSetupViewModel by viewModels { viewModelFactory }
+    private val memoryViewModel: MemoryViewModel by viewModels { viewModelFactory }
+    private val skillsViewModel: SkillsViewModel by viewModels { viewModelFactory }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) {}.launch(
-            Manifest.permission.POST_NOTIFICATIONS,
-        )
+        viewModelFactory = AiChatViewModelFactory((application as AiChatApplication).container)
+        appShellViewModel.initialize()
         ModelResidencyService.start(this)
         setContent {
             AichatTheme(dynamicColor = false) {
-                val state by viewModel.uiState.collectAsStateWithLifecycle()
-                val importLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.OpenDocument(),
-                ) { uri ->
-                    uri?.let(viewModel::importModel)
-                }
+                val shellState by appShellViewModel.uiState.collectAsStateWithLifecycle()
+                val chatState by chatViewModel.uiState.collectAsStateWithLifecycle()
+                val modelState by modelSetupViewModel.uiState.collectAsStateWithLifecycle()
+                val memoryState by memoryViewModel.uiState.collectAsStateWithLifecycle()
+                val skillsState by skillsViewModel.uiState.collectAsStateWithLifecycle()
                 var pendingExportPassphrase by remember { mutableStateOf<String?>(null) }
                 val officeExportLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.CreateDocument("application/octet-stream"),
@@ -60,28 +61,36 @@ class MainActivity : ComponentActivity() {
                     val passphrase = pendingExportPassphrase
                     pendingExportPassphrase = null
                     if (uri != null && passphrase != null) {
-                        viewModel.exportOfficeBackup(uri, passphrase)
+                        memoryViewModel.exportOfficeBackup(uri, passphrase)
                     }
                 }
                 val officeImportLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenDocument(),
                 ) { uri ->
-                    viewModel.selectOfficeBackup(uri)
+                    memoryViewModel.selectOfficeBackup(uri)
                 }
+                val diagnosticsLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("application/json"),
+                ) { uri -> uri?.let(modelSetupViewModel::exportDiagnostics) }
                 val phonePermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions(),
                 ) {
-                    viewModel.refreshPhoneSourceAccess()
+                    memoryViewModel.refreshPhoneSourceAccess()
+                }
+                val healthPermissionLauncher = rememberLauncherForActivityResult(
+                    PermissionController.createRequestPermissionResultContract(),
+                ) {
+                    memoryViewModel.refreshPhoneSourceAccess()
                 }
                 val fileLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenMultipleDocuments(),
                 ) { uris ->
-                    uris.take(20).forEach(viewModel::stageAttachment)
+                    uris.take(20).forEach(chatViewModel::stageAttachment)
                 }
                 val photoLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.PickMultipleVisualMedia(20),
                 ) { uris ->
-                    uris.forEach(viewModel::stageAttachment)
+                    uris.forEach(chatViewModel::stageAttachment)
                 }
                 var pendingCameraUri by androidx.compose.runtime.remember {
                     androidx.compose.runtime.mutableStateOf<Uri?>(null)
@@ -89,14 +98,23 @@ class MainActivity : ComponentActivity() {
                 val cameraLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.TakePicture(),
                 ) { success ->
-                    if (success) pendingCameraUri?.let(viewModel::stageAttachment)
+                    if (success) pendingCameraUri?.let(chatViewModel::stageAttachment)
                     pendingCameraUri = null
                 }
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    AiChatApp(
-                        state = state,
-                        actions = viewModel,
-                        onImportModel = { importLauncher.launch(arrayOf("*/*")) },
+                    shellState.launchDestination?.let { launchDestination ->
+                        AiChatApp(
+                        launchDestination = launchDestination,
+                        shellState = shellState,
+                        chatState = chatState,
+                        modelState = modelState,
+                        memoryState = memoryState,
+                        skillsState = skillsState,
+                        shellActions = appShellViewModel,
+                        chatActions = chatViewModel,
+                        modelActions = modelSetupViewModel,
+                        memoryActions = memoryViewModel,
+                        skillsActions = skillsViewModel,
                         onAddPhotos = {
                             photoLauncher.launch(
                                 androidx.activity.result.PickVisualMediaRequest(
@@ -119,10 +137,10 @@ class MainActivity : ComponentActivity() {
                             )
                         },
                         onTakePhoto = {
-                            val file = File(cacheDir, "camera/${System.currentTimeMillis()}.jpg").apply {
+                            val file = java.io.File(cacheDir, "camera/${System.currentTimeMillis()}.jpg").apply {
                                 parentFile?.mkdirs()
                             }
-                            val uri = FileProvider.getUriForFile(
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
                                 this,
                                 "$packageName.files",
                                 file,
@@ -201,12 +219,17 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
                                 }
-                                ActivitySource.HEALTH ->
-                                    DeviceSettingsNavigator.openHealthConnect(this)
+                                ActivitySource.HEALTH -> healthPermissionLauncher.launch(
+                                    (application as AiChatApplication).container.healthDataSource.readPermissions,
+                                )
                                 else -> Unit
                             }
                         },
-                    )
+                        onExportDiagnostics = {
+                            diagnosticsLauncher.launch("AIchat-diagnostics-${System.currentTimeMillis()}.json")
+                        },
+                        )
+                    }
                 }
             }
         }
@@ -219,9 +242,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        viewModel.refreshPhoneSourceAccess()
-        viewModel.refreshOverlayPermissionStatus()
-        viewModel.refreshBackgroundPersistenceStatus()
+        memoryViewModel.refreshPhoneSourceAccess()
     }
 
     override fun onStop() {

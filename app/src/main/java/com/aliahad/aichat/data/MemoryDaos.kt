@@ -143,6 +143,18 @@ interface ActivityDao {
     ): List<ActivityEventEntity>
 
     @Query(
+        "SELECT * FROM activity_events WHERE source IN (:sources) " +
+            "AND startedAt >= :fromInclusive AND startedAt < :toExclusive " +
+            "ORDER BY startedAt DESC LIMIT :limit",
+    )
+    suspend fun between(
+        sources: List<com.aliahad.aichat.core.ActivitySource>,
+        fromInclusive: Long,
+        toExclusive: Long,
+        limit: Int,
+    ): List<ActivityEventEntity>
+
+    @Query(
         "SELECT * FROM activity_events WHERE source = :source AND startedAt < :before " +
             "AND compactedIntoId IS NULL AND pinned = 0 ORDER BY startedAt LIMIT :limit",
     )
@@ -169,16 +181,4 @@ interface ActivityDao {
 
     @Query("SELECT * FROM memory_summaries")
     suspend fun allSummaries(): List<MemorySummaryEntity>
-}
-
-@Dao
-interface ActionAuditDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(audit: ActionAuditEntity)
-
-    @Query("SELECT * FROM action_audits ORDER BY createdAt DESC")
-    fun observeAll(): Flow<List<ActionAuditEntity>>
-
-    @Query("SELECT * FROM action_audits")
-    suspend fun all(): List<ActionAuditEntity>
 }

@@ -10,16 +10,9 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.ChatQualityMode
-import com.aliahad.aichat.overlay.DEFAULT_FLOATING_PROMPT_TEMPLATES
-import com.aliahad.aichat.overlay.FloatingPromptTemplate
-import com.aliahad.aichat.overlay.MAX_FLOATING_PROMPT_LABEL_CHARS
-import com.aliahad.aichat.overlay.MAX_FLOATING_PROMPT_TEXT_CHARS
-import com.aliahad.aichat.overlay.ScreenAssistantPreset
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
-import org.json.JSONArray
-import org.json.JSONObject
-import java.util.UUID
+import kotlinx.coroutines.flow.first
 
 private val Context.settingsDataStore by preferencesDataStore("settings")
 
@@ -30,6 +23,7 @@ class AppSettingsRepository(
     private object Keys {
         val backend = stringPreferencesKey("backend")
         val chosenAutoBackend = stringPreferencesKey("chosen_auto_backend")
+        val vulkanQuarantines = stringPreferencesKey("vulkan_quarantines")
         val maxNewTokens = intPreferencesKey("max_new_tokens")
         val maxAnswerTokens = intPreferencesKey("max_answer_tokens")
         val temperature = floatPreferencesKey("temperature")
@@ -38,20 +32,21 @@ class AppSettingsRepository(
         val lastQualityMode = stringPreferencesKey("last_quality_mode")
         val memoryEnabled = booleanPreferencesKey("memory_enabled")
         val collectionPaused = booleanPreferencesKey("collection_paused")
-        val actionAllowlist = stringPreferencesKey("action_allowlist")
-        val floatingAssistantEnabled = booleanPreferencesKey("floating_assistant_enabled")
-        val floatingAssistantBubbleX = intPreferencesKey("floating_assistant_bubble_x")
-        val floatingAssistantBubbleY = intPreferencesKey("floating_assistant_bubble_y")
-        val floatingAssistantLastPreset = stringPreferencesKey("floating_assistant_last_preset")
-        val floatingPromptTemplates = stringPreferencesKey("floating_prompt_templates")
+        val allowMeteredModelDownloads = booleanPreferencesKey("allow_metered_model_downloads")
     }
 
     val backendMode: Flow<BackendMode> = context.settingsDataStore.data.map {
-        BackendMode.CPU
+        it[Keys.backend]
+            ?.let { value -> runCatching { BackendMode.valueOf(value) }.getOrNull() }
+            ?: BackendMode.CPU
     }
 
     val chosenAutoBackend: Flow<BackendMode?> = context.settingsDataStore.data.map {
         it[Keys.chosenAutoBackend]?.let { value -> runCatching { BackendMode.valueOf(value) }.getOrNull() }
+    }
+
+    val vulkanQuarantines: Flow<Set<String>> = context.settingsDataStore.data.map {
+        decodeStringSet(it[Keys.vulkanQuarantines])
     }
 
     val generationSettings: Flow<GenerationSettings> = context.settingsDataStore.data.map {
@@ -78,40 +73,88 @@ class AppSettingsRepository(
         it[Keys.collectionPaused] ?: true
     }
 
-    val actionAllowlist: Flow<Set<String>> = context.settingsDataStore.data.map {
-        it[Keys.actionAllowlist]
-            ?.split(',')
-            ?.map(String::trim)
-            ?.filter(String::isNotEmpty)
-            ?.toSet()
-            .orEmpty()
-    }
-
-    val floatingAssistantEnabled: Flow<Boolean> = context.settingsDataStore.data.map {
-        it[Keys.floatingAssistantEnabled] ?: false
-    }
-
-    val floatingAssistantBubblePosition: Flow<Pair<Int, Int>> = context.settingsDataStore.data.map {
-        (it[Keys.floatingAssistantBubbleX] ?: -1) to (it[Keys.floatingAssistantBubbleY] ?: -1)
-    }
-
-    val floatingAssistantLastPreset: Flow<ScreenAssistantPreset> = context.settingsDataStore.data.map {
-        it[Keys.floatingAssistantLastPreset]
-            ?.let { value -> runCatching { ScreenAssistantPreset.valueOf(value) }.getOrNull() }
-            ?: ScreenAssistantPreset.SUMMARIZE
-    }
-
-    val floatingPromptTemplates: Flow<List<FloatingPromptTemplate>> = context.settingsDataStore.data.map {
-        decodeFloatingPromptTemplates(it[Keys.floatingPromptTemplates])
+    val allowMeteredModelDownloads: Flow<Boolean> = context.settingsDataStore.data.map {
+        it[Keys.allowMeteredModelDownloads] ?: false
     }
 
     suspend fun setBackend(mode: BackendMode) {
         context.settingsDataStore.edit { it[Keys.backend] = mode.name }
     }
 
+    suspend fun setAllowMeteredModelDownloads(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.allowMeteredModelDownloads] = enabled }
+    }
+
     suspend fun setChosenAutoBackend(mode: BackendMode) {
         require(mode != BackendMode.AUTO)
         context.settingsDataStore.edit { it[Keys.chosenAutoBackend] = mode.name }
+    }
+
+    suspend fun effectiveBackend(
+        modelSha256: String? = null,
+        deviceFingerprint: String? = null,
+        runtimeRevision: String? = null,
+    ): BackendMode {
+        val selected = when (val configured = backendMode.first()) {
+            BackendMode.AUTO -> chosenAutoBackend.first() ?: BackendMode.CPU
+            else -> configured
+        }
+        return if (selected == BackendMode.VULKAN &&
+            modelSha256 != null &&
+            isVulkanQuarantined(modelSha256, deviceFingerprint, runtimeRevision)
+        ) {
+            BackendMode.CPU
+        } else {
+            selected
+        }
+    }
+
+    suspend fun quarantineVulkan(modelSha256: String, deviceFingerprint: String, runtimeRevision: String) {
+        val key = backendQuarantineKey(modelSha256, deviceFingerprint, runtimeRevision)
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.vulkanQuarantines] =
+                (decodeStringSet(preferences[Keys.vulkanQuarantines]) + key).sorted().joinToString(",")
+            if (preferences[Keys.backend] == BackendMode.VULKAN.name) {
+                preferences[Keys.backend] = BackendMode.CPU.name
+            } else {
+                preferences[Keys.chosenAutoBackend] = BackendMode.CPU.name
+            }
+        }
+    }
+
+    suspend fun selectCpuAfterVulkanRejection() {
+        context.settingsDataStore.edit { preferences ->
+            if (preferences[Keys.backend] == BackendMode.VULKAN.name) {
+                preferences[Keys.backend] = BackendMode.CPU.name
+            } else {
+                preferences[Keys.chosenAutoBackend] = BackendMode.CPU.name
+            }
+        }
+    }
+
+    suspend fun clearVulkanQuarantine(
+        modelSha256: String,
+        deviceFingerprint: String,
+        runtimeRevision: String,
+    ) {
+        val key = backendQuarantineKey(modelSha256, deviceFingerprint, runtimeRevision)
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.vulkanQuarantines] =
+                (decodeStringSet(preferences[Keys.vulkanQuarantines]) - key).sorted().joinToString(",")
+        }
+    }
+
+    suspend fun isVulkanQuarantined(
+        modelSha256: String,
+        deviceFingerprint: String? = null,
+        runtimeRevision: String? = null,
+    ): Boolean {
+        val quarantines = vulkanQuarantines.first()
+        return if (deviceFingerprint != null && runtimeRevision != null) {
+            backendQuarantineKey(modelSha256, deviceFingerprint, runtimeRevision) in quarantines
+        } else {
+            quarantines.any { it.startsWith("$modelSha256:") }
+        }
     }
 
     suspend fun updateGeneration(settings: GenerationSettings) {
@@ -137,187 +180,22 @@ class AppSettingsRepository(
         context.settingsDataStore.edit { it[Keys.collectionPaused] = paused }
     }
 
-    suspend fun setActionAllowlist(packages: Set<String>) {
-        context.settingsDataStore.edit {
-            it[Keys.actionAllowlist] = packages.sorted().joinToString(",")
-        }
-    }
-
-    suspend fun addActionAllowedPackage(packageName: String) {
-        val normalized = packageName.trim().takeIf(String::isNotBlank) ?: return
-        context.settingsDataStore.edit {
-            val existing = it[Keys.actionAllowlist]
-                ?.split(',')
-                ?.map(String::trim)
-                ?.filter(String::isNotEmpty)
-                ?.toMutableSet()
-                ?: mutableSetOf()
-            existing += normalized
-            it[Keys.actionAllowlist] = existing.sorted().joinToString(",")
-        }
-    }
-
-    suspend fun setFloatingAssistantEnabled(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.floatingAssistantEnabled] = enabled }
-    }
-
-    suspend fun setFloatingAssistantBubblePosition(x: Int, y: Int) {
-        context.settingsDataStore.edit {
-            it[Keys.floatingAssistantBubbleX] = x
-            it[Keys.floatingAssistantBubbleY] = y
-        }
-    }
-
-    suspend fun setFloatingAssistantLastPreset(preset: ScreenAssistantPreset) {
-        context.settingsDataStore.edit { it[Keys.floatingAssistantLastPreset] = preset.name }
-    }
-
-    suspend fun createFloatingPromptTemplate(label: String, prompt: String, enabled: Boolean = true) {
-        val trimmedLabel = label.trim()
-        val trimmedPrompt = prompt.trim()
-        validateFloatingPrompt(trimmedLabel, trimmedPrompt)
-        context.settingsDataStore.edit { preferences ->
-            val now = System.currentTimeMillis()
-            val current = decodeFloatingPromptTemplates(preferences[Keys.floatingPromptTemplates])
-            val template = FloatingPromptTemplate(
-                id = UUID.randomUUID().toString(),
-                label = trimmedLabel,
-                prompt = trimmedPrompt,
-                enabled = enabled,
-                createdAt = now,
-                updatedAt = now,
-            )
-            preferences[Keys.floatingPromptTemplates] = encodeFloatingPromptTemplates(current + template)
-        }
-    }
-
-    suspend fun updateFloatingPromptTemplate(
-        id: String,
-        label: String,
-        prompt: String,
-        enabled: Boolean,
-    ) {
-        val trimmedLabel = label.trim()
-        val trimmedPrompt = prompt.trim()
-        validateFloatingPrompt(trimmedLabel, trimmedPrompt)
-        context.settingsDataStore.edit { preferences ->
-            val current = decodeFloatingPromptTemplates(preferences[Keys.floatingPromptTemplates])
-            val updated = current.map { template ->
-                if (template.id == id) {
-                    template.copy(
-                        label = trimmedLabel,
-                        prompt = trimmedPrompt,
-                        enabled = enabled,
-                        updatedAt = System.currentTimeMillis(),
-                    )
-                } else {
-                    template
-                }
-            }
-            preferences[Keys.floatingPromptTemplates] = encodeFloatingPromptTemplates(updated)
-        }
-    }
-
-    suspend fun setFloatingPromptTemplateEnabled(id: String, enabled: Boolean) {
-        context.settingsDataStore.edit { preferences ->
-            val current = decodeFloatingPromptTemplates(preferences[Keys.floatingPromptTemplates])
-            preferences[Keys.floatingPromptTemplates] = encodeFloatingPromptTemplates(
-                current.map { template ->
-                    if (template.id == id) {
-                        template.copy(enabled = enabled, updatedAt = System.currentTimeMillis())
-                    } else {
-                        template
-                    }
-                },
-            )
-        }
-    }
-
-    suspend fun deleteFloatingPromptTemplate(id: String) {
-        context.settingsDataStore.edit { preferences ->
-            val current = decodeFloatingPromptTemplates(preferences[Keys.floatingPromptTemplates])
-            preferences[Keys.floatingPromptTemplates] = encodeFloatingPromptTemplates(
-                current.filterNot { it.id == id },
-            )
-        }
-    }
-
-    suspend fun setFloatingPromptTemplates(templates: List<FloatingPromptTemplate>) {
-        context.settingsDataStore.edit {
-            it[Keys.floatingPromptTemplates] = encodeFloatingPromptTemplates(
-                templates.map { template ->
-                    template.copy(
-                        label = template.label.trim().take(MAX_FLOATING_PROMPT_LABEL_CHARS),
-                        prompt = template.prompt.trim().take(MAX_FLOATING_PROMPT_TEXT_CHARS),
-                    )
-                }.filter { template ->
-                    template.id.isNotBlank() &&
-                        template.label.isNotBlank() &&
-                        template.prompt.isNotBlank()
-                }.ifEmpty { DEFAULT_FLOATING_PROMPT_TEMPLATES },
-            )
-        }
-    }
-
-    suspend fun resetFloatingPromptTemplates() {
-        setFloatingPromptTemplates(DEFAULT_FLOATING_PROMPT_TEMPLATES)
-    }
-
     fun hasToken(): Boolean = tokenCipher.hasToken()
     fun maskedToken(): String? = tokenCipher.maskedToken()
     fun token(): String? = tokenCipher.readToken()
     fun saveToken(token: String) = tokenCipher.saveToken(token)
     fun clearToken() = tokenCipher.clearToken()
 
-    private fun validateFloatingPrompt(label: String, prompt: String) {
-        require(label.isNotBlank()) { "Template name is required." }
-        require(label.length <= MAX_FLOATING_PROMPT_LABEL_CHARS) {
-            "Template name must be $MAX_FLOATING_PROMPT_LABEL_CHARS characters or less."
-        }
-        require(prompt.isNotBlank()) { "Template prompt is required." }
-        require(prompt.length <= MAX_FLOATING_PROMPT_TEXT_CHARS) {
-            "Template prompt must be $MAX_FLOATING_PROMPT_TEXT_CHARS characters or less."
-        }
-    }
+    private fun decodeStringSet(raw: String?): Set<String> = raw
+        ?.split(',')
+        ?.map(String::trim)
+        ?.filter(String::isNotEmpty)
+        ?.toSet()
+        .orEmpty()
 
-    fun decodeFloatingPromptTemplates(raw: String?): List<FloatingPromptTemplate> {
-        if (raw.isNullOrBlank()) return DEFAULT_FLOATING_PROMPT_TEMPLATES
-        return runCatching {
-            val array = JSONArray(raw)
-            buildList {
-                for (index in 0 until array.length()) {
-                    val item = array.optJSONObject(index) ?: continue
-                    val id = item.optString("id").trim()
-                    val label = item.optString("label").trim()
-                    val prompt = item.optString("prompt").trim()
-                    if (id.isBlank() || label.isBlank() || prompt.isBlank()) continue
-                    add(
-                        FloatingPromptTemplate(
-                            id = id,
-                            label = label.take(MAX_FLOATING_PROMPT_LABEL_CHARS),
-                            prompt = prompt.take(MAX_FLOATING_PROMPT_TEXT_CHARS),
-                            enabled = item.optBoolean("enabled", true),
-                            createdAt = item.optLong("createdAt", System.currentTimeMillis()),
-                            updatedAt = item.optLong("updatedAt", System.currentTimeMillis()),
-                        ),
-                    )
-                }
-            }.ifEmpty { DEFAULT_FLOATING_PROMPT_TEMPLATES }
-        }.getOrElse { DEFAULT_FLOATING_PROMPT_TEMPLATES }
-    }
-
-    fun encodeFloatingPromptTemplates(templates: List<FloatingPromptTemplate>): String =
-        JSONArray().apply {
-            templates.forEach { template ->
-                put(
-                    JSONObject()
-                        .put("id", template.id)
-                        .put("label", template.label)
-                        .put("prompt", template.prompt)
-                        .put("enabled", template.enabled)
-                        .put("createdAt", template.createdAt)
-                        .put("updatedAt", template.updatedAt),
-                )
-            }
-        }.toString()
+    private fun backendQuarantineKey(
+        modelSha256: String,
+        deviceFingerprint: String,
+        runtimeRevision: String,
+    ): String = "$modelSha256:$deviceFingerprint:$runtimeRevision"
 }

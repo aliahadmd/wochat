@@ -11,13 +11,17 @@ import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.data.ModelContextProfileDao
 import com.aliahad.aichat.data.ModelContextProfileEntity
+import com.aliahad.aichat.settings.AppSettingsRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.security.MessageDigest
 
 interface ContextProfileRepository {
     val profiles: Flow<List<ModelContextProfile>>
-    suspend fun resolve(model: ModelRecord): ModelContextProfile
+    suspend fun resolve(
+        model: ModelRecord,
+        backendOverride: BackendMode? = null,
+    ): ModelContextProfile
     suspend fun recordDeclared(profile: ModelContextProfile, declaredTokens: Int): ModelContextProfile
     suspend fun markAttempt(profile: ModelContextProfile, candidateTokens: Int): ModelContextProfile
     suspend fun recordPassed(
@@ -41,6 +45,7 @@ interface ContextProfileRepository {
 class RoomContextProfileRepository(
     context: Context,
     private val dao: ModelContextProfileDao,
+    private val settings: AppSettingsRepository,
 ) : ContextProfileRepository {
     private val device = DeviceContextIdentity.read(context)
 
@@ -50,9 +55,17 @@ class RoomContextProfileRepository(
                 .map(ModelContextProfileEntity::toDomain)
         }
 
-    override suspend fun resolve(model: ModelRecord): ModelContextProfile {
+    override suspend fun resolve(
+        model: ModelRecord,
+        backendOverride: BackendMode?,
+    ): ModelContextProfile {
         val modelHash = requireNotNull(model.sha256) { "The model fingerprint is unavailable" }
-        val id = sha256("$modelHash:${device.key}")
+        val backend = backendOverride ?: settings.effectiveBackend(
+                modelHash,
+                device.key,
+                BuildConfig.LLAMA_RUNTIME_REVISION,
+            )
+        val id = sha256("$modelHash:${device.key}:${backend.name}")
         val existing = dao.get(id)
         if (existing != null) {
             val domain = existing.toDomain()
@@ -81,7 +94,7 @@ class RoomContextProfileRepository(
                 deviceFingerprint = device.key,
                 physicalRamBytes = device.physicalRamBytes,
                 swapBytes = device.swapBytes,
-                backend = BackendMode.CPU,
+                backend = backend,
                 llamaRevision = BuildConfig.LLAMA_RUNTIME_REVISION,
                 declaredContextTokens = 0,
                 verifiedContextTokens = 0,
@@ -184,7 +197,7 @@ class RoomContextProfileRepository(
     }
 
     override suspend fun latestForModel(modelId: String): ModelContextProfile? =
-        dao.latestForModel(modelId, device.key)?.toDomain()
+        dao.latestForModel(modelId, device.key, settings.effectiveBackend())?.toDomain()
 
     override suspend fun deleteForModel(modelId: String) {
         dao.deleteForModel(modelId)

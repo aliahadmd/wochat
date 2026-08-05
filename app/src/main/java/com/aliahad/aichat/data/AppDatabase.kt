@@ -10,9 +10,7 @@ import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.core.ChatQualityMode
-import com.aliahad.aichat.core.ActionRisk
 import com.aliahad.aichat.core.ActivitySource
-import com.aliahad.aichat.core.DeviceActionKind
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.MemorySensitivity
 import com.aliahad.aichat.core.MemorySourceKind
@@ -53,10 +51,6 @@ class DatabaseConverters {
     @TypeConverter fun toMemorySourceKind(value: String): MemorySourceKind = MemorySourceKind.valueOf(value)
     @TypeConverter fun fromActivitySource(value: ActivitySource?): String? = value?.name
     @TypeConverter fun toActivitySource(value: String?): ActivitySource? = value?.let(ActivitySource::valueOf)
-    @TypeConverter fun fromActionRisk(value: ActionRisk): String = value.name
-    @TypeConverter fun toActionRisk(value: String): ActionRisk = ActionRisk.valueOf(value)
-    @TypeConverter fun fromDeviceActionKind(value: DeviceActionKind): String = value.name
-    @TypeConverter fun toDeviceActionKind(value: String): DeviceActionKind = DeviceActionKind.valueOf(value)
     @TypeConverter fun fromContextVerificationState(value: ContextVerificationState): String = value.name
     @TypeConverter fun toContextVerificationState(value: String): ContextVerificationState =
         ContextVerificationState.valueOf(value)
@@ -84,9 +78,9 @@ class DatabaseConverters {
         ActivityEventEntity::class,
         MemorySummaryEntity::class,
         CollectorCheckpointEntity::class,
-        ActionAuditEntity::class,
+        ModelBenchmarkEntity::class,
     ],
-    version = 9,
+    version = 16,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -101,7 +95,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun conversationSummaryDao(): ConversationSummaryDao
     abstract fun memoryDao(): MemoryDao
     abstract fun activityDao(): ActivityDao
-    abstract fun actionAuditDao(): ActionAuditDao
+    abstract fun modelBenchmarkDao(): ModelBenchmarkDao
     abstract fun backupImportInvalidationDao(): BackupImportInvalidationDao
 
     companion object {
@@ -354,6 +348,147 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE models ADD COLUMN bytesPerSecond INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE models ADD COLUMN etaSeconds INTEGER")
+                db.execSQL("ALTER TABLE models ADD COLUMN retryAttempt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE projectors ADD COLUMN bytesPerSecond INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE projectors ADD COLUMN etaSeconds INTEGER")
+                db.execSQL("ALTER TABLE projectors ADD COLUMN retryAttempt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "DROP INDEX IF EXISTS " +
+                        "index_model_context_profiles_modelSha256_deviceFingerprint",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "index_model_context_profiles_modelSha256_deviceFingerprint_backend " +
+                        "ON model_context_profiles(modelSha256, deviceFingerprint, backend)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS model_benchmarks (" +
+                        "id TEXT NOT NULL PRIMARY KEY, modelId TEXT NOT NULL, " +
+                        "modelSha256 TEXT NOT NULL, deviceFingerprint TEXT NOT NULL, " +
+                        "backend TEXT NOT NULL, llamaRevision TEXT NOT NULL, " +
+                        "loadMillis INTEGER, promptTokensPerSecond REAL, " +
+                        "generationTokensPerSecond REAL, peakPssBytes INTEGER, " +
+                        "thermalDelta INTEGER, success INTEGER NOT NULL, " +
+                        "failureReason TEXT, measuredAt INTEGER NOT NULL)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_model_benchmarks_modelId " +
+                        "ON model_benchmarks(modelId)",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "index_model_benchmarks_modelSha256_deviceFingerprint_backend_llamaRevision " +
+                        "ON model_benchmarks(modelSha256, deviceFingerprint, backend, llamaRevision)",
+                )
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS daily_briefs (" +
+                        "id TEXT NOT NULL PRIMARY KEY, localDate TEXT NOT NULL, " +
+                        "windowStart INTEGER NOT NULL, windowEnd INTEGER NOT NULL, " +
+                        "contentJson TEXT NOT NULL, sourceCountsJson TEXT NOT NULL, " +
+                        "status TEXT NOT NULL, modelSha256 TEXT, promptVersion INTEGER NOT NULL, " +
+                        "generatedAt INTEGER, createdAt INTEGER NOT NULL, failureReason TEXT)",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_daily_briefs_localDate " +
+                        "ON daily_briefs(localDate)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_daily_briefs_generatedAt " +
+                        "ON daily_briefs(generatedAt)",
+                )
+            }
+        }
+
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE attachments ADD COLUMN durationMillis INTEGER")
+            }
+        }
+
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE action_audits ADD COLUMN planId TEXT")
+                db.execSQL("ALTER TABLE action_audits ADD COLUMN stepOrdinal INTEGER")
+                db.execSQL("ALTER TABLE action_audits ADD COLUMN preconditionHash TEXT")
+                db.execSQL("ALTER TABLE action_audits ADD COLUMN postconditionHash TEXT")
+                db.execSQL("ALTER TABLE action_audits ADD COLUMN confirmedAt INTEGER")
+                db.execSQL("ALTER TABLE action_audits ADD COLUMN failureCode TEXT")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_action_audits_planId ON action_audits(planId)",
+                )
+                // Earlier releases stored raw target labels. Remove them during the additive migration.
+                db.execSQL("UPDATE action_audits SET target = NULL, planJson = '{\"legacy\":true}'")
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS embedding_artifacts (" +
+                        "id TEXT NOT NULL PRIMARY KEY, displayName TEXT NOT NULL, " +
+                        "sourceRepo TEXT NOT NULL, revision TEXT NOT NULL, fileName TEXT NOT NULL, " +
+                        "localPath TEXT, expectedBytes INTEGER NOT NULL, sha256 TEXT NOT NULL, " +
+                        "downloadedBytes INTEGER NOT NULL, status TEXT NOT NULL, error TEXT, " +
+                        "bytesPerSecond INTEGER NOT NULL, etaSeconds INTEGER, retryAttempt INTEGER NOT NULL)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS memory_embeddings (" +
+                        "memoryId TEXT NOT NULL PRIMARY KEY, contentHash TEXT NOT NULL, " +
+                        "modelSha256 TEXT NOT NULL, runtimeRevision TEXT NOT NULL, " +
+                        "dimension INTEGER NOT NULL, promptVersion INTEGER NOT NULL, " +
+                        "vector BLOB NOT NULL, updatedAt INTEGER NOT NULL, " +
+                        "FOREIGN KEY(memoryId) REFERENCES memory_items(id) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_memory_embeddings_modelSha256 " +
+                        "ON memory_embeddings(modelSha256)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS " +
+                        "index_memory_embeddings_modelSha256_runtimeRevision_dimension_promptVersion " +
+                        "ON memory_embeddings(modelSha256, runtimeRevision, dimension, promptVersion)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_memory_embeddings_updatedAt " +
+                        "ON memory_embeddings(updatedAt)",
+                )
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS action_audits")
+                db.execSQL("DROP TABLE IF EXISTS daily_briefs")
+                db.execSQL("DELETE FROM projectors WHERE id != 'google-gemma-4-e4b-mmproj'")
+                db.execSQL("DELETE FROM models WHERE id != 'google-gemma-4-e4b-it-q4'")
+                db.execSQL(
+                    "DELETE FROM model_context_profiles " +
+                        "WHERE modelId != 'google-gemma-4-e4b-it-q4'",
+                )
+                db.execSQL(
+                    "DELETE FROM model_benchmarks " +
+                        "WHERE modelId != 'google-gemma-4-e4b-it-q4'",
+                )
+            }
+        }
+
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS memory_embeddings")
+                db.execSQL("DROP TABLE IF EXISTS embedding_artifacts")
+            }
+        }
+
         fun create(context: Context): AppDatabase {
             System.loadLibrary("sqlcipher")
             val passphrase = DatabaseKeyManager(context).passphrase()
@@ -374,6 +509,13 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_6_7,
                     MIGRATION_7_8,
                     MIGRATION_8_9,
+                    MIGRATION_9_10,
+                    MIGRATION_10_11,
+                    MIGRATION_11_12,
+                    MIGRATION_12_13,
+                    MIGRATION_13_14,
+                    MIGRATION_14_15,
+                    MIGRATION_15_16,
                 )
                 .build()
             database.openHelper.writableDatabase
@@ -383,6 +525,6 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         const val DATABASE_NAME = "aichat.db"
-        const val VERSION = 9
+        const val VERSION = 16
     }
 }

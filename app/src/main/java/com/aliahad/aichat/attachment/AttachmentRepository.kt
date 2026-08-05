@@ -55,9 +55,16 @@ class DefaultAttachmentRepository(
 
     override suspend fun stage(draftKey: String, uri: Uri): Attachment = withContext(Dispatchers.IO) {
         val metadata = queryMetadata(uri)
-        require(metadata.size <= MAX_SINGLE_BYTES) { "File is larger than 500 MB." }
         val kind = AttachmentTypeDetector.detect(metadata.name, metadata.mime)
-            ?: error("Unsupported file type. Use images, PDF, text/code, CSV, JSON, XML/HTML, DOCX, XLSX, or PPTX.")
+            ?: error(
+                "Unsupported file type. Use images, WAV/MP3/FLAC audio, PDF, text/code, " +
+                    "CSV, JSON, XML/HTML, DOCX, XLSX, or PPTX.",
+            )
+        val maximumBytes = if (kind == AttachmentKind.AUDIO) MAX_AUDIO_BYTES else MAX_SINGLE_BYTES
+        require(metadata.size <= maximumBytes) {
+            if (kind == AttachmentKind.AUDIO) "Audio files are limited to 25 MB."
+            else "File is larger than 500 MB."
+        }
         val id = UUID.randomUUID().toString()
         val directory = File(context.noBackupFilesDir, "attachments/$id").apply { mkdirs() }
         val destination = File(directory, "original-${safeName(metadata.name)}")
@@ -79,12 +86,13 @@ class DefaultAttachmentRepository(
             progress = 0f,
             error = null,
             createdAt = System.currentTimeMillis(),
+            durationMillis = null,
         )
         dao.upsert(entity)
         try {
             context.contentResolver.openInputStream(uri)?.buffered()?.use { input ->
                 destination.outputStream().buffered().use { output ->
-                    copyWithLimit(input, output, MAX_SINGLE_BYTES)
+                    copyWithLimit(input, output, maximumBytes)
                 }
             } ?: error("Unable to read the selected file.")
             require(destination.length() > 0) { "File is empty." }
@@ -206,6 +214,14 @@ class DefaultAttachmentRepository(
             imagePaths = images.take(MAX_IMAGES_PER_ATTACHMENT),
             selectedPages = selectedPages,
             imageTokenBudget = entity.imageTokenBudget ?: 280,
+            audioPaths = if (entity.kind == AttachmentKind.AUDIO) {
+                listOf(entity.originalPath)
+            } else {
+                emptyList()
+            },
+            audioTokenEstimate = entity.durationMillis
+                ?.let { AudioAttachmentInspector.estimateAudioTokens(it) }
+                ?: 0,
         )
     }
 
@@ -261,6 +277,7 @@ class DefaultAttachmentRepository(
 
     private companion object {
         const val MAX_SINGLE_BYTES = 500L * 1024 * 1024
+        const val MAX_AUDIO_BYTES = AudioAttachmentInspector.MAX_AUDIO_BYTES
         const val COPY_BUFFER = 256 * 1024
         const val DRAFT_TTL_MILLIS = 24L * 60 * 60 * 1000
         const val MAX_CONTEXT_CHUNKS = 12
@@ -276,6 +293,8 @@ internal object AttachmentTypeDetector {
         val extension = name.substringAfterLast('.', "").lowercase()
         return when {
             mime.startsWith("image/") -> AttachmentKind.IMAGE
+            mime in setOf("audio/wav", "audio/x-wav", "audio/wave", "audio/mpeg", "audio/mp3", "audio/flac") ||
+                extension in setOf("wav", "mp3", "flac") -> AttachmentKind.AUDIO
             mime == "application/pdf" || extension == "pdf" -> AttachmentKind.PDF
             extension == "docx" -> AttachmentKind.DOCX
             extension == "xlsx" -> AttachmentKind.XLSX
@@ -314,6 +333,7 @@ internal fun AttachmentEntity.toDomain() = Attachment(
     progress = progress,
     error = error,
     createdAt = createdAt,
+    durationMillis = durationMillis,
 )
 
 internal fun String.toPathList(): List<String> = lineSequence().filter(String::isNotBlank).toList()

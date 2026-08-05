@@ -12,13 +12,8 @@ import androidx.work.workDataOf
 import com.aliahad.aichat.AiChatApplication
 import com.aliahad.aichat.core.DownloadStatus
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.RandomAccessFile
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
 
 class ProjectorDownloadWorker(
@@ -42,7 +37,43 @@ class ProjectorDownloadWorker(
         try {
             setForeground(notification(spec, partial.length(), "Preparing vision projector"))
             dao.upsert(record.copy(status = DownloadStatus.DOWNLOADING, error = null))
-            if (partial.length() != spec.sizeBytes) download(spec, partial)
+            if (partial.length() != spec.sizeBytes) {
+                val outcome = ArtifactDownloader().download(
+                    spec = ArtifactSpec(
+                        id = spec.id,
+                        displayName = spec.displayName,
+                        url = spec.downloadUrl,
+                        expectedBytes = spec.sizeBytes,
+                        sha256 = spec.sha256,
+                        authorization = app.container.settings.token()?.let { "Bearer $it" },
+                    ),
+                    partial = partial,
+                    onProgress = { publish(spec, it) },
+                )
+                when (outcome) {
+                    is ArtifactDownloadOutcome.Complete -> Unit
+                    is ArtifactDownloadOutcome.Retryable -> {
+                        val current = requireNotNull(dao.get(id))
+                        val exhausted = runAttemptCount >= MAX_WORK_RETRIES
+                        dao.upsert(
+                            current.copy(
+                                downloadedBytes = outcome.downloadedBytes,
+                                bytesPerSecond = 0,
+                                etaSeconds = null,
+                                retryAttempt = runAttemptCount + 1,
+                                status = if (exhausted) DownloadStatus.FAILED else DownloadStatus.QUEUED,
+                                error = if (exhausted) {
+                                    "Automatic retries were exhausted. Tap Resume to try again."
+                                } else {
+                                    outcome.message
+                                },
+                            ),
+                        )
+                        return@withContext if (exhausted) Result.failure() else Result.retry()
+                    }
+                    is ArtifactDownloadOutcome.Fatal -> error(outcome.message)
+                }
+            }
             dao.upsert(requireNotNull(dao.get(id)).copy(status = DownloadStatus.VERIFYING))
             setForeground(notification(spec, partial.length(), "Verifying vision projector"))
             require(partial.length() == spec.sizeBytes) { "Projector size verification failed." }
@@ -58,12 +89,22 @@ class ProjectorDownloadWorker(
                     downloadedBytes = destination.length(),
                     status = DownloadStatus.READY,
                     error = null,
+                    bytesPerSecond = 0,
+                    etaSeconds = null,
+                    retryAttempt = 0,
                 ),
             )
             Result.success()
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             dao.get(id)?.let {
-                dao.upsert(it.copy(downloadedBytes = partial.length(), status = DownloadStatus.PAUSED))
+                dao.upsert(
+                    it.copy(
+                        downloadedBytes = partial.length(),
+                        status = DownloadStatus.PAUSED,
+                        bytesPerSecond = 0,
+                        etaSeconds = null,
+                    ),
+                )
             }
             throw cancelled
         } catch (error: Throwable) {
@@ -73,6 +114,8 @@ class ProjectorDownloadWorker(
                         downloadedBytes = partial.length(),
                         status = DownloadStatus.FAILED,
                         error = error.message,
+                        bytesPerSecond = 0,
+                        etaSeconds = null,
                     ),
                 )
             }
@@ -80,70 +123,29 @@ class ProjectorDownloadWorker(
         }
     }
 
-    private suspend fun download(spec: OfficialProjectorSpec, partial: File) {
-        var existing = partial.length()
-        if (existing > spec.sizeBytes) {
-            partial.delete()
-            existing = 0
-        }
-        if (existing == spec.sizeBytes) return
-        val connection = URL(spec.downloadUrl).openConnection() as HttpURLConnection
-        try {
-            connection.instanceFollowRedirects = true
-            connection.connectTimeout = 30_000
-            connection.readTimeout = 60_000
-            connection.setRequestProperty("User-Agent", "AIchat/1.0 Android")
-            app.container.settings.token()?.let {
-                connection.setRequestProperty("Authorization", "Bearer $it")
-            }
-            if (existing > 0) connection.setRequestProperty("Range", "bytes=$existing-")
-            connection.connect()
-            require(
-                connection.responseCode == HttpURLConnection.HTTP_OK ||
-                    connection.responseCode == HttpURLConnection.HTTP_PARTIAL,
-            ) { "Download failed with HTTP ${connection.responseCode}" }
-            if (existing > 0 && connection.responseCode == HttpURLConnection.HTTP_OK) {
-                partial.delete()
-                existing = 0
-            }
-            if (connection.responseCode == HttpURLConnection.HTTP_PARTIAL) {
-                require(validContentRange(connection.getHeaderField("Content-Range"), existing, spec.sizeBytes)) {
-                    "Download server returned an invalid byte range"
-                }
-            }
-            RandomAccessFile(partial, "rw").use { output ->
-                output.seek(existing)
-                connection.inputStream.buffered(256 * 1024).use { input ->
-                    val buffer = ByteArray(256 * 1024)
-                    var downloaded = existing
-                    var lastPublished = existing
-                    while (true) {
-                        currentCoroutineContext().ensureActive()
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        downloaded += count
-                        require(downloaded <= spec.sizeBytes) {
-                            "Download exceeded the expected projector size"
-                        }
-                        if (downloaded - lastPublished >= 8L * 1024 * 1024) {
-                            publish(spec, downloaded)
-                            lastPublished = downloaded
-                        }
-                    }
-                    publish(spec, downloaded)
-                }
-            }
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private suspend fun publish(spec: OfficialProjectorSpec, downloaded: Long) {
+    private suspend fun publish(spec: OfficialProjectorSpec, progress: ArtifactProgress) {
+        val downloaded = progress.downloadedBytes
         dao.get(spec.id)?.let {
-            dao.upsert(it.copy(downloadedBytes = downloaded, status = DownloadStatus.DOWNLOADING))
+            dao.upsert(
+                it.copy(
+                    downloadedBytes = downloaded,
+                    status = DownloadStatus.DOWNLOADING,
+                    error = null,
+                    bytesPerSecond = progress.bytesPerSecond,
+                    etaSeconds = progress.etaSeconds,
+                    retryAttempt = runAttemptCount,
+                ),
+            )
         }
-        setProgress(workDataOf("downloaded" to downloaded, "total" to spec.sizeBytes))
+        setProgress(
+            workDataOf(
+                "downloaded" to downloaded,
+                "total" to spec.sizeBytes,
+                "bytes_per_second" to progress.bytesPerSecond,
+                "eta_seconds" to (progress.etaSeconds ?: -1L),
+                "retry_attempt" to progress.retryAttempt,
+            ),
+        )
         setForeground(notification(spec, downloaded, "Downloading vision projector"))
     }
 
@@ -185,14 +187,7 @@ class ProjectorDownloadWorker(
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private fun validContentRange(header: String?, start: Long, total: Long): Boolean {
-        val match = CONTENT_RANGE.matchEntire(header.orEmpty()) ?: return false
-        return match.groupValues[1].toLongOrNull() == start &&
-            match.groupValues[3].toLongOrNull() == total &&
-            (match.groupValues[2].toLongOrNull() ?: -1L) >= start
-    }
-
     private companion object {
-        val CONTENT_RANGE = Regex("""bytes (\d+)-(\d+)/(\d+)""")
+        const val MAX_WORK_RETRIES = 12
     }
 }

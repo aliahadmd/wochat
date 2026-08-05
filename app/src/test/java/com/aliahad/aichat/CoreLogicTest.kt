@@ -9,15 +9,11 @@ import com.aliahad.aichat.model.GgufValidator
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.attachment.AttachmentTypeDetector
 import com.aliahad.aichat.core.AttachmentKind
-import com.aliahad.aichat.core.ActionRisk
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.ContextVerificationState
-import com.aliahad.aichat.core.DeviceAction
-import com.aliahad.aichat.core.DeviceActionKind
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.context.ContextCandidates
 import com.aliahad.aichat.context.ContextMemoryPolicy
-import com.aliahad.aichat.device.ActionPolicyEngine
 import com.aliahad.aichat.residency.ModelLoadSignature
 import com.aliahad.aichat.residency.ModelResidencyState
 import com.aliahad.aichat.residency.residencyContextDescription
@@ -171,85 +167,48 @@ class CoreLogicTest {
     }
 
     @Test
-    fun officialModelCatalogContainsIndependentVerifiedArtifacts() {
+    fun officialModelCatalogContainsOnlyGemmaE4b() {
         val models = ModelConstants.OFFICIAL_MODELS
 
-        assertEquals(3, models.size)
+        assertEquals(listOf(ModelConstants.GEMMA_4_E4B), models)
         assertEquals(models.size, models.map { it.id }.distinct().size)
         assertEquals(models.size, models.map { it.fileName }.distinct().size)
-        assertEquals(3_349_514_112L, ModelConstants.GEMMA_4_E2B.sizeBytes)
+        assertEquals(5_154_941_280L, ModelConstants.GEMMA_4_E4B.sizeBytes)
         assertEquals(
-            "3646b4c147cd235a44d91df1546d3b7d8e29b547dbe4e1f80856419aa455e6fd",
-            ModelConstants.GEMMA_4_E2B.sha256,
-        )
-        assertTrue(ModelConstants.GEMMA_4_E2B.downloadUrl.endsWith("gemma-4-E2B_q4_0-it.gguf"))
-        assertEquals(5_154_939_136L, ModelConstants.GEMMA_4_E4B.sizeBytes)
-        assertEquals(
-            "e8b6a059ba86947a44ace84d6e5679795bc41862c25c30513142588f0e9dba1d",
+            "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee",
             ModelConstants.GEMMA_4_E4B.sha256,
         )
         assertTrue(ModelConstants.GEMMA_4_E4B.downloadUrl.endsWith("gemma-4-E4B_q4_0-it.gguf"))
-        assertTrue(ModelConstants.GEMMA_4_E4B.workName != ModelConstants.GEMMA_4_12B.workName)
+        assertTrue(!ModelConstants.GEMMA_4_E4B.downloadUrl.contains("/resolve/main/"))
     }
 
     @Test
     fun officialProjectorCatalogMatchesModelsAndChecksums() {
         val projectors = ModelConstants.OFFICIAL_PROJECTORS
 
-        assertEquals(3, projectors.size)
+        assertEquals(listOf(ModelConstants.GEMMA_4_E4B_PROJECTOR), projectors)
         assertEquals(
             ModelConstants.OFFICIAL_MODELS.map { it.id }.toSet(),
             projectors.map { it.modelId }.toSet(),
         )
-        assertEquals(ModelConstants.GEMMA_4_E2B.id, ModelConstants.GEMMA_4_E2B_PROJECTOR.modelId)
-        assertEquals(986_833_312L, ModelConstants.GEMMA_4_E2B_PROJECTOR.sizeBytes)
-        assertEquals(
-            "58c187648007cab392bd5678b87e862c3e8794017deb945feea2cf256195e96a",
-            ModelConstants.GEMMA_4_E2B_PROJECTOR.sha256,
-        )
-        assertTrue(
-            ModelConstants.GEMMA_4_E2B_PROJECTOR.downloadUrl
-                .endsWith("gemma-4-E2B-it-mmproj.gguf"),
-        )
         assertEquals(ModelConstants.GEMMA_4_E4B.id, ModelConstants.GEMMA_4_E4B_PROJECTOR.modelId)
-        assertEquals(991_551_904L, ModelConstants.GEMMA_4_E4B_PROJECTOR.sizeBytes)
+        assertEquals(991_552_256L, ModelConstants.GEMMA_4_E4B_PROJECTOR.sizeBytes)
         assertEquals(
-            "c6398448d84a4836fdedf58f9775979e69ae0cc4dfdf4d697b5597693a555b12",
+            "7498a37cb619e55f2fcf87eb931f56e99389ed6d432e4c5c66110694c0d65578",
             ModelConstants.GEMMA_4_E4B_PROJECTOR.sha256,
         )
-        assertEquals(175_115_264L, ModelConstants.GEMMA_4_12B_PROJECTOR.sizeBytes)
         assertTrue(projectors.all { it.downloadUrl.startsWith("https://huggingface.co/google/") })
     }
 
     @Test
     fun attachmentMimeDetectionRejectsLegacyOfficeAndArchives() {
         assertEquals(AttachmentKind.IMAGE, AttachmentTypeDetector.detect("photo.heic", "image/heic"))
+        assertEquals(AttachmentKind.AUDIO, AttachmentTypeDetector.detect("recording.wav", "audio/wav"))
+        assertEquals(AttachmentKind.AUDIO, AttachmentTypeDetector.detect("meeting.flac", "application/octet-stream"))
         assertEquals(AttachmentKind.PDF, AttachmentTypeDetector.detect("notes.pdf", "application/pdf"))
         assertEquals(AttachmentKind.DOCX, AttachmentTypeDetector.detect("report.docx", "application/octet-stream"))
         assertEquals(null, AttachmentTypeDetector.detect("legacy.doc", "application/msword"))
         assertEquals(null, AttachmentTypeDetector.detect("archive.zip", "application/zip"))
-    }
-
-    @Test
-    fun deviceActionPolicyOnlyAllowsSafeUriSchemesWithoutConfirmation() {
-        fun risk(target: String?) = ActionPolicyEngine.classify(
-            DeviceAction(
-                id = "action",
-                kind = DeviceActionKind.OPEN_URI,
-                packageName = null,
-                target = target,
-                value = null,
-                risk = ActionRisk.LOW,
-            ),
-        )
-
-        assertEquals(ActionRisk.LOW, risk("https://example.com/path"))
-        assertEquals(ActionRisk.SENSITIVE, risk("tel:+15551234567"))
-        assertEquals(ActionRisk.SENSITIVE, risk("mailto:person@example.com"))
-        assertEquals(ActionRisk.BLOCKED, risk("intent://example/#Intent;scheme=https;end"))
-        assertEquals(ActionRisk.BLOCKED, risk("file:///data/local/tmp/private"))
-        assertEquals(ActionRisk.BLOCKED, risk("javascript:alert(1)"))
-        assertEquals(ActionRisk.BLOCKED, risk(null))
     }
 
     private fun contextProfile(
