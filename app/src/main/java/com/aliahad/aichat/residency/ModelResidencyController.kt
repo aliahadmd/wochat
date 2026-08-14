@@ -84,7 +84,7 @@ class ModelResidencyController(
             CoroutineExceptionHandler { _, error -> recordError(error) },
     )
     private val mutex = Mutex()
-    private val activeInferenceUsers = AtomicInteger(0)
+    private val inferenceUseCounter = InferenceUseCounter()
     private val _state = MutableStateFlow<ModelResidencyState>(ModelResidencyState.Idle)
     val state: StateFlow<ModelResidencyState> = _state.asStateFlow()
 
@@ -136,15 +136,16 @@ class ModelResidencyController(
     }
 
     override suspend fun beginInferenceUse() {
-        activeInferenceUsers.incrementAndGet()
-        verificationJob?.let { job ->
-            job.cancel()
-            job.cancelAndJoin()
+        inferenceUseCounter.begin {
+            verificationJob?.let { job ->
+                job.cancel()
+                job.cancelAndJoin()
+            }
         }
     }
 
     override fun endInferenceUse() {
-        activeInferenceUsers.updateAndGet { value -> (value - 1).coerceAtLeast(0) }
+        inferenceUseCounter.end()
         scheduleVerification()
     }
 
@@ -388,7 +389,7 @@ class ModelResidencyController(
             }?.let { contextProfiles.markPaused(it) }
             throw cancelled
         } finally {
-            if (activeInferenceUsers.get() == 0 && userManager.isUserUnlocked) {
+            if (inferenceUseCounter.count == 0 && userManager.isUserUnlocked) {
                 runCatching {
                     mutex.withLock { ensureLoadedLocked(MultimodalRequirement.NONE, 280) }
                 }
@@ -474,7 +475,7 @@ class ModelResidencyController(
 
     private fun canStartVerification(): Boolean =
         uiForeground &&
-            activeInferenceUsers.get() == 0 &&
+            inferenceUseCounter.count == 0 &&
             userManager.isUserUnlocked
 
     private suspend fun eligibleForVerification(): Boolean =
@@ -503,6 +504,32 @@ class ModelResidencyController(
 
     private companion object {
         const val TAG = "ModelResidency"
+    }
+}
+
+/**
+ * Tracks how many inference flows currently use the resident model. The begin/end
+ * pairing is load-bearing for context verification: if begin is cancelled after the
+ * increment, the increment must roll back, otherwise verification stays disabled.
+ */
+internal class InferenceUseCounter {
+    private val users = AtomicInteger(0)
+
+    val count: Int
+        get() = users.get()
+
+    suspend fun begin(joinVerification: suspend () -> Unit) {
+        users.incrementAndGet()
+        try {
+            joinVerification()
+        } catch (error: Throwable) {
+            end()
+            throw error
+        }
+    }
+
+    fun end() {
+        users.updateAndGet { value -> (value - 1).coerceAtLeast(0) }
     }
 }
 

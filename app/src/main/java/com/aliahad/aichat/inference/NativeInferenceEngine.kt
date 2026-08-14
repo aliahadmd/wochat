@@ -100,6 +100,15 @@ class NativeInferenceEngine(
             releaseCpu()
         }
         if (loadError != null) {
+            // The native side has already unloaded the previous model before this
+            // load attempt failed; mirror unload() so callers never see stale state.
+            loadedModelPath = null
+            loadedModelName = null
+            loadedProjectorPath = null
+            loadedCapabilities = null
+            modelContextLimit = 0
+            activeContextSize = 0
+            activeConversationId = null
             _state.value = InferenceState.Error(loadError)
             throw BackendInferenceException(selected, BackendFailureStage.LOAD, loadError)
         }
@@ -270,7 +279,7 @@ class NativeInferenceEngine(
                             TOKEN_CHANNEL_THOUGHT -> emit(GenerationEvent.ThoughtDelta(token))
                             TOKEN_CHANNEL_ANSWER -> {
                                 if (!repetitionGuard.accept(token)) {
-                                    stopReason = GenerationStopReason.TOKEN_LIMIT
+                                    stopReason = GenerationStopReason.REPETITION
                                     cancelled = true
                                     break
                                 }
