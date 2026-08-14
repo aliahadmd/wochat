@@ -32,11 +32,14 @@ class OfficeNotificationListenerService : NotificationListenerService() {
                 if (container.settings.collectionPaused.first()) return@runCatching
                 val extras = notification.extras
                 val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
-                val text = listOfNotNull(
-                    extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
-                    extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString(),
-                    extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
-                ).distinct().joinToString("\n")
+                    ?.let(OneTimeCodeRedactor::redact)
+                val text = OneTimeCodeRedactor.redact(
+                    listOfNotNull(
+                        extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+                        extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString(),
+                        extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
+                    ).distinct().joinToString("\n"),
+                )
                 container.activityRepository.record(
                     source = ActivitySource.NOTIFICATION,
                     eventType = "posted",
