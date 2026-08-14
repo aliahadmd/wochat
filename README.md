@@ -71,7 +71,7 @@ and encryption keys.
 ### Toolchain
 
 - Android Studio with Android SDK 36
-- JDK 17
+- JDK 21 (Gradle daemon toolchain, auto-provisioned via Foojay); Java sources compile to 17 compatibility.
 - Android NDK `29.0.13113456`
 - CMake `3.31.6`
 
