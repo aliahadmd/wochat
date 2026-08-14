@@ -24,8 +24,14 @@ internal data class GenerationRequest(
     val settings: GenerationSettings,
 )
 
-internal class VulkanRequestCodec(context: Context) {
-    private val requestDirectory = File(context.cacheDir, REQUEST_DIRECTORY).apply { mkdirs() }
+internal class VulkanRequestCodec internal constructor(private val requestDirectory: File) {
+
+    constructor(context: Context) : this(File(context.cacheDir, REQUEST_DIRECTORY))
+
+    init {
+        requestDirectory.mkdirs()
+        requestDirectory.listFiles { file -> file.name.endsWith(".part") }?.forEach { it.delete() }
+    }
 
     fun writeRestore(
         conversationId: String,
@@ -73,9 +79,14 @@ internal class VulkanRequestCodec(context: Context) {
     private fun write(root: JSONObject): String {
         val target = File(requestDirectory, "${UUID.randomUUID()}.json")
         val temporary = File(requestDirectory, "${target.name}.part")
-        temporary.bufferedWriter().use { it.write(root.toString()) }
-        check(temporary.length() <= MAX_REQUEST_BYTES) { "Inference request is too large." }
-        check(temporary.renameTo(target)) { "Unable to prepare inference request." }
+        try {
+            temporary.bufferedWriter().use { it.write(root.toString()) }
+            check(temporary.length() <= MAX_REQUEST_BYTES) { "Inference request is too large." }
+            check(temporary.renameTo(target)) { "Unable to prepare inference request." }
+        } catch (error: Throwable) {
+            temporary.delete()
+            throw error
+        }
         return target.absolutePath
     }
 
