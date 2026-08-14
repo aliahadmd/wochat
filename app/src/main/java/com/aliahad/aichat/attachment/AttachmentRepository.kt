@@ -13,6 +13,7 @@ import com.aliahad.aichat.core.AttachmentContext
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.data.AppDatabase
+import com.aliahad.aichat.data.AttachmentDao
 import com.aliahad.aichat.data.AttachmentEntity
 import com.aliahad.aichat.data.MessageAttachmentEntity
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +39,7 @@ interface AttachmentRepository {
     suspend fun contextsForMessage(messageId: String, prompt: String = ""): List<AttachmentContext>
     suspend fun contexts(ids: List<String>, prompt: String): List<AttachmentContext>
     suspend fun attachmentsForMessage(messageId: String): List<Attachment>
+    suspend fun attachmentsForMessages(messageIds: List<String>): Map<String, List<Attachment>>
     suspend fun cleanupAbandonedDrafts()
     suspend fun markInterrupted()
     suspend fun hasActiveProcessing(): Boolean
@@ -159,6 +161,9 @@ class DefaultAttachmentRepository(
 
     override suspend fun attachmentsForMessage(messageId: String): List<Attachment> =
         dao.getForMessage(messageId).map(AttachmentEntity::toDomain)
+
+    override suspend fun attachmentsForMessages(messageIds: List<String>): Map<String, List<Attachment>> =
+        dao.attachmentsForMessages(messageIds)
 
     override suspend fun cleanupAbandonedDrafts() = withContext(Dispatchers.IO) {
         val cutoff = System.currentTimeMillis() - DRAFT_TTL_MILLIS
@@ -286,6 +291,15 @@ class DefaultAttachmentRepository(
         val PAGE_FILE = Regex("page-(\\d+)")
         fun workName(id: String) = "attachment-process-$id"
     }
+}
+
+/** Loads attachments for many messages with a single batched query, grouped by message id. */
+internal suspend fun AttachmentDao.attachmentsForMessages(
+    messageIds: List<String>,
+): Map<String, List<Attachment>> {
+    if (messageIds.isEmpty()) return emptyMap()
+    return getForMessages(messageIds)
+        .groupBy({ it.messageId }, { it.attachment.toDomain() })
 }
 
 internal object AttachmentTypeDetector {
