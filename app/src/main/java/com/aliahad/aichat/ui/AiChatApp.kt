@@ -190,7 +190,7 @@ fun AiChatApp(
     onAddPhotos: () -> Unit,
     onAddFiles: () -> Unit,
     onTakePhoto: () -> Unit,
-    onExportOffice: (String) -> Unit,
+    onExportOffice: (CharArray) -> Unit,
     onImportOffice: () -> Unit,
     onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
     onExportDiagnostics: () -> Unit,
@@ -1524,7 +1524,7 @@ private fun ProjectorDownloadDialog(
 private fun MemoryCenter(
     state: MemoryUiState,
     actions: MemoryViewModel,
-    onExportOffice: (String) -> Unit,
+    onExportOffice: (CharArray) -> Unit,
     onImportOffice: () -> Unit,
     onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
     modifier: Modifier = Modifier,
@@ -2056,11 +2056,20 @@ private fun BackupPassphraseDialog(
     confirmationLabel: String,
     busy: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
+    onConfirm: (CharArray) -> Unit,
 ) {
     var passphrase by remember { mutableStateOf("") }
+    val weakPassphrase = passphrase.isNotEmpty() &&
+        passphrase.length < 12 &&
+        passphrase.none(Char::isDigit) &&
+        passphrase.none { !it.isLetterOrDigit() }
     AlertDialog(
-        onDismissRequest = { if (!busy) onDismiss() },
+        onDismissRequest = {
+            if (!busy) {
+                passphrase = ""
+                onDismiss()
+            }
+        },
         title = { Text(title) },
         text = {
             Column {
@@ -2068,7 +2077,16 @@ private fun BackupPassphraseDialog(
                     value = passphrase,
                     onValueChange = { passphrase = it },
                     label = { Text("Passphrase") },
-                    supportingText = { Text("At least 8 characters. It cannot be recovered.") },
+                    supportingText = {
+                        Text(
+                            if (weakPassphrase) {
+                                "At least 8 characters. It cannot be recovered. " +
+                                    "Weak passphrase — a stronger one better protects your data."
+                            } else {
+                                "At least 8 characters. It cannot be recovered."
+                            },
+                        )
+                    },
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                     enabled = !busy,
@@ -2082,14 +2100,20 @@ private fun BackupPassphraseDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(passphrase) },
+                onClick = { onConfirm(passphrase.toCharArray()) },
                 enabled = passphrase.length >= 8 && !busy,
             ) {
                 Text(confirmationLabel)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+            TextButton(
+                onClick = {
+                    passphrase = ""
+                    onDismiss()
+                },
+                enabled = !busy,
+            ) { Text("Cancel") }
         },
     )
 }
@@ -2425,7 +2449,7 @@ private fun SettingsHub(
     skillsState: SkillsUiState,
     skillsActions: SkillsViewModel,
     onExportDiagnostics: () -> Unit,
-    onExportOffice: (String) -> Unit,
+    onExportOffice: (CharArray) -> Unit,
     onImportOffice: () -> Unit,
     onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
     modifier: Modifier = Modifier,

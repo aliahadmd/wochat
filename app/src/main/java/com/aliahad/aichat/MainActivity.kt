@@ -54,7 +54,7 @@ class MainActivity : ComponentActivity() {
                 val modelState by modelSetupViewModel.uiState.collectAsStateWithLifecycle()
                 val memoryState by memoryViewModel.uiState.collectAsStateWithLifecycle()
                 val skillsState by skillsViewModel.uiState.collectAsStateWithLifecycle()
-                var pendingExportPassphrase by remember { mutableStateOf<String?>(null) }
+                var pendingExportPassphrase by remember { mutableStateOf<CharArray?>(null) }
                 val officeExportLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.CreateDocument("application/octet-stream"),
                 ) { uri ->
@@ -62,6 +62,8 @@ class MainActivity : ComponentActivity() {
                     pendingExportPassphrase = null
                     if (uri != null && passphrase != null) {
                         memoryViewModel.exportOfficeBackup(uri, passphrase)
+                    } else {
+                        passphrase?.fill('\u0000')
                     }
                 }
                 val officeImportLauncher = rememberLauncherForActivityResult(

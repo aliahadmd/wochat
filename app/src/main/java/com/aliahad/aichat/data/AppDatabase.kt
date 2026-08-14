@@ -518,6 +518,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_15_16,
                 )
                 .build()
+            migrator.sweepResidueFromFailedMigration()
             database.openHelper.writableDatabase
             migrator.finishVerifiedMigration()
             passphrase.fill(0)

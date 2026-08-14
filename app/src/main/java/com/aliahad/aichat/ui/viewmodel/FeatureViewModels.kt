@@ -328,11 +328,14 @@ class MemoryViewModel internal constructor(
 
     fun forgetMemory(id: String) = launchCatching { memoryRepository.forget(id) }
 
-    fun exportOfficeBackup(uri: Uri, passphrase: String) {
-        if (_uiState.value.backupBusy) return
+    fun exportOfficeBackup(uri: Uri, passphrase: CharArray) {
+        if (_uiState.value.backupBusy) {
+            passphrase.fill('\u0000')
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(backupBusy = true) }
-            runCatching { backupRepository.export(uri, passphrase.toCharArray()) }
+            runCatching { backupRepository.export(uri, passphrase) }
                 .onFailure(messages::report)
             _uiState.update { it.copy(backupBusy = false) }
         }
@@ -343,12 +346,15 @@ class MemoryViewModel internal constructor(
         _uiState.update { it.copy(pendingBackupImportUri = uri, backupPreview = null) }
     }
 
-    fun prepareOfficeImport(passphrase: String) {
-        val uri = _uiState.value.pendingBackupImportUri ?: return
-        if (_uiState.value.backupBusy) return
+    fun prepareOfficeImport(passphrase: CharArray) {
+        val uri = _uiState.value.pendingBackupImportUri
+        if (uri == null || _uiState.value.backupBusy) {
+            passphrase.fill('\u0000')
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(backupBusy = true) }
-            runCatching { backupRepository.prepareImport(uri, passphrase.toCharArray()) }
+            runCatching { backupRepository.prepareImport(uri, passphrase) }
                 .onSuccess { preview ->
                     _uiState.update {
                         it.copy(pendingBackupImportUri = null, backupPreview = preview)

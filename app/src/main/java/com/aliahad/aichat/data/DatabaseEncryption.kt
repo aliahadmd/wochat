@@ -121,6 +121,11 @@ class DatabaseEncryptionMigrator(
         if (backupFile.exists()) deleteDatabaseFiles(backupFile)
     }
 
+    fun sweepResidueFromFailedMigration() {
+        migrationResidueTargets(databaseFile, backupFile, encryptedTemp)
+            .forEach { deleteDatabaseFiles(it) }
+    }
+
     private fun checkpointPlaintext() {
         val database = android.database.sqlite.SQLiteDatabase.openDatabase(
             databaseFile.absolutePath,
@@ -166,13 +171,7 @@ class DatabaseEncryptionMigrator(
         }
     }
 
-    private fun isPlaintextDatabase(file: File): Boolean {
-        if (file.length() < SQLITE_HEADER.size) return false
-        return file.inputStream().use { input ->
-            val header = ByteArray(SQLITE_HEADER.size)
-            input.read(header) == header.size && header.contentEquals(SQLITE_HEADER)
-        }
-    }
+    private fun isPlaintextDatabase(file: File): Boolean = isPlaintextSqliteHeader(file)
 
     private fun deleteDatabaseFiles(file: File) {
         file.delete()
@@ -184,8 +183,31 @@ class DatabaseEncryptionMigrator(
         File(file.path + "-shm").delete()
         File(file.path + "-journal").delete()
     }
+}
 
-    private companion object {
-        val SQLITE_HEADER = "SQLite format 3\u0000".toByteArray(StandardCharsets.US_ASCII)
+/**
+ * Residue files left by an interrupted plaintext-to-encrypted migration that may be deleted
+ * before opening the database. While the main database is still plaintext the migration is
+ * pending and every source file must be preserved.
+ */
+internal fun migrationResidueTargets(
+    databaseFile: File,
+    backupFile: File,
+    encryptedTemp: File,
+): List<File> {
+    if (isPlaintextSqliteHeader(databaseFile)) return emptyList()
+    return buildList {
+        if (backupFile.exists()) add(backupFile)
+        if (encryptedTemp.exists()) add(encryptedTemp)
     }
 }
+
+internal fun isPlaintextSqliteHeader(file: File): Boolean {
+    if (file.length() < SQLITE_HEADER_BYTES.size) return false
+    return file.inputStream().use { input ->
+        val header = ByteArray(SQLITE_HEADER_BYTES.size)
+        input.read(header) == header.size && header.contentEquals(SQLITE_HEADER_BYTES)
+    }
+}
+
+private val SQLITE_HEADER_BYTES = "SQLite format 3\u0000".toByteArray(StandardCharsets.US_ASCII)

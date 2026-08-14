@@ -14,6 +14,7 @@ import com.aliahad.aichat.settings.AppSettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlin.random.Random
 import net.zetetic.database.sqlcipher.SQLiteDatabase
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -78,6 +79,7 @@ class EncryptedOfficeBackupRepository(
             }
         } finally {
             passphrase.fill('\u0000')
+            shred(working)
             working.deleteRecursively()
         }
     }
@@ -134,7 +136,7 @@ class EncryptedOfficeBackupRepository(
         val snapshot = File(working, DATABASE_ENTRY)
         require(
             snapshot.isFile &&
-                BackupPathSafety.isManagedStagingDirectory(context.cacheDir, working),
+                BackupPathSafety.isManagedStagingDirectory(context.noBackupFilesDir, working),
         ) {
             "Import staging data is unavailable"
         }
@@ -162,7 +164,7 @@ class EncryptedOfficeBackupRepository(
 
     override suspend fun discardImport(preview: BackupPreview) = withContext(Dispatchers.IO) {
         val working = File(preview.stagingPath)
-        if (BackupPathSafety.isManagedStagingDirectory(context.cacheDir, working)) {
+        if (BackupPathSafety.isManagedStagingDirectory(context.noBackupFilesDir, working)) {
             working.deleteRecursively()
         }
     }
@@ -570,9 +572,20 @@ class EncryptedOfficeBackupRepository(
     }
 
     private fun createWorkingDirectory(prefix: String): File =
-        File(context.cacheDir, "office-backup/$prefix-${UUID.randomUUID()}").apply {
+        File(context.noBackupFilesDir, "office-backup/$prefix-${UUID.randomUUID()}").apply {
+            parentFile?.mkdirs()
             check(mkdirs()) { "Unable to prepare backup storage" }
         }
+
+    /** Best-effort overwrite of plaintext residue before the working directory is deleted. */
+    private fun shred(file: File) {
+        file.walkBottomUp().filter { it.isFile }.forEach { f ->
+            runCatching {
+                val size = minOf(f.length(), 8L * 1024 * 1024).toInt()
+                f.outputStream().use { os -> os.write(Random.nextBytes(size)) }
+            }
+        }
+    }
 
     private fun safeDestination(root: File, name: String): File {
         require(!name.startsWith('/') && !name.contains('\\')) { "Unsafe backup entry" }
@@ -622,8 +635,8 @@ class EncryptedOfficeBackupRepository(
         const val MANIFEST_ENTRY = "manifest.json"
         const val SETTINGS_ENTRY = "settings.json"
         const val DATABASE_ENTRY = "office.db"
-        const val MAX_ENTRY_BYTES = 8L * 1024 * 1024 * 1024
-        const val MAX_ARCHIVE_BYTES = 64L * 1024 * 1024 * 1024
+        const val MAX_ENTRY_BYTES = 1L * 1024 * 1024 * 1024
+        const val MAX_ARCHIVE_BYTES = 4L * 1024 * 1024 * 1024
         val COUNT_TABLES = listOf(
             "conversations",
             "messages",
