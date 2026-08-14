@@ -564,7 +564,8 @@ private fun GenerationStopReason.toMessageStatus(): MessageStatus = when (this) 
     GenerationStopReason.PROCESS_DEATH -> MessageStatus.CONTINUABLE
     GenerationStopReason.CANCELLED -> MessageStatus.CANCELLED
     GenerationStopReason.DECODE_ERROR,
-    GenerationStopReason.ERROR -> MessageStatus.ERROR
+    GenerationStopReason.ERROR,
+    GenerationStopReason.REPETITION -> MessageStatus.ERROR
 }
 
 private fun mergeContinuation(existing: String, continuation: String): String {

@@ -22,6 +22,7 @@ enum class GenerationStopReason {
     PROCESS_DEATH,
     DECODE_ERROR,
     ERROR,
+    REPETITION,
 }
 
 enum class TurnOrigin {
