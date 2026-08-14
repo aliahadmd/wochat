@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.detekt)
 }
 
 val releaseKeystore = rootProject.file("release-signing/AIchat-release.jks")
@@ -135,6 +136,21 @@ android {
     sourceSets {
         getByName("androidTest").assets.directories.add("$projectDir/schemas")
     }
+    lint {
+        abortOnError = false
+        warningsAsErrors = false
+        checkDependencies = true
+        xmlReport = true
+        htmlReport = true
+    }
+}
+
+detekt {
+    config.setFrom("$rootDir/config/detekt/detekt.yml")
+    buildUponDefaultConfig = true
+    allRules = false
+    autoCorrect = false
+    ignoreFailures = false
 }
 
 ksp {

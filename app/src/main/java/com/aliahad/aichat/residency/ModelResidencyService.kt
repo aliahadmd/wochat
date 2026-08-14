@@ -92,11 +92,11 @@ class ModelResidencyService : Service() {
 
     private fun notificationFor(state: ModelResidencyState): Notification = when (state) {
         ModelResidencyState.Idle ->
-            notification("Model unloaded", "Open AIchat or tap Retry to load Gemma")
+            notification("Model unloaded", "Open wochat or tap Retry to load Gemma")
         ModelResidencyState.WaitingForUnlock ->
             notification("Waiting for unlock", "Gemma will load after the phone is unlocked")
         ModelResidencyState.WaitingForModel ->
-            notification("No active model", "Download or select a GGUF model in AIchat")
+            notification("No active model", "Download or select a GGUF model in wochat")
         is ModelResidencyState.Loading ->
             notification("Loading ${state.modelName}", "Pure CPU model load is in progress")
         is ModelResidencyState.Ready ->
@@ -137,7 +137,7 @@ class ModelResidencyService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(0, "Open AIchat", openIntent)
+            .addAction(0, "Open wochat", openIntent)
             .addAction(0, "Retry", retryIntent)
             .addAction(0, "Unload", unloadIntent)
             .build()

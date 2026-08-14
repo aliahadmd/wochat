@@ -279,7 +279,7 @@ fun AiChatApp(
                     title = {
                         when (currentRoute) {
                             AppRoute.SETTINGS -> Text("Settings")
-                            AppRoute.CHAT -> Text("AIchat")
+                            AppRoute.CHAT -> Text("wochat")
                         }
                     },
                     actions = {
@@ -610,7 +610,7 @@ private fun StartupChatPlaceholder(modifier: Modifier = Modifier) {
             CircularProgressIndicator()
             Spacer(Modifier.height(12.dp))
             Text(
-                "Preparing AIchat",
+                "Preparing wochat",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -672,7 +672,7 @@ private fun InferenceStatusBar(state: ChatUiState, model: ModelRecord) {
 private fun EmptyChat(modelName: String?, modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("AIchat", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold)
+            Text("wochat", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             Text(
                 modelName?.let { "Private, on-device chat with $it" } ?: "Set up a local model to begin",
@@ -2135,7 +2135,7 @@ private fun MemoryEditorDialog(
             OutlinedTextField(
                 value = value,
                 onValueChange = { value = it },
-                label = { Text("What should AIchat remember?") },
+                label = { Text("What should wochat remember?") },
                 minLines = 4,
                 maxLines = 10,
                 modifier = Modifier.fillMaxWidth(),
@@ -2843,7 +2843,7 @@ private fun ContextProfileCard(
                     color = MaterialTheme.colorScheme.error,
                 )
                 ContextVerificationState.UNVERIFIED, null -> Text(
-                    "AIchat starts at 4K and tests larger contexts after 15 seconds of idle time.",
+                    "wochat starts at 4K and tests larger contexts after 15 seconds of idle time.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

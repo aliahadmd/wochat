@@ -256,7 +256,7 @@ class EncryptedOfficeBackupRepository(
         DataInputStream(BufferedInputStream(input)).use { header ->
             val magic = ByteArray(MAGIC.size)
             header.readFully(magic)
-            require(magic.contentEquals(MAGIC)) { "Not an AIchat Office backup" }
+            require(magic.contentEquals(MAGIC)) { "Not a wochat Office backup" }
             require(header.readInt() == FORMAT_VERSION) { "Unsupported Office backup version" }
             val iterations = header.readInt()
             require(iterations in MIN_KDF_ITERATIONS..MAX_KDF_ITERATIONS) {

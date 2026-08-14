@@ -20,6 +20,7 @@ work = "2.11.2"
 coil = "3.4.0"
 commonsCompress = "1.28.0"
 healthConnect = "1.1.0"
+detekt = "1.23.8"
 
 [libraries]
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
@@ -60,3 +61,4 @@ androidx-health-connect-client = { group = "androidx.health.connect", name = "co
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }

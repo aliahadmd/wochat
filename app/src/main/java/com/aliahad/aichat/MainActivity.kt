@@ -153,7 +153,7 @@ class MainActivity : ComponentActivity() {
                         onExportOffice = { passphrase ->
                             pendingExportPassphrase = passphrase
                             officeExportLauncher.launch(
-                                "AIchat-office-${System.currentTimeMillis()}.aichatoffice",
+                                "wochat-office-${System.currentTimeMillis()}.aichatoffice",
                             )
                         },
                         onImportOffice = {
@@ -228,7 +228,7 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onExportDiagnostics = {
-                            diagnosticsLauncher.launch("AIchat-diagnostics-${System.currentTimeMillis()}.json")
+                            diagnosticsLauncher.launch("wochat-diagnostics-${System.currentTimeMillis()}.json")
                         },
                         )
                     }
