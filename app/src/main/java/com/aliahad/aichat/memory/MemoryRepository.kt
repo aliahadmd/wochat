@@ -60,6 +60,19 @@ class RoomMemoryRepository(
 ) : MemoryRepository {
     private val dao = database.memoryDao()
 
+    private val searchDataSource = object : MemorySearchDataSource {
+        override suspend fun pinnedIds(): List<String> = dao.pinnedIds()
+
+        override suspend fun candidates(includePrivate: Boolean, limit: Int): List<MemoryItemEntity> =
+            dao.candidates(includePrivate, limit)
+
+        override suspend fun candidatesIn(includePrivate: Boolean, ids: List<String>): List<MemoryItemEntity> =
+            dao.candidatesIn(includePrivate, ids)
+
+        override suspend fun sourcesFor(memoryIds: List<String>): List<MemorySourceEntity> =
+            dao.sourcesFor(memoryIds)
+    }
+
     override val memories: Flow<List<MemoryItem>> =
         dao.observeActive().map { rows -> rows.map(MemoryItemEntity::toDomain) }
 
@@ -114,54 +127,15 @@ class RoomMemoryRepository(
         val indexedIds = runCatching {
             indexer.searchIds(normalized, query.limit.coerceIn(1, 24) * 4)
         }.getOrDefault(emptyList())
-        val indexRanks = indexedIds.withIndex().associate { it.value to it.index }
-        val candidates = dao.candidates(query.includePrivate, 500)
         val now = System.currentTimeMillis()
-        val ranked = candidates.asSequence()
-            .filter { it.sensitivity != MemorySensitivity.SECRET }
-            .map { row ->
-                val memoryTerms = row.normalizedContent.split(' ').filter { it.length > 1 }.toSet()
-                val overlap = if (terms.isEmpty()) 0f else {
-                    terms.intersect(memoryTerms).size.toFloat() / terms.size
-                }
-                val phrase = if (normalized.isNotBlank() && normalized in row.normalizedContent) 0.35f else 0f
-                val ageDays = ((now - row.updatedAt).coerceAtLeast(0L) / 86_400_000f)
-                val recency = 1f / (1f + ageDays / 30f)
-                val indexBoost = indexRanks[row.id]?.let { rank ->
-                    0.28f * (1f - rank.toFloat() / indexedIds.size.coerceAtLeast(1))
-                } ?: 0f
-                val lexicalScore =
-                    overlap * 0.48f +
-                        phrase +
-                        indexBoost +
-                        row.importance * 0.1f +
-                        row.confidence * 0.04f +
-                        recency * 0.03f +
-                        if (row.pinned) 0.25f else 0f
-                RankedMemoryRow(
-                    row = row,
-                    score = lexicalScore,
-                    lexicalScore = lexicalScore,
-                )
-            }
-            .filter { terms.isEmpty() || it.lexicalScore > 0.08f }
-            .sortedByDescending(RankedMemoryRow::score)
-            .take(query.limit.coerceIn(1, 24))
-            .toList()
-        val memoryHits = ranked.map { rankedRow ->
-            val row = rankedRow.row
-            val sources = dao.sources(row.id).map(MemorySourceEntity::toDomain)
-            MemoryHit(
-                memory = row.toDomain(),
-                score = rankedRow.score.coerceIn(0f, 1.5f),
-                sources = sources,
-                reason = when {
-                    row.pinned -> "Pinned memory"
-                    normalized in row.normalizedContent -> "Direct text match"
-                    else -> "Relevant personal memory"
-                },
-            )
-        }
+        val memoryHits = searchMemoryRows(
+            source = searchDataSource,
+            queryText = query.text,
+            includePrivate = query.includePrivate,
+            limit = query.limit,
+            indexedIds = indexedIds,
+            now = now,
+        )
         val activityIntent = activityRetrievalIntent(query.text, now)
         val rankedActivityHits = database.activityDao()
             .retrievalCandidates(query.includePrivate, 1_000)
@@ -173,27 +147,14 @@ class RoomMemoryRepository(
             }
             .sortedByDescending { it.second.score }
             .toList()
-        val perSourceCount = mutableMapOf<ActivitySource, Int>()
-        val activityHits = rankedActivityHits.mapNotNull { (source, hit) ->
-            val limitForSource = if (activityIntent.sources.size == 1) 8 else 3
-            val count = perSourceCount.getOrDefault(source, 0)
-            if (count >= limitForSource) {
-                null
-            } else {
-                perSourceCount[source] = count + 1
-                hit
-            }
-        }
+        val activityHits = applyPerSourceActivityQuota(
+            rankedActivityHits,
+            perSourceActivityLimit(activityIntent.sources.size),
+        )
         return (memoryHits + activityHits)
             .sortedByDescending(MemoryHit::score)
             .take(query.limit.coerceIn(1, 24))
     }
-
-    private data class RankedMemoryRow(
-        val row: MemoryItemEntity,
-        val score: Float,
-        val lexicalScore: Float,
-    )
 
     override suspend fun correct(id: String, content: String, reason: String?): MemoryItem {
         val previous = requireNotNull(dao.get(id)) { "Memory not found" }
@@ -363,6 +324,107 @@ class RoomMemoryRepository(
             createdAt = now,
             updatedAt = now,
         )
+    }
+}
+
+internal interface MemorySearchDataSource {
+    suspend fun pinnedIds(): List<String>
+    suspend fun candidates(includePrivate: Boolean, limit: Int): List<MemoryItemEntity>
+    suspend fun candidatesIn(includePrivate: Boolean, ids: List<String>): List<MemoryItemEntity>
+    suspend fun sourcesFor(memoryIds: List<String>): List<MemorySourceEntity>
+}
+
+private data class RankedMemoryRow(
+    val row: MemoryItemEntity,
+    val score: Float,
+    val lexicalScore: Float,
+)
+
+internal suspend fun searchMemoryRows(
+    source: MemorySearchDataSource,
+    queryText: String,
+    includePrivate: Boolean,
+    limit: Int,
+    indexedIds: List<String>,
+    now: Long,
+): List<MemoryHit> {
+    val normalized = normalize(queryText)
+    val terms = normalized.split(' ').filter { it.length > 1 }.toSet()
+    val indexRanks = indexedIds.withIndex().associate { it.value to it.index }
+    val pinnedIds = source.pinnedIds()
+    val candidates = if (indexedIds.isNotEmpty()) {
+        source.candidatesIn(includePrivate, (indexedIds + pinnedIds).distinct())
+    } else {
+        source.candidates(includePrivate, 500)
+    }
+    val ranked = candidates.asSequence()
+        .filter { it.sensitivity != MemorySensitivity.SECRET }
+        .map { row ->
+            val memoryTerms = row.normalizedContent.split(' ').filter { it.length > 1 }.toSet()
+            val overlap = if (terms.isEmpty()) 0f else {
+                terms.intersect(memoryTerms).size.toFloat() / terms.size
+            }
+            val phrase = if (normalized.isNotBlank() && normalized in row.normalizedContent) 0.35f else 0f
+            val ageDays = ((now - row.updatedAt).coerceAtLeast(0L) / 86_400_000f)
+            val recency = 1f / (1f + ageDays / 30f)
+            val indexBoost = indexRanks[row.id]?.let { rank ->
+                0.28f * (1f - rank.toFloat() / indexedIds.size.coerceAtLeast(1))
+            } ?: 0f
+            val lexicalScore =
+                overlap * 0.48f +
+                    phrase +
+                    indexBoost +
+                    row.importance * 0.1f +
+                    row.confidence * 0.04f +
+                    recency * 0.03f +
+                    if (row.pinned) 0.25f else 0f
+            RankedMemoryRow(
+                row = row,
+                score = lexicalScore,
+                lexicalScore = lexicalScore,
+            )
+        }
+        .filter { terms.isEmpty() || it.lexicalScore > 0.08f }
+        .sortedByDescending(RankedMemoryRow::score)
+        .take(limit.coerceIn(1, 24))
+        .toList()
+    val sourcesByMemoryId = if (ranked.isEmpty()) {
+        emptyMap()
+    } else {
+        source.sourcesFor(ranked.map { it.row.id }).groupBy(MemorySourceEntity::memoryId)
+    }
+    return ranked.map { rankedRow ->
+        val row = rankedRow.row
+        val sources = sourcesByMemoryId[row.id].orEmpty().map(MemorySourceEntity::toDomain)
+        MemoryHit(
+            memory = row.toDomain(),
+            score = rankedRow.score.coerceIn(0f, 1.5f),
+            sources = sources,
+            reason = when {
+                row.pinned -> "Pinned memory"
+                normalized in row.normalizedContent -> "Direct text match"
+                else -> "Relevant personal memory"
+            },
+        )
+    }
+}
+
+internal fun perSourceActivityLimit(intentSourceCount: Int): Int =
+    if (intentSourceCount == 1) 8 else 3
+
+internal fun applyPerSourceActivityQuota(
+    rankedHits: List<Pair<ActivitySource, MemoryHit>>,
+    limitPerSource: Int,
+): List<MemoryHit> {
+    val perSourceCount = mutableMapOf<ActivitySource, Int>()
+    return rankedHits.mapNotNull { (source, hit) ->
+        val count = perSourceCount.getOrDefault(source, 0)
+        if (count >= limitPerSource) {
+            null
+        } else {
+            perSourceCount[source] = count + 1
+            hit
+        }
     }
 }
 

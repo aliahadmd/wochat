@@ -58,6 +58,17 @@ interface MemoryDao {
     )
     suspend fun candidates(includePrivate: Boolean, limit: Int): List<MemoryItemEntity>
 
+    @Query(
+        "SELECT * FROM memory_items WHERE status = 'ACTIVE' " +
+            "AND (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
+            "AND id IN (:ids) " +
+            "ORDER BY pinned DESC, importance DESC, updatedAt DESC LIMIT 500",
+    )
+    suspend fun candidatesIn(includePrivate: Boolean, ids: List<String>): List<MemoryItemEntity>
+
+    @Query("SELECT id FROM memory_items WHERE pinned = 1 AND status = 'ACTIVE'")
+    suspend fun pinnedIds(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(memory: MemoryItemEntity): Long
 
@@ -81,6 +92,9 @@ interface MemoryDao {
 
     @Query("SELECT * FROM memory_sources WHERE memoryId = :memoryId ORDER BY createdAt")
     suspend fun sources(memoryId: String): List<MemorySourceEntity>
+
+    @Query("SELECT * FROM memory_sources WHERE memoryId IN (:memoryIds) ORDER BY createdAt")
+    suspend fun sourcesFor(memoryIds: List<String>): List<MemorySourceEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCorrection(correction: MemoryCorrectionEntity)
