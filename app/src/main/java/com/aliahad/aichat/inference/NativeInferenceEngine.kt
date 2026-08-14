@@ -61,6 +61,7 @@ class NativeInferenceEngine(
     private var loadedModelName: String? = null
     private var loadedBackend = BackendMode.CPU
     private var activeConversationId: String? = null
+    private var activeRestoreFingerprint: String? = null
 
     init {
         require(nativeBackend != BackendMode.AUTO) { "A native engine must use one concrete backend." }
@@ -111,6 +112,7 @@ class NativeInferenceEngine(
         loadedProjectorPath = null
         loadedCapabilities = null
         activeConversationId = null
+        activeRestoreFingerprint = null
         _metrics.value = _metrics.value.copy(
             modelLoadMillis = mark.elapsedNow().inWholeMilliseconds,
         )
@@ -143,6 +145,7 @@ class NativeInferenceEngine(
         loadedProjectorPath = null
         loadedCapabilities = null
         activeConversationId = null
+        activeRestoreFingerprint = null
     }
 
     override suspend fun restoreSession(
@@ -151,10 +154,16 @@ class NativeInferenceEngine(
         settings: GenerationSettings,
     ) = withContext(dispatcher) {
         check(loadedModelPath != null) { "Load a model first" }
-        if (activeConversationId == conversationId) return@withContext
+        // Each turn re-plans the system prompt and history; skip the expensive
+        // native replay only when the exact restore inputs are unchanged.
+        val fingerprint = restoreFingerprint(conversationId, settings, history)
+        if (shouldSkipRestore(activeConversationId, activeRestoreFingerprint, conversationId, fingerprint)) {
+            return@withContext
+        }
         // The native session is cleared below; a failed restore must not leave the
         // previous conversation marked active against the new conversation's KV cache.
         activeConversationId = null
+        activeRestoreFingerprint = null
         _state.value = InferenceState.PreparingHistory
         holdCpu()
         val mark = TimeSource.Monotonic.markNow()
@@ -186,6 +195,7 @@ class NativeInferenceEngine(
             releaseCpu()
         }
         activeConversationId = conversationId
+        activeRestoreFingerprint = fingerprint
         _metrics.value = _metrics.value.copy(
             historyRestoreMillis = mark.elapsedNow().inWholeMilliseconds,
         )
@@ -294,6 +304,7 @@ class NativeInferenceEngine(
                 throw cancel
             } catch (error: Throwable) {
                 activeConversationId = null
+                activeRestoreFingerprint = null
                 _state.value = InferenceState.Error(error.message ?: "Generation failed")
                 throw error
             } finally {
@@ -322,6 +333,7 @@ class NativeInferenceEngine(
         modelContextLimit = 0
         activeContextSize = 0
         activeConversationId = null
+        activeRestoreFingerprint = null
         _metrics.value = InferenceMetrics()
         _state.value = InferenceState.Idle
     }
@@ -388,6 +400,7 @@ class NativeInferenceEngine(
         loadedProjectorPath = null
         loadedCapabilities = null
         activeConversationId = null
+        activeRestoreFingerprint = null
         activeContextSize = 0
         _state.value = InferenceState.Idle
         results
@@ -436,6 +449,7 @@ class NativeInferenceEngine(
             nativeFinishGeneration()
             nativeReleaseModelPages()
             activeConversationId = null
+            activeRestoreFingerprint = null
             releaseCpu()
         }
     }
@@ -488,6 +502,31 @@ class NativeInferenceEngine(
     private external fun nativeShutdown()
 
 }
+
+/**
+ * Summarizes every input [restoreSession] feeds to the native layer: the
+ * system prompt and thinking flag shape the native prompt, while the history
+ * size plus the last message id proxy the replayed turns (messages are
+ * immutable rows, so an unchanged last id means unchanged content). Any new
+ * generation setting consumed by the native restore must join this string or
+ * the silent-staleness skip returns.
+ */
+internal fun restoreFingerprint(
+    conversationId: String,
+    settings: GenerationSettings,
+    history: List<ChatTurn>,
+): String = conversationId + '\u0000' +
+    settings.thinkingEnabled.toString() + '\u0000' +
+    settings.systemPrompt.hashCode() + '\u0000' +
+    history.size + '\u0000' +
+    history.lastOrNull()?.message?.id.hashCode()
+
+internal fun shouldSkipRestore(
+    activeConversationId: String?,
+    activeRestoreFingerprint: String?,
+    conversationId: String,
+    fingerprint: String,
+): Boolean = activeConversationId == conversationId && activeRestoreFingerprint == fingerprint
 
 private class RepetitionGuard {
     private val answer = StringBuilder()
