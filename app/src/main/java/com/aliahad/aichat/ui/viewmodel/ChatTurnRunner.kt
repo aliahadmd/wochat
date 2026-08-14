@@ -243,7 +243,7 @@ class ChatTurnRunner(
             val plannedSettings = settings.copy(systemPrompt = contextPlan.systemPrompt)
             inferenceEngine.restoreSession(request.conversationId, plannedTurns, plannedSettings)
             if (visualCount > 0 && historyImageBudget > visualBudget) {
-                residencyController.ensureLoaded(mediaRequirement, visualBudget)
+                residencyController.ensureLoaded(mediaRequirement, maxOf(visualBudget, historyImageBudget))
             }
             var lastSavedAt = 0L
             var completion: GenerationEvent.Completed? = null
