@@ -1,6 +1,7 @@
 package com.aliahad.aichat.data
 
 import androidx.room.Dao
+import androidx.room.Embedded
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -73,6 +74,13 @@ interface AttachmentDao {
     )
     suspend fun getForMessage(messageId: String): List<AttachmentEntity>
 
+    @Query(
+        "SELECT ma.messageId AS messageId, a.* FROM attachments a INNER JOIN message_attachments ma " +
+            "ON a.id = ma.attachmentId WHERE ma.messageId IN (:messageIds) " +
+            "ORDER BY ma.messageId, ma.ordinal",
+    )
+    suspend fun getForMessages(messageIds: List<String>): List<AttachmentWithMessageId>
+
     @Query("SELECT * FROM attachments WHERE id = :id")
     suspend fun get(id: String): AttachmentEntity?
 
@@ -132,6 +140,12 @@ interface AttachmentDao {
     )
     suspend fun activeProcessingCount(): Int
 }
+
+/** Join row pairing an attachment with the message it is bound to. */
+data class AttachmentWithMessageId(
+    val messageId: String,
+    @Embedded val attachment: AttachmentEntity,
+)
 
 @Dao
 interface MessageDao {

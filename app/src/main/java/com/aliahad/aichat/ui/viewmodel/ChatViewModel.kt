@@ -187,13 +187,11 @@ class ChatViewModel internal constructor(
         messagesJob?.cancel()
         messagesJob = viewModelScope.launch {
             chatRepository.messages(id).collectLatest { messages ->
-                _uiState.update { it.copy(messages = messages) }
-                val attachments = messages.associate { message ->
-                    message.id to attachmentRepository.attachmentsForMessage(message.id)
-                }
-                val skills = skillRepository.blocksForMessages(messages.map { it.id })
+                val ids = messages.map { it.id }
+                val attachments = attachmentRepository.attachmentsForMessages(ids)
+                val skills = skillRepository.blocksForMessages(ids)
                 _uiState.update {
-                    it.copy(messageAttachments = attachments, messageSkills = skills)
+                    it.copy(messages = messages, messageAttachments = attachments, messageSkills = skills)
                 }
             }
         }
@@ -209,11 +207,12 @@ class ChatViewModel internal constructor(
                     runner.stop()
                     generationJob?.cancelAndJoin()
                 }
-                chatRepository.getMessages(id).forEach { message ->
-                    attachmentRepository.attachmentsForMessage(message.id).forEach { attachment ->
+                val messageIds = chatRepository.getMessages(id).map { it.id }
+                attachmentRepository.attachmentsForMessages(messageIds).values
+                    .flatten()
+                    .forEach { attachment ->
                         attachmentRepository.remove(attachment.id)
                     }
-                }
                 chatRepository.deleteConversation(id)
             }.onFailure(uiMessages::report)
             if (_uiState.value.selectedConversationId == id) clearConversationSelection()
