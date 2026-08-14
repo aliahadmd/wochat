@@ -5,6 +5,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.IBinder
 import android.os.Debug
+import android.os.RemoteException
+import android.util.Log
 import com.aliahad.aichat.core.BackendFailureStage
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.GenerationEvent
@@ -15,6 +17,7 @@ import com.aliahad.aichat.core.ModelLoadConfiguration
 import com.aliahad.aichat.inference.BackendInferenceException
 import com.aliahad.aichat.inference.NativeInferenceEngine
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,7 +33,13 @@ import java.util.concurrent.atomic.AtomicLong
 class VulkanInferenceService : Service() {
     private lateinit var engine: NativeInferenceEngine
     private lateinit var codec: VulkanRequestCodec
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() +
+            Dispatchers.IO +
+            CoroutineExceptionHandler { _, error ->
+                Log.e(TAG, "Vulkan service coroutine failed", error)
+            },
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -117,29 +126,35 @@ class VulkanInferenceService : Service() {
                             is GenerationEvent.AnswerDelta -> batch.answer(event.text)
                             is GenerationEvent.Completed -> {
                                 batch.flush()
-                                callback.onCompleted(
-                                    event.reason.ordinal,
-                                    event.answerTokens,
-                                    event.continuationCount,
-                                )
+                                withCallback {
+                                    callback.onCompleted(
+                                        event.reason.ordinal,
+                                        event.answerTokens,
+                                        event.continuationCount,
+                                    )
+                                }
                             }
                             is GenerationEvent.BackendFallback -> Unit
                         }
                     }
                 } catch (cancelled: CancellationException) {
                     batch.flush()
-                    callback.onFailure(
-                        BackendFailureStage.UNKNOWN.ordinal,
-                        (cancelled.message ?: "Vulkan generation was cancelled.").take(1_000),
-                    )
+                    withCallback {
+                        callback.onFailure(
+                            BackendFailureStage.UNKNOWN.ordinal,
+                            (cancelled.message ?: "Vulkan generation was cancelled.").take(1_000),
+                        )
+                    }
                 } catch (error: Throwable) {
                     batch.flush()
                     val stage = (error as? BackendInferenceException)?.stage
                         ?: BackendFailureStage.UNKNOWN
-                    callback.onFailure(
-                        stage.ordinal,
-                        (error.message ?: "Vulkan generation failed.").take(1_000),
-                    )
+                    withCallback {
+                        callback.onFailure(
+                            stage.ordinal,
+                            (error.message ?: "Vulkan generation failed.").take(1_000),
+                        )
+                    }
                 }
             }
         }
@@ -229,6 +244,16 @@ private suspend fun <T> measurePeakPss(block: suspend () -> T): Pair<T, Long> = 
     }
 }
 
+private const val TAG = "VulkanService"
+
+private inline fun withCallback(block: () -> Unit) {
+    try {
+        block()
+    } catch (remote: RemoteException) {
+        Log.w(TAG, "Vulkan client went away during callback", remote)
+    }
+}
+
 private class CallbackBatch(
     private val callback: IVulkanGenerationCallback,
 ) {
@@ -260,7 +285,7 @@ private class CallbackBatch(
 
     fun flush() {
         if (phase == RemoteProtocol.PHASE_NONE && thought.isEmpty() && answer.isEmpty()) return
-        callback.onBatch(phase, thought.toString(), answer.toString())
+        withCallback { callback.onBatch(phase, thought.toString(), answer.toString()) }
         phase = RemoteProtocol.PHASE_NONE
         thought.clear()
         answer.clear()
