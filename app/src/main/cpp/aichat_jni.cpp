@@ -917,7 +917,11 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeNextToken(
             }
             return to_jstring(env, "");
         }
-        if (result.size() >= 2 && result.front() == '<' && result.back() == '>') {
+        // Suppress genuine control/special tokens (e.g. Gemma turn tags) without
+        // dropping legitimate answer tokens that merely look like "<...>" markup.
+        const llama_token_attr token_attrs =
+            llama_vocab_get_attr(llama_model_get_vocab(model), token);
+        if (token_attrs & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_UNKNOWN)) {
             return to_jstring(env, "");
         }
         last_token_channel = 2;
