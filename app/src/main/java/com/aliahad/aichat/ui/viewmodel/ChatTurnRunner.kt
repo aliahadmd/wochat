@@ -117,6 +117,18 @@ class ChatTurnRunner(
         var keepThinking = false
         var inferenceUseStarted = false
         val content = StringBuilder()
+        val thinkingBuffer = StringBuilder()
+        fun flushThinking() {
+            val messageId = assistant?.id ?: return
+            if (thinkingBuffer.isEmpty()) return
+            _state.update { state ->
+                val thinking = state.thinking?.takeIf { it.messageId == messageId }
+                    ?: ThinkingUiState(messageId)
+                state.copy(
+                    thinking = thinking.copy(text = thinkingBuffer.toString(), complete = false),
+                )
+            }
+        }
         try {
             val model = resolveSelectedModel() ?: return
             val visionProfile = visionDetailProfile(model)
@@ -250,6 +262,7 @@ class ChatTurnRunner(
                 residencyController.ensureLoaded(mediaRequirement, visualBudget)
             }
             var lastSavedAt = 0L
+            var lastThinkingFlushAt = 0L
             var completion: GenerationEvent.Completed? = null
             inferenceEngine.generate(
                 UserTurn(
@@ -263,15 +276,20 @@ class ChatTurnRunner(
                 when (event) {
                     is GenerationEvent.ThoughtDelta -> {
                         val messageId = assistant?.id ?: return@collect
-                        _state.update { state ->
-                            val thinking = state.thinking?.takeIf { it.messageId == messageId }
-                                ?: ThinkingUiState(messageId)
-                            state.copy(
-                                thinking = thinking.copy(
-                                    text = thinking.text + event.text,
-                                    complete = false,
-                                ),
-                            )
+                        thinkingBuffer.append(event.text)
+                        val now = System.currentTimeMillis()
+                        if (now - lastThinkingFlushAt >= 100 || thinkingBuffer.length < 64) {
+                            lastThinkingFlushAt = now
+                            _state.update { state ->
+                                val thinking = state.thinking?.takeIf { it.messageId == messageId }
+                                    ?: ThinkingUiState(messageId)
+                                state.copy(
+                                    thinking = thinking.copy(
+                                        text = thinkingBuffer.toString(),
+                                        complete = false,
+                                    ),
+                                )
+                            }
                         }
                     }
                     is GenerationEvent.AnswerDelta -> {
@@ -296,7 +314,9 @@ class ChatTurnRunner(
                     }
                     is GenerationEvent.BackendFallback -> if (event.discardPartialOutput) {
                         content.setLength(0)
+                        thinkingBuffer.setLength(0)
                         lastSavedAt = 0L
+                        lastThinkingFlushAt = 0L
                         keepThinking = false
                         assistant?.copy(content = "")?.let { reset ->
                             assistant = reset
@@ -308,6 +328,7 @@ class ChatTurnRunner(
                     is GenerationEvent.Phase -> Unit
                 }
             }
+            flushThinking()
             val result = completion ?: GenerationEvent.Completed(
                 GenerationStopReason.ERROR,
                 0,
@@ -357,6 +378,7 @@ class ChatTurnRunner(
             }
             messages.report(error)
         } finally {
+            flushThinking()
             _state.update { state ->
                 state.copy(
                     isSending = false,
@@ -378,6 +400,17 @@ class ChatTurnRunner(
         var keepThinking = false
         var inferenceUseStarted = false
         val continuation = StringBuilder()
+        val thinkingBuffer = StringBuilder()
+        fun flushThinking() {
+            if (thinkingBuffer.isEmpty()) return
+            _state.update { state ->
+                val thinking = state.thinking?.takeIf { it.messageId == target.id }
+                    ?: ThinkingUiState(target.id)
+                state.copy(
+                    thinking = thinking.copy(text = thinkingBuffer.toString(), complete = false),
+                )
+            }
+        }
         try {
             val settings = settingsRepository.generationSettings.first().normalized()
             resolveSelectedModel() ?: return
@@ -442,20 +475,28 @@ class ChatTurnRunner(
             )
             var completion: GenerationEvent.Completed? = null
             var lastSavedAt = 0L
+            var lastThinkingFlushAt = 0L
             inferenceEngine.generate(
                 UserTurn(request.conversationId, hiddenPrompt),
                 plannedSettings,
             ).collect { event ->
                 when (event) {
-                    is GenerationEvent.ThoughtDelta -> _state.update { state ->
-                        val thinking = state.thinking?.takeIf { it.messageId == target.id }
-                            ?: ThinkingUiState(target.id)
-                        state.copy(
-                            thinking = thinking.copy(
-                                text = thinking.text + event.text,
-                                complete = false,
-                            ),
-                        )
+                    is GenerationEvent.ThoughtDelta -> {
+                        thinkingBuffer.append(event.text)
+                        val now = System.currentTimeMillis()
+                        if (now - lastThinkingFlushAt >= 100 || thinkingBuffer.length < 64) {
+                            lastThinkingFlushAt = now
+                            _state.update { state ->
+                                val thinking = state.thinking?.takeIf { it.messageId == target.id }
+                                    ?: ThinkingUiState(target.id)
+                                state.copy(
+                                    thinking = thinking.copy(
+                                        text = thinkingBuffer.toString(),
+                                        complete = false,
+                                    ),
+                                )
+                            }
+                        }
                     }
                     is GenerationEvent.AnswerDelta -> {
                         continuation.append(event.text)
@@ -478,7 +519,9 @@ class ChatTurnRunner(
                     }
                     is GenerationEvent.BackendFallback -> if (event.discardPartialOutput) {
                         continuation.setLength(0)
+                        thinkingBuffer.setLength(0)
                         lastSavedAt = 0L
+                        lastThinkingFlushAt = 0L
                         keepThinking = false
                         assistant = target.copy(status = MessageStatus.STREAMING)
                         chatRepository.updateMessage(assistant)
@@ -488,6 +531,7 @@ class ChatTurnRunner(
                     is GenerationEvent.Phase -> Unit
                 }
             }
+            flushThinking()
             val result = completion ?: GenerationEvent.Completed(GenerationStopReason.ERROR, 0, 0)
             assistant = assistant.copy(
                 content = mergeContinuation(target.content, continuation.toString()),
@@ -516,6 +560,7 @@ class ChatTurnRunner(
             )
             messages.report(error)
         } finally {
+            flushThinking()
             _state.update { state ->
                 state.copy(
                     isSending = false,

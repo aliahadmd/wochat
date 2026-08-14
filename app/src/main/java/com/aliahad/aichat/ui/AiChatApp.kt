@@ -721,7 +721,7 @@ internal fun MessageList(
     LaunchedEffect(
         messages.size,
         lastMessage?.content?.length,
-        thinking?.text?.length,
+        thinking?.text?.length?.div(80),
         thinking?.expanded,
         lastMessageHeight,
         lastMessageRenderRevision,
@@ -970,7 +970,7 @@ private fun ThinkingPanel(
         }
         if (!thinking.expanded && !thinking.complete && displayText.isNotBlank()) {
             Text(
-                displayText.replace(Regex("\\s+"), " ").trim(),
+                displayText.takeLast(200).replace(WHITESPACE, " ").trim(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
@@ -1000,6 +1000,8 @@ private fun ThinkingPanel(
         }
     }
 }
+
+private val WHITESPACE = Regex("\\s+")
 
 private fun formatThoughtForDisplay(text: String): String =
     text
