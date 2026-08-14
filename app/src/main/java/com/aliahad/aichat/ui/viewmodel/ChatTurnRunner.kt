@@ -567,7 +567,7 @@ private fun GenerationStopReason.toMessageStatus(): MessageStatus = when (this) 
     GenerationStopReason.ERROR -> MessageStatus.ERROR
 }
 
-private fun mergeContinuation(existing: String, continuation: String): String {
+internal fun mergeContinuation(existing: String, continuation: String): String {
     if (existing.isEmpty() || continuation.isEmpty()) return existing + continuation
     val maximum = minOf(existing.length, continuation.length, 320)
     for (overlap in maximum downTo 12) {
