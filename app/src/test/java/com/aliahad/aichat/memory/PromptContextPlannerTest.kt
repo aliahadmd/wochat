@@ -253,6 +253,30 @@ class PromptContextPlannerTest {
         assertTrue(plan.estimatedTokens + plan.outputReserveTokens <= contextTokens)
     }
 
+    @Test
+    fun selectionLoopCountsEachHistoryTurnExactlyOnce() = runTest {
+        val engine = FakeInferenceEngine()
+        val planner = PromptContextPlanner(engine, FakeMemoryRepository(), summariesDatabase())
+        val history = listOf(
+            turn("m1", MessageRole.USER, "zebra MARKER-ONE quokka ".repeat(20)),
+            turn("m2", MessageRole.ASSISTANT, "panda MARKER-TWO otter ".repeat(10)),
+            turn("m3", MessageRole.USER, "koala MARKER-THREE lynx ".repeat(10)),
+        )
+
+        planner.plan(
+            conversationId = "chat",
+            history = history,
+            currentText = "hello",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = false,
+        )
+
+        assertEquals(1, engine.tokenCalls.count { it.contains("MARKER-ONE") })
+        assertEquals(1, engine.tokenCalls.count { it.contains("MARKER-TWO") })
+        assertEquals(1, engine.tokenCalls.count { it.contains("MARKER-THREE") })
+    }
+
     private fun turn(id: String, role: MessageRole, content: String) = ChatTurn(
         message = ChatMessage(
             id = id,
@@ -314,6 +338,7 @@ private class FakeInferenceEngine(
     private val secondCallMultiplier: Int? = null,
 ) : InferenceEngine {
     private val seen = mutableSetOf<String>()
+    val tokenCalls = mutableListOf<String>()
     override val state: StateFlow<InferenceState> = MutableStateFlow(InferenceState.Idle)
     override val metrics: StateFlow<InferenceMetrics> = MutableStateFlow(InferenceMetrics())
     override val loadedModelPath: String? = null
@@ -323,6 +348,7 @@ private class FakeInferenceEngine(
     override val activeContextSize: Int = 0
 
     override suspend fun countTokens(text: String): Int {
+        tokenCalls += text
         val base = text.length / 4
         val multiplier = secondCallMultiplier
         return if (multiplier != null && !seen.add(text)) {

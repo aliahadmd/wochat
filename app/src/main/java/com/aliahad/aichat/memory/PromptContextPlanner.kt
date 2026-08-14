@@ -75,12 +75,12 @@ class PromptContextPlanner(
             remaining -= tokens
         }
 
-        val selectedReversed = ArrayDeque<ChatTurn>()
+        val selectedReversed = ArrayDeque<Pair<ChatTurn, Int>>()
         val trimmed = mutableListOf<ChatTurn>()
         for (turn in history.asReversed()) {
             val tokens = turnTokenCount(turn)
             if (tokens <= remaining) {
-                selectedReversed.addFirst(turn)
+                selectedReversed.addFirst(turn to tokens)
                 remaining -= tokens
             } else {
                 trimmed += turn
@@ -116,7 +116,7 @@ class PromptContextPlanner(
             }
         }
         val systemTokens = inferenceEngine.countTokens(systemPrompt).coerceAtLeast(1)
-        val historyTokens = selectedReversed.sumOf { turnTokenCount(it) }
+        val historyTokens = selectedReversed.sumOf { it.second }
         val estimatedTokens = systemTokens + historyTokens + currentTokens
         check(estimatedTokens + outputReserve <= contextTokens) {
             "Prompt planning exceeded the loaded model context"
@@ -124,7 +124,7 @@ class PromptContextPlanner(
         return ContextPlan(
             systemPrompt = systemPrompt,
             summary = summary,
-            history = selectedReversed.toList(),
+            history = selectedReversed.map { it.first },
             memories = selectedMemories,
             skills = skillBlocks,
             estimatedTokens = estimatedTokens,

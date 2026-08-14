@@ -126,10 +126,14 @@ class ChatTurnRunner(
             )
             val previous = chatRepository.getMessages(request.conversationId)
                 .filter { it.status != MessageStatus.STREAMING }
+            val previousContexts = attachmentRepository.contextsForMessages(
+                messageIds = previous.map { it.id },
+                promptFor = { messageId -> previous.first { it.id == messageId }.content },
+            )
             val previousTurns = previous.map { message ->
                 ChatTurn(
                     message = message,
-                    attachments = attachmentRepository.contextsForMessage(message.id, message.content),
+                    attachments = previousContexts[message.id].orEmpty(),
                 )
             }
             val contexts = attachmentRepository.contexts(draft.map(Attachment::id), prompt)
@@ -388,11 +392,14 @@ class ChatTurnRunner(
                 .filter { it.id != target.id && it.status != MessageStatus.STREAMING }
             val sourceUser = messages.lastOrNull { it.role == MessageRole.USER }
             val activeSkills = sourceUser?.let { skillRepository.blocksForMessage(it.id) }.orEmpty()
-            val turns = messages.map { message ->
-                ChatTurn(
-                    message,
-                    attachmentRepository.contextsForMessage(message.id, message.content),
+            val turns = messages.let { history ->
+                val turnContexts = attachmentRepository.contextsForMessages(
+                    messageIds = history.map { it.id },
+                    promptFor = { messageId -> history.first { it.id == messageId }.content },
                 )
+                history.map { message ->
+                    ChatTurn(message, turnContexts[message.id].orEmpty())
+                }
             } + ChatTurn(target.copy(status = MessageStatus.COMPLETE))
             val historyImageBudget = turns.maxOfOrNull { turn ->
                 turn.attachments.filter { it.imagePaths.isNotEmpty() }

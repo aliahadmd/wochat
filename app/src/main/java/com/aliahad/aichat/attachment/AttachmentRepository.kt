@@ -37,6 +37,10 @@ interface AttachmentRepository {
         imageTokenBudget: Int?,
     )
     suspend fun contextsForMessage(messageId: String, prompt: String = ""): List<AttachmentContext>
+    suspend fun contextsForMessages(
+        messageIds: List<String>,
+        promptFor: (String) -> String = { "" },
+    ): Map<String, List<AttachmentContext>>
     suspend fun contexts(ids: List<String>, prompt: String): List<AttachmentContext>
     suspend fun attachmentsForMessage(messageId: String): List<Attachment>
     suspend fun attachmentsForMessages(messageIds: List<String>): Map<String, List<Attachment>>
@@ -153,6 +157,15 @@ class DefaultAttachmentRepository(
     override suspend fun contextsForMessage(messageId: String, prompt: String): List<AttachmentContext> =
         dao.getForMessage(messageId).map { contextFor(it, prompt) }
 
+    override suspend fun contextsForMessages(
+        messageIds: List<String>,
+        promptFor: (String) -> String,
+    ): Map<String, List<AttachmentContext>> {
+        if (messageIds.isEmpty()) return emptyMap()
+        return dao.getForMessages(messageIds)
+            .groupBy({ it.messageId }) { contextFor(it.attachment, promptFor(it.messageId)) }
+    }
+
     override suspend fun contexts(ids: List<String>, prompt: String): List<AttachmentContext> {
         if (ids.isEmpty()) return emptyList()
         val byId = dao.getByIds(ids).associateBy { it.id }
@@ -183,14 +196,13 @@ class DefaultAttachmentRepository(
         }
         val selectedPages = entity.selectedPages.toPageSet()
         val keywords = prompt.keywordList()
+        val keywordRegexes = keywords.map { keyword ->
+            Regex("\\b${Regex.escape(keyword)}", RegexOption.IGNORE_CASE)
+        }
         val chunks = dao.chunks(entity.id)
             .filter { selectedPages.isEmpty() || it.pageNumber == null || it.pageNumber in selectedPages }
             .sortedByDescending { chunk ->
-                keywords.sumOf { keyword ->
-                    Regex("\\b${Regex.escape(keyword)}", RegexOption.IGNORE_CASE)
-                        .findAll(chunk.content)
-                        .count()
-                }
+                keywordRegexes.sumOf { it.findAll(chunk.content).count() }
             }
             .take(MAX_CONTEXT_CHUNKS)
         val images = entity.derivedImagePaths.toPathList().let { paths ->
