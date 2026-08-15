@@ -112,6 +112,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
@@ -188,6 +190,8 @@ import coil3.compose.AsyncImage
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.IconButtonDefaults
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -423,6 +427,7 @@ private fun ConversationDrawer(
     onSearchQueryChange: (String) -> Unit,
     onSettings: () -> Unit,
 ) {
+    val drawerHaptics = LocalHapticFeedback.current
     ModalDrawerSheet(modifier = Modifier.width(304.dp)) {
         Column(
             modifier = Modifier
@@ -512,7 +517,12 @@ private fun ConversationDrawer(
                         IconButton(onClick = { onExport(conversation.id) }) {
                             Icon(Icons.Default.Download, contentDescription = "Export conversation as Markdown")
                         }
-                        IconButton(onClick = { onDelete(conversation.id) }) {
+                        IconButton(onClick = {
+                            // Firmer feedback for a destructive action than for
+                            // an ordinary tap.
+                            drawerHaptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onDelete(conversation.id)
+                        }) {
                             Icon(Icons.Default.Delete, contentDescription = "Delete conversation")
                         }
                     }
@@ -552,6 +562,19 @@ private fun ChatScreen(
     // the user out of the app mid-turn. Disabled otherwise, so ordinary back
     // behaviour is untouched.
     BackHandler(enabled = state.isSending) { onStop() }
+
+    // A local answer can take a long time, so the user often looks away. One
+    // confirmation when it lands is the highest-value haptic in the app.
+    // Keyed on the true -> false transition, not on "not sending", so it cannot
+    // re-fire on recomposition or when an old message scrolls back into view.
+    val chatHaptics = LocalHapticFeedback.current
+    var wasSending by remember { mutableStateOf(false) }
+    LaunchedEffect(state.isSending) {
+        if (wasSending && !state.isSending) {
+            chatHaptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        }
+        wasSending = state.isSending
+    }
     // The draft lives in ChatUiState so it survives configuration changes and
     // process death, and is cleared when the conversation changes.
     val input = state.input
@@ -1209,6 +1232,7 @@ private fun Composer(
     val selectedSkills = selectedSkillIds.mapNotNull { id ->
         skills.firstOrNull { it.id == id && it.enabled }
     }
+    val haptics = LocalHapticFeedback.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1312,22 +1336,29 @@ private fun Composer(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
             )
             Spacer(Modifier.width(8.dp))
-            IconButton(
-                onClick = if (sending) onStop else onSend,
+            FilledIconButton(
+                onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.ContextClick)
+                    if (sending) onStop() else onSend()
+                },
                 enabled = sending || (
                     enabled &&
                         (input.isNotBlank() || attachments.isNotEmpty()) &&
                         attachments.all { it.state == AttachmentProcessingState.READY } &&
                         blockingReason == null
                 ),
-                modifier = Modifier
-                    .size(50.dp)
-                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(50)),
+                modifier = Modifier.size(50.dp),
+                // FilledIconButton rather than IconButton + .background(): a
+                // caller-supplied background ignores `enabled`, so the disabled
+                // send button used to render as a solid primary-coloured circle
+                // that looked completely pressable and did nothing. Letting the
+                // component own its colours is what makes the disabled state
+                // visible at all — the tint must not be hardcoded either.
+                colors = IconButtonDefaults.filledIconButtonColors(),
             ) {
                 Icon(
                     if (sending) Icons.Default.Stop else Icons.AutoMirrored.Filled.Send,
                     contentDescription = if (sending) "Stop generation" else "Send",
-                    tint = MaterialTheme.colorScheme.onPrimary,
                 )
             }
         }
