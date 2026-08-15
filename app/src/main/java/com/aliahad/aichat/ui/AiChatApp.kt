@@ -103,6 +103,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -181,6 +182,7 @@ import com.aliahad.aichat.skill.MAX_SKILL_NAME_CHARS
 import com.mikepenz.markdown.compose.MarkdownSuccess
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.model.rememberMarkdownState
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 import coil3.compose.AsyncImage
 import java.io.File
@@ -798,6 +800,28 @@ private fun EmptyChat(modelName: String?, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * The inputs that decide whether the message list should follow the latest
+ * content. Collapsed into one value so snapshotFlow emits a single conflatable
+ * update instead of the seven separate LaunchedEffect keys this replaced.
+ */
+private data class ScrollFollowState(
+    val messageCount: Int,
+    val lastContentLength: Int,
+    val thinkingLength: Int,
+    val thinkingExpanded: Boolean,
+    val lastMessageHeight: Int,
+    val renderRevision: Int,
+    val follow: Boolean,
+)
+
+/**
+ * How far the list may be from the target before following snaps instead of
+ * animating. Streaming moves a item or two at a time, which should glide;
+ * switching conversation can move hundreds, which should not be a long scroll.
+ */
+private const val SMOOTH_FOLLOW_ITEM_DISTANCE = 3
+
 @Composable
 internal fun MessageList(
     messages: List<ChatMessage>,
@@ -834,18 +858,41 @@ internal fun MessageList(
     LaunchedEffect(lastMessage?.id) {
         if (lastMessage?.role == MessageRole.USER) followLatest = true
     }
-    LaunchedEffect(
-        messages.size,
-        lastMessage?.content?.length,
-        thinking?.text?.length?.div(80),
-        thinking?.expanded,
-        lastMessageHeight,
-        lastMessageRenderRevision,
-        followLatest,
-    ) {
-        if (followLatest && messages.isNotEmpty()) {
-            listState.scrollToItem(messages.size)
+    // Keyed on nothing that changes per token: the effect starts once and then
+    // observes the scroll-relevant state through snapshotFlow. The previous
+    // version listed lastMessage.content.length among its keys, so every single
+    // token cancelled and relaunched the whole coroutine.
+    //
+    // conflate() collapses a burst of token updates into one scroll per frame
+    // rather than one per token, and the decision logic (followLatest) is
+    // deliberately unchanged — this alters how often the scroll runs, not when
+    // the app decides to follow.
+    LaunchedEffect(listState, conversationId) {
+        snapshotFlow {
+            ScrollFollowState(
+                messageCount = messages.size,
+                lastContentLength = messages.lastOrNull()?.content?.length ?: 0,
+                thinkingLength = thinking?.text?.length?.div(80) ?: 0,
+                thinkingExpanded = thinking?.expanded == true,
+                lastMessageHeight = lastMessageHeight,
+                renderRevision = lastMessageRenderRevision,
+                follow = followLatest,
+            )
         }
+            .conflate()
+            .collect { state ->
+                if (!state.follow || state.messageCount == 0) return@collect
+                val target = state.messageCount
+                val distance = target - listState.firstVisibleItemIndex
+                // Animate the small, continuous case that streaming produces so
+                // the list glides; snap for large jumps (first load, switching
+                // conversation) where an animation would just be a long scroll.
+                if (distance in 0..SMOOTH_FOLLOW_ITEM_DISTANCE) {
+                    listState.animateScrollToItem(target)
+                } else {
+                    listState.scrollToItem(target)
+                }
+            }
     }
 
     Box(modifier = modifier) {
@@ -885,14 +932,18 @@ internal fun MessageList(
                 Spacer(Modifier.height(1.dp))
             }
         }
-        if (!isAtBottom) {
+        androidx.compose.animation.AnimatedVisibility(
+            visible = !isAtBottom,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(200)),
+            modifier = Modifier.align(Alignment.BottomEnd),
+        ) {
             IconButton(
                 onClick = {
                     followLatest = true
                     scope.launch { listState.animateScrollToItem(messages.size) }
                 },
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
                     .padding(16.dp)
                     .background(
                         MaterialTheme.colorScheme.surfaceContainerHigh,
