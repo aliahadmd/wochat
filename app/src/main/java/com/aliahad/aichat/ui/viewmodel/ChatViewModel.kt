@@ -528,7 +528,10 @@ class ChatViewModel internal constructor(
     }
 }
 
-/** Renders a conversation as a portable Markdown document; thinking content is not stored on messages, so only answer text and metadata are exported. */
+/**
+ * Renders a conversation as a portable Markdown document. Thinking content is
+ * not stored on messages, so only answer text and metadata are exported.
+ */
 internal fun formatConversationMarkdown(
     conversation: Conversation,
     messages: List<ChatMessage>,

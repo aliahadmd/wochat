@@ -91,6 +91,21 @@ class ChatTurnRunner(
         inferenceEngine.cancel()
     }
 
+    /**
+     * Runs one chat turn end to end.
+     *
+     * Genuinely complex (detekt measures 58): validation, attachment and audio
+     * limits, memory/skill context assembly, backend selection and fallback,
+     * streaming, continuation and persistence all live on this one path.
+     * Suppressed rather than raising the global threshold, so the debt stays
+     * visible and specific.
+     *
+     * Splitting it is deferred item DEBT-02 ("deduplicate send/continueResponse
+     * turn lifecycle"), which the round-1 notes gate behind the plan-006
+     * characterisation tests — those exist now, so the refactor is unblocked but
+     * deliberately out of scope for the UX round.
+     */
+    @Suppress("CyclomaticComplexMethod")
     suspend fun send(request: SendTurnRequest) {
         val prompt = request.text.trim()
         val draft = request.attachments

@@ -739,6 +739,9 @@ private suspend fun collectHealth(
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (error: Exception) {
+        // Treated as "no permissions", but the reason still matters when
+        // diagnosing why health collection silently stopped.
+        Log.w(TAG, "Could not read Health Connect permissions", error)
         emptySet()
     }
     if (!dataSource.readPermissions.all(granted::contains)) {

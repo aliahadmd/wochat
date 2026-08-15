@@ -17,6 +17,7 @@ import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -1754,6 +1755,33 @@ private fun ProjectorDownloadDialog(
     )
 }
 
+/** Type filter chips for the memory list, extracted to keep MemoryCenter readable. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MemoryTypeFilters(
+    types: List<MemoryType>,
+    selected: MemoryType?,
+    onSelect: (MemoryType?) -> Unit,
+) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        FilterChip(
+            selected = selected == null,
+            onClick = { onSelect(null) },
+            label = { Text("All") },
+        )
+        types.forEach { type ->
+            FilterChip(
+                selected = selected == type,
+                onClick = { onSelect(if (selected == type) null else type) },
+                label = { Text(type.name.lowercase().replaceFirstChar(Char::uppercase)) },
+            )
+        }
+    }
+}
+
 @Composable
 private fun MemoryCenter(
     state: MemoryUiState,
@@ -1919,27 +1947,11 @@ private fun MemoryCenter(
         }
         if (memoryTypes.size > 1) {
             item {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    FilterChip(
-                        selected = typeFilter == null,
-                        onClick = { typeFilter = null },
-                        label = { Text("All") },
-                    )
-                    memoryTypes.forEach { type ->
-                        FilterChip(
-                            selected = typeFilter == type,
-                            onClick = {
-                                typeFilter = if (typeFilter == type) null else type
-                            },
-                            label = {
-                                Text(type.name.lowercase().replaceFirstChar(Char::uppercase))
-                            },
-                        )
-                    }
-                }
+                MemoryTypeFilters(
+                    types = memoryTypes,
+                    selected = typeFilter,
+                    onSelect = { typeFilter = it },
+                )
             }
         }
         item {
