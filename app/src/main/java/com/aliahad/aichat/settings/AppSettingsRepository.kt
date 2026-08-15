@@ -65,6 +65,10 @@ class AppSettingsRepository(
         } ?: ChatQualityMode.FAST
     }
 
+    val thinkingEnabled: Flow<Boolean> = context.settingsDataStore.data.map {
+        it[Keys.thinking] ?: false
+    }
+
     val memoryEnabled: Flow<Boolean> = context.settingsDataStore.data.map {
         it[Keys.memoryEnabled] ?: true
     }
@@ -166,6 +170,10 @@ class AppSettingsRepository(
             it[Keys.thinking] = value.thinkingEnabled
             it[Keys.systemPrompt] = value.systemPrompt
         }
+    }
+
+    suspend fun setThinkingEnabled(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.thinking] = enabled }
     }
 
     suspend fun setLastQualityMode(mode: ChatQualityMode) {

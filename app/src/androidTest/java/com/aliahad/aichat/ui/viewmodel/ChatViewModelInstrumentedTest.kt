@@ -410,8 +410,13 @@ private class FakeAttachmentRepository : AttachmentRepository {
     override suspend fun selectPages(id: String, pages: Set<Int>) = Unit
     override suspend fun bind(messageId: String, conversationId: String, attachmentIds: List<String>, imageTokenBudget: Int?) = Unit
     override suspend fun contextsForMessage(messageId: String, prompt: String): List<AttachmentContext> = emptyList()
+    override suspend fun contextsForMessages(
+        messageIds: List<String>,
+        promptFor: (String) -> String,
+    ): Map<String, List<AttachmentContext>> = emptyMap()
     override suspend fun contexts(ids: List<String>, prompt: String): List<AttachmentContext> = emptyList()
     override suspend fun attachmentsForMessage(messageId: String): List<Attachment> = emptyList()
+    override suspend fun attachmentsForMessages(messageIds: List<String>): Map<String, List<Attachment>> = emptyMap()
     override suspend fun cleanupAbandonedDrafts() = Unit
     override suspend fun markInterrupted() = Unit
     override suspend fun hasActiveProcessing(): Boolean = false

@@ -318,6 +318,7 @@ fun AiChatApp(
                     onStop = chatActions::stopGeneration,
                     onContinue = chatActions::continueResponse,
                     onToggleThinking = chatActions::toggleThinking,
+                    onSetThinkingMode = chatActions::setThinkingMode,
                     onOpenSettings = { navigateTo(AppRoute.SETTINGS) },
                     onToggleSkill = chatActions::toggleSelectedSkill,
                     onAddPhotos = onAddPhotos,
@@ -448,6 +449,7 @@ private fun ChatScreen(
     onStop: () -> Unit,
     onContinue: () -> Unit,
     onToggleThinking: (String) -> Unit,
+    onSetThinkingMode: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
     onToggleSkill: (String) -> Unit,
     onAddPhotos: () -> Unit,
@@ -522,10 +524,12 @@ private fun ChatScreen(
             onInputChange = { input = it },
             sending = state.isSending,
             enabled = state.modelCatalogLoaded && selectedModel != null,
+            thinkingEnabled = state.thinkingEnabled,
             attachments = state.draftAttachments,
             skills = state.skills,
             selectedSkillIds = state.selectedSkillIds,
             onAttach = { showAttachmentSheet = true },
+            onThinkingModeChange = onSetThinkingMode,
             onRemoveSkill = onToggleSkill,
             onRemoveAttachment = onRemoveAttachment,
             onRetryAttachment = onRetryAttachment,
@@ -850,7 +854,7 @@ internal fun MessageBubble(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
-                        Text("Thinking locally…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Generating…", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 } else {
                     if (isUser) {
@@ -1022,10 +1026,12 @@ private fun Composer(
     onInputChange: (String) -> Unit,
     sending: Boolean,
     enabled: Boolean,
+    thinkingEnabled: Boolean,
     attachments: List<Attachment>,
     skills: List<SkillRecord>,
     selectedSkillIds: List<String>,
     onAttach: () -> Unit,
+    onThinkingModeChange: (Boolean) -> Unit,
     onRemoveSkill: (String) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
@@ -1058,26 +1064,35 @@ private fun Composer(
                 onPreview = onPreviewAttachment,
             )
         }
-        AnimatedVisibility(visible = selectedSkills.isNotEmpty()) {
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 8.dp),
-            ) {
-                items(selectedSkills, key = SkillRecord::id) { skill ->
-                    AssistChip(
-                        onClick = { onRemoveSkill(skill.id) },
-                        label = {
-                            Text(
-                                skill.name,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, Modifier.size(16.dp))
-                        },
-                    )
-                }
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(bottom = 8.dp),
+        ) {
+            item {
+                FilterChip(
+                    selected = thinkingEnabled,
+                    onClick = { onThinkingModeChange(!thinkingEnabled) },
+                    enabled = !sending,
+                    label = { Text("Thinking") },
+                    leadingIcon = if (thinkingEnabled) {
+                        { Icon(Icons.Default.Check, contentDescription = null, Modifier.size(16.dp)) }
+                    } else null,
+                )
+            }
+            items(selectedSkills, key = SkillRecord::id) { skill ->
+                AssistChip(
+                    onClick = { onRemoveSkill(skill.id) },
+                    label = {
+                        Text(
+                            skill.name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, Modifier.size(16.dp))
+                    },
+                )
             }
         }
         AnimatedVisibility(visible = blockingReason != null) {

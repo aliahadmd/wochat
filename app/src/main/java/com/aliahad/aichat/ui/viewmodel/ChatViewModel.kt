@@ -150,6 +150,11 @@ class ChatViewModel internal constructor(
         viewModelScope.launch {
             settings.memoryEnabled.collectLatest { memoryEnabled = it }
         }
+        viewModelScope.launch {
+            settings.thinkingEnabled.collectLatest { enabled ->
+                _uiState.update { it.copy(thinkingEnabled = enabled) }
+            }
+        }
         observeDraft(initialDraftKey)
     }
 
@@ -272,6 +277,10 @@ class ChatViewModel internal constructor(
     }
 
     fun toggleThinking(messageId: String) = runner.toggleThinking(messageId)
+
+    fun setThinkingMode(enabled: Boolean) {
+        launchCatching { settings.setThinkingEnabled(enabled) }
+    }
 
     fun toggleSelectedSkill(id: String) {
         if (_uiState.value.isSending) return

@@ -39,6 +39,7 @@ data class ChatUiState(
     val inferenceMetrics: InferenceMetrics = InferenceMetrics(),
     val residencyState: ModelResidencyState = ModelResidencyState.Idle,
     val thinking: ThinkingUiState? = null,
+    val thinkingEnabled: Boolean = false,
     val usedMemoryCount: Int = 0,
     val isSending: Boolean = false,
     val modelCatalogLoaded: Boolean = false,

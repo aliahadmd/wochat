@@ -252,7 +252,11 @@ class ChatTurnRunner(
             )
             _state.update {
                 it.copy(
-                    thinking = ThinkingUiState(requireNotNull(assistant).id),
+                    thinking = if (settings.thinkingEnabled) {
+                        ThinkingUiState(requireNotNull(assistant).id)
+                    } else {
+                        null
+                    },
                     usedMemoryCount = contextPlan.memories.size,
                 )
             }
@@ -321,7 +325,15 @@ class ChatTurnRunner(
                         assistant?.copy(content = "")?.let { reset ->
                             assistant = reset
                             chatRepository.updateMessage(reset)
-                            _state.update { it.copy(thinking = ThinkingUiState(reset.id)) }
+                            _state.update {
+                                it.copy(
+                                    thinking = if (settings.thinkingEnabled) {
+                                        ThinkingUiState(reset.id)
+                                    } else {
+                                        null
+                                    },
+                                )
+                            }
                         }
                     }
                     is GenerationEvent.Completed -> completion = event
@@ -418,7 +430,10 @@ class ChatTurnRunner(
             inferenceUseStarted = true
             messages.clear()
             _state.update {
-                it.copy(isSending = true, thinking = ThinkingUiState(target.id))
+                it.copy(
+                    isSending = true,
+                    thinking = if (settings.thinkingEnabled) ThinkingUiState(target.id) else null,
+                )
             }
             chatRepository.updateMessage(assistant)
             val messages = chatRepository.getMessages(request.conversationId)
@@ -525,7 +540,15 @@ class ChatTurnRunner(
                         keepThinking = false
                         assistant = target.copy(status = MessageStatus.STREAMING)
                         chatRepository.updateMessage(assistant)
-                        _state.update { it.copy(thinking = ThinkingUiState(target.id)) }
+                        _state.update {
+                            it.copy(
+                                thinking = if (settings.thinkingEnabled) {
+                                    ThinkingUiState(target.id)
+                                } else {
+                                    null
+                                },
+                            )
+                        }
                     }
                     is GenerationEvent.Completed -> completion = event
                     is GenerationEvent.Phase -> Unit
