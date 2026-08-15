@@ -90,7 +90,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -161,6 +163,7 @@ import com.aliahad.aichat.ui.navigation.AppRoute
 import com.aliahad.aichat.ui.viewmodel.AppShellUiState
 import com.aliahad.aichat.ui.viewmodel.AppShellViewModel
 import com.aliahad.aichat.ui.viewmodel.ChatUiState
+import com.aliahad.aichat.ui.viewmodel.UiMessage
 import com.aliahad.aichat.ui.viewmodel.ChatViewModel
 import com.aliahad.aichat.ui.viewmodel.MAX_MESSAGE_ATTACHMENTS
 import com.aliahad.aichat.ui.viewmodel.MemoryUiState
@@ -237,8 +240,20 @@ fun AiChatApp(
     }
 
     LaunchedEffect(shellState.error) {
-        shellState.error?.let {
-            snackbarHost.showSnackbar(it)
+        shellState.error?.let { message ->
+            val result = snackbarHost.showSnackbar(
+                message = message.text,
+                actionLabel = message.actionLabel,
+                // A blocking failure that vanishes after four seconds may as well
+                // not have been shown.
+                duration = if (message.important) {
+                    SnackbarDuration.Indefinite
+                } else {
+                    SnackbarDuration.Short
+                },
+                withDismissAction = message.important,
+            )
+            if (result == SnackbarResult.ActionPerformed) message.action?.invoke()
             shellActions.clearError()
         }
     }

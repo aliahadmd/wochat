@@ -256,8 +256,20 @@ class ChatViewModel internal constructor(
                 }
             }
         }
-        viewModelScope.launch {
-            runCatching { residencyController.ensureLoaded() }.onFailure(uiMessages::report)
+        viewModelScope.launch { loadModelForConversation() }
+    }
+
+    /**
+     * Loading the model is the clearest case where a retry is genuinely useful:
+     * it commonly fails for transient reasons (the runtime gate is busy, a
+     * backend fell back) and succeeds on a second attempt, so the failure gets
+     * a real Retry rather than a notice the user can only dismiss.
+     */
+    private suspend fun loadModelForConversation() {
+        runCatching { residencyController.ensureLoaded() }.onFailure { error ->
+            uiMessages.report(error, actionLabel = "Retry") {
+                viewModelScope.launch { loadModelForConversation() }
+            }
         }
     }
 

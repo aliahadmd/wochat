@@ -30,7 +30,7 @@ reusing 001–015 would make the history ambiguous.
 | 024 | Streaming scroll smoothness | P1 | M | 023 | TODO |
 | 025 | Incremental markdown rendering while streaming | P1 | M | 023 | TODO |
 | 026 | Allow composing during generation | P2 | S | 019 | TODO |
-| 027 | Error message quality and retry affordances | P2 | M | — | TODO |
+| 027 | Error message quality and retry affordances | P2 | M | — | DONE (branch `advisor/wave1-ux-foundations`. `report(Throwable)` no longer falls back to `javaClass.simpleName`, so users can no longer be shown the literal string 'SQLiteConstraintException'. Important nuance found while doing it: many throws here carry text written deliberately for users — `error("Attachments exceed the 500 MB message limit.")`, `require { "The private attachment file is missing." }` — so this is a filter, not a blanket replacement; a presentability check keeps those and rejects anything reading like plumbing. Originals are still logged in full, and diagnostics are unchanged. Errors now carry an optional action + severity: model loading gets a real Retry (it fails transiently and succeeds on a second attempt), and important failures use SnackbarDuration.Indefinite with a dismiss action instead of vanishing in 4s. 10 JVM unit tests. Not done: string-resource extraction/localisation — noted as out of scope in the plan and still outstanding.) |
 | 028 | Haptics and honest disabled states | P3 | S | — | TODO |
 | 029 | Theming, insets, and accessibility pass | P3 | M | — | TODO |
 | 030 | Docs drift + detekt wiring | P3 | S | — | TODO |

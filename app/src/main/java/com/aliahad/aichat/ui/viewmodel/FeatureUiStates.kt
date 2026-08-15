@@ -89,6 +89,6 @@ data class SkillsUiState(val skills: List<SkillRecord> = emptyList())
 
 data class AppShellUiState(
     val launchDestination: AppRoute? = null,
-    val error: String? = null,
+    val error: UiMessage? = null,
     val pendingNavigation: AppRoute? = null,
 )
