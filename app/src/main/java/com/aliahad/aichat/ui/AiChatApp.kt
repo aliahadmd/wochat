@@ -199,6 +199,7 @@ fun AiChatApp(
     onAddFiles: () -> Unit,
     onTakePhoto: () -> Unit,
     onExportOffice: (CharArray) -> Unit,
+    onExportConversation: (String) -> Unit,
     onImportOffice: () -> Unit,
     onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
     onExportDiagnostics: () -> Unit,
@@ -262,6 +263,8 @@ fun AiChatApp(
                     scope.launch { drawerState.close() }
                 },
                 onDelete = chatActions::deleteConversation,
+                onExport = onExportConversation,
+                onSearchQueryChange = chatActions::setSearchQuery,
                 onSettings = {
                     navigateTo(AppRoute.SETTINGS)
                     scope.launch { drawerState.close() }
@@ -389,6 +392,8 @@ private fun ConversationDrawer(
     onNewTemporaryChat: () -> Unit,
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onExport: (String) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
     onSettings: () -> Unit,
 ) {
     ModalDrawerSheet(modifier = Modifier.width(304.dp)) {
@@ -407,14 +412,57 @@ private fun ConversationDrawer(
                 Text("Temporary chat")
             }
             Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = state.searchQuery,
+                onValueChange = onSearchQueryChange,
+                label = { Text("Search chats") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
             Text(
-                "Conversations",
+                if (state.searchQuery.isNotBlank()) "Search results" else "Conversations",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             )
             LazyColumn(modifier = Modifier.weight(1f)) {
-                items(state.conversations, key = { it.id }) { conversation ->
+                if (state.searchQuery.isNotBlank()) {
+                    if (state.searchResults.isEmpty()) {
+                        item {
+                            Text(
+                                "No chats matched \"${state.searchQuery}\".",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                    items(state.searchResults, key = { it.conversationId }) { result ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { onSelect(result.conversationId) }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                        ) {
+                            Text(
+                                result.title,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                result.snippet,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                } else {
+                    items(state.conversations, key = { it.id }) { conversation ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -434,9 +482,13 @@ private fun ConversationDrawer(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        IconButton(onClick = { onExport(conversation.id) }) {
+                            Icon(Icons.Default.Download, contentDescription = "Export conversation as Markdown")
+                        }
                         IconButton(onClick = { onDelete(conversation.id) }) {
                             Icon(Icons.Default.Delete, contentDescription = "Delete conversation")
                         }
+                    }
                     }
                 }
             }
@@ -1035,6 +1087,9 @@ private fun ThinkingPanel(
 
 private val WHITESPACE = Regex("\\s+")
 
+// Compiled once: the thought panel re-formats the growing buffer on every flush.
+private val LIST_MARKER = Regex("""^(\s*)[*-]\s+""")
+
 private fun formatThoughtForDisplay(text: String): String =
     text
         .replace("<|channel>thought", "")
@@ -1042,7 +1097,7 @@ private fun formatThoughtForDisplay(text: String): String =
         .replace("<channel|>", "")
         .lineSequence()
         .joinToString("\n") { line ->
-            line.replace(Regex("""^(\s*)[*-]\s+""")) { match ->
+            line.replace(LIST_MARKER) { match ->
                 "${match.groupValues[1]}• "
             }
         }
@@ -1844,6 +1899,7 @@ private fun MemoryCenter(
     }
     if (exporting) {
         BackupPassphraseDialog(
+            minPassphraseLength = 12,
             title = "Encrypt Office backup",
             confirmationLabel = "Choose destination",
             busy = false,
@@ -1856,6 +1912,7 @@ private fun MemoryCenter(
     }
     if (state.pendingBackupImportUri != null) {
         BackupPassphraseDialog(
+            minPassphraseLength = 8,
             title = "Unlock Office backup",
             confirmationLabel = "Validate",
             busy = state.backupBusy,
@@ -2220,6 +2277,7 @@ private fun BackupPassphraseDialog(
     title: String,
     confirmationLabel: String,
     busy: Boolean,
+    minPassphraseLength: Int = 8,
     onDismiss: () -> Unit,
     onConfirm: (CharArray) -> Unit,
 ) {
@@ -2245,10 +2303,14 @@ private fun BackupPassphraseDialog(
                     supportingText = {
                         Text(
                             if (weakPassphrase) {
-                                "At least 8 characters. It cannot be recovered. " +
+                                "At least $minPassphraseLength characters. It cannot be " +
+                                    "recovered. Backups are encrypted with the passphrase " +
+                                    "alone, so a long one is the only brute-force defense. " +
                                     "Weak passphrase — a stronger one better protects your data."
                             } else {
-                                "At least 8 characters. It cannot be recovered."
+                                "At least $minPassphraseLength characters. It cannot be " +
+                                    "recovered. Backups are encrypted with the passphrase " +
+                                    "alone, so a long one is the only brute-force defense."
                             },
                         )
                     },
@@ -2266,7 +2328,7 @@ private fun BackupPassphraseDialog(
         confirmButton = {
             Button(
                 onClick = { onConfirm(passphrase.toCharArray()) },
-                enabled = passphrase.length >= 8 && !busy,
+                enabled = passphrase.length >= minPassphraseLength && !busy,
             ) {
                 Text(confirmationLabel)
             }

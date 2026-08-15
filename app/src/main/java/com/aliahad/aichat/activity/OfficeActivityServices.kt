@@ -244,4 +244,21 @@ private val SENSITIVE_PACKAGE_TERMS = listOf(
     "payment",
     "securityinput",
     "permissioncontroller",
+    // Messaging apps receive 2FA/OTP texts; password managers display vault
+    // entries; browsers show URL bars and autofill overlays.
+    "messaging",
+    "sms",
+    "otp",
+    "2fa",
+    "totp",
+    "authy",
+    "duo",
+    "bitwarden",
+    "keepass",
+    "lastpass",
+    "browser",
+    "chrome",
+    "firefox",
+    "brave",
+    "edge",
 )

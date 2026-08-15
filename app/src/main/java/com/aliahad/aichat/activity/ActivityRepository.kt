@@ -3,13 +3,13 @@ package com.aliahad.aichat.activity
 import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.ActivitySourceStats
 import com.aliahad.aichat.core.MemorySensitivity
+import com.aliahad.aichat.core.sha256
 import com.aliahad.aichat.data.ActivityEventEntity
 import com.aliahad.aichat.data.ActivitySourceStatsRow
 import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.memory.SensitiveTextRedactor
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
-import java.security.MessageDigest
 import java.util.UUID
 
 interface ActivityRepository {
@@ -75,8 +75,14 @@ class RoomActivityRepository(
         sensitivity: MemorySensitivity,
         stableKey: String?,
     ) {
-        val redactedTitle = title?.let(SensitiveTextRedactor::redact)?.take(500)
-        val redacted = text?.let(SensitiveTextRedactor::redact)?.take(8_000)
+        val redactedTitle = title
+            ?.let(OneTimeCodeRedactor::redact)
+            ?.let(SensitiveTextRedactor::redact)
+            ?.take(500)
+        val redacted = text
+            ?.let(OneTimeCodeRedactor::redact)
+            ?.let(SensitiveTextRedactor::redact)
+            ?.take(8_000)
         val key = stableKey ?: UUID.randomUUID().toString()
         dao.insert(
             ActivityEventEntity(
@@ -103,8 +109,3 @@ private fun ActivitySourceStatsRow.toDomain() = ActivitySourceStats(
     eventCount = eventCount,
     lastEventAt = lastEventAt,
 )
-
-private fun sha256(value: String): String =
-    MessageDigest.getInstance("SHA-256")
-        .digest(value.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }

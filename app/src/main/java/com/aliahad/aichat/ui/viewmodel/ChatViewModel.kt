@@ -1,5 +1,6 @@
 package com.aliahad.aichat.ui.viewmodel
 
+import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -8,7 +9,10 @@ import com.aliahad.aichat.attachment.AttachmentRepository
 import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
+import com.aliahad.aichat.core.ChatMessage
+import com.aliahad.aichat.core.Conversation
 import com.aliahad.aichat.core.DownloadStatus
+import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
 import com.aliahad.aichat.core.ModelRecord
@@ -22,7 +26,9 @@ import com.aliahad.aichat.settings.AppSettingsRepository
 import com.aliahad.aichat.skill.MAX_SELECTED_SKILLS
 import com.aliahad.aichat.skill.SkillRepository
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,10 +36,13 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.Instant
 import java.util.UUID
 
 class ChatViewModel internal constructor(
     private val savedStateHandle: SavedStateHandle,
+    private val application: Application,
     private val chatRepository: ChatRepository,
     private val modelRepository: ModelRepository,
     private val skillRepository: SkillRepository,
@@ -74,6 +83,7 @@ class ChatViewModel internal constructor(
     private var messagesJob: Job? = null
     private var draftJob: Job? = null
     private var generationJob: Job? = null
+    private var searchJob: Job? = null
     private var observedConversationId: String? = null
     private var memoryEnabled: Boolean = true
 
@@ -264,6 +274,49 @@ class ChatViewModel internal constructor(
         generationJob?.cancel()
     }
 
+    /** Debounced full-text chat search across all conversations. */
+    fun setSearchQuery(query: String) {
+        _uiState.update { it.copy(searchQuery = query) }
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            _uiState.update { it.copy(searchResults = emptyList()) }
+            return
+        }
+        searchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MILLIS)
+            val results = runCatching { chatRepository.searchConversations(query) }
+                .onFailure(uiMessages::report)
+                .getOrDefault(emptyList())
+            _uiState.update { state ->
+                if (state.searchQuery.trim() == query.trim()) {
+                    state.copy(searchResults = results)
+                } else {
+                    state
+                }
+            }
+        }
+    }
+
+    /** Renders the conversation as Markdown and writes it to the user-selected document. */
+    fun exportConversationMarkdown(uri: Uri, conversationId: String) {
+        viewModelScope.launch {
+            runCatching {
+                val conversation = chatRepository.conversation(conversationId)
+                    ?: error("Conversation was not found.")
+                val messages = chatRepository.getMessages(conversationId)
+                val attachments = attachmentRepository.attachmentsForMessages(
+                    messages.map(ChatMessage::id),
+                )
+                val markdown = formatConversationMarkdown(conversation, messages, attachments)
+                withContext(Dispatchers.IO) {
+                    application.contentResolver.openOutputStream(uri)?.use { output ->
+                        output.write(markdown.toByteArray(Charsets.UTF_8))
+                    } ?: error("Unable to open the export destination.")
+                }
+            }.onFailure(uiMessages::report)
+        }
+    }
+
     fun continueResponse() {
         if (generationJob?.isActive == true) return
         val state = _uiState.value
@@ -389,7 +442,34 @@ class ChatViewModel internal constructor(
     private companion object {
         const val MAX_ATTACHMENTS = 20
         const val MAX_ATTACHMENT_BYTES = 500L * 1024 * 1024
+        const val SEARCH_DEBOUNCE_MILLIS = 300L
         const val KEY_SELECTED_CONVERSATION_ID = "selected_conversation_id"
         const val KEY_DRAFT_KEY = "draft_key"
+    }
+}
+
+/** Renders a conversation as a portable Markdown document; thinking content is not stored on messages, so only answer text and metadata are exported. */
+internal fun formatConversationMarkdown(
+    conversation: Conversation,
+    messages: List<ChatMessage>,
+    attachmentsByMessage: Map<String, List<Attachment>>,
+): String = buildString {
+    appendLine("# ${conversation.title}")
+    appendLine()
+    appendLine("_Exported from wochat on ${Instant.now()}_")
+    messages.forEach { message ->
+        appendLine()
+        appendLine(
+            "## ${message.role.name.lowercase().replaceFirstChar { it.uppercase() }} · " +
+                Instant.ofEpochMilli(message.createdAt),
+        )
+        message.stopReason
+            ?.takeIf { it != GenerationStopReason.EOG }
+            ?.let { appendLine("<!-- stopped early: ${it.name.lowercase()} -->") }
+        attachmentsByMessage[message.id]?.forEach { attachment ->
+            appendLine("- attachment: ${attachment.displayName} (${attachment.kind.name.lowercase()})")
+        }
+        appendLine()
+        appendLine(message.content.ifBlank { "_(no text)_" })
     }
 }

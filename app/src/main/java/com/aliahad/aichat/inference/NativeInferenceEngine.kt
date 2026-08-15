@@ -515,10 +515,11 @@ class NativeInferenceEngine(
 /**
  * Summarizes every input [restoreSession] feeds to the native layer: the
  * system prompt and thinking flag shape the native prompt, while the history
- * size plus the last message id proxy the replayed turns (messages are
- * immutable rows, so an unchanged last id means unchanged content). Any new
- * generation setting consumed by the native restore must join this string or
- * the silent-staleness skip returns.
+ * size plus the last message id and content proxy the replayed turns. Content
+ * participates because continuations mutate the target assistant row in place,
+ * so an unchanged last id does NOT imply unchanged content. Any new generation
+ * setting consumed by the native restore must join this string or the
+ * silent-staleness skip returns.
  */
 internal fun restoreFingerprint(
     conversationId: String,
@@ -528,7 +529,8 @@ internal fun restoreFingerprint(
     settings.thinkingEnabled.toString() + '\u0000' +
     settings.systemPrompt.hashCode() + '\u0000' +
     history.size + '\u0000' +
-    history.lastOrNull()?.message?.id.hashCode()
+    history.lastOrNull()?.message?.id.hashCode() + '\u0000' +
+    history.lastOrNull()?.message?.content.hashCode()
 
 internal fun shouldSkipRestore(
     activeConversationId: String?,

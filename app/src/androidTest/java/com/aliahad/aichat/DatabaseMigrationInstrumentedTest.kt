@@ -22,7 +22,7 @@ class DatabaseMigrationInstrumentedTest {
     )
 
     @Test
-    fun migrationOneToSixteenPreservesChatsAndRemovesRetiredTables() {
+    fun migrationOneToSeventeenPreservesChatsAndRemovesRetiredTables() {
         helper.createDatabase(DATABASE_NAME, 1).apply {
             execSQL(
                 "INSERT INTO conversations(id, title, createdAt, updatedAt) " +
@@ -151,7 +151,7 @@ class DatabaseMigrationInstrumentedTest {
     }
 
     @Test
-    fun migrationNineToSixteenPreservesAttachmentAndRemovesRetiredTables() {
+    fun migrationNineToSeventeenPreservesAttachmentAndRemovesRetiredTables() {
         val name = "migration-9-16"
         helper.createDatabase(name, 9).apply {
             insertLegacyAttachment("existing-attachment", "keep.txt", "TEXT")

@@ -1,7 +1,9 @@
 package com.aliahad.aichat.backup
 
 import com.aliahad.aichat.data.migrationResidueTargets
+import com.aliahad.aichat.data.recoverInterruptedMigration
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -19,6 +21,45 @@ class DatabaseEncryptionSweepTest {
     val temporaryFolder = TemporaryFolder()
 
     private val sqliteHeader = "SQLite format 3\u0000".toByteArray(StandardCharsets.US_ASCII)
+
+    @Test
+    fun interruptedMigrationRestoresTheOnlySurvivingPlaintextCopy() {
+        // Process death between the two renames inside replacePlaintextWithEncrypted:
+        // the main database is absent and the backup is the only surviving copy.
+        val dir = temporaryFolder.newFolder("databases-recover")
+        val database = File(dir, "aichat.db")
+        val backup = File(dir, "aichat.db.plaintext-backup").apply { writeBytes(sqliteHeader) }
+
+        assertTrue(recoverInterruptedMigration(database, backup))
+
+        assertTrue(database.exists())
+        assertFalse(backup.exists())
+        assertTrue(database.readBytes().contentEquals(sqliteHeader))
+    }
+
+    @Test
+    fun recoveryIsANoOpWhenTheMainDatabaseExists() {
+        val dir = temporaryFolder.newFolder("databases-recover-none")
+        val database = File(dir, "aichat.db").apply { writeBytes(ByteArray(128) { 0x42 }) }
+        val backup = File(dir, "aichat.db.plaintext-backup").apply { writeBytes(sqliteHeader) }
+
+        assertFalse(recoverInterruptedMigration(database, backup))
+
+        assertTrue(database.length() == 128L.toLong())
+        assertTrue(backup.exists())
+    }
+
+    @Test
+    fun recoveryIsANoOpWhenNoBackupExists() {
+        val dir = temporaryFolder.newFolder("databases-recover-missing")
+        val database = File(dir, "aichat.db")
+        val backup = File(dir, "aichat.db.plaintext-backup")
+
+        assertFalse(recoverInterruptedMigration(database, backup))
+
+        assertFalse(database.exists())
+        assertFalse(backup.exists())
+    }
 
     @Test
     fun plaintextMainDatabasePreservesAllMigrationSources() {

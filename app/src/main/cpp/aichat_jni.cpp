@@ -889,9 +889,6 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeNextToken(
             );
         }
         const std::string piece = common_token_to_piece(context, token, true);
-        if (generated_tokens <= 8) {
-            LOGI("Token %d id=%d piece=%s", generated_tokens, token, piece.c_str());
-        }
         if (piece.rfind("<unused", 0) == 0) {
             consecutive_unused_tokens++;
             if (consecutive_unused_tokens >= 8) {

@@ -74,6 +74,16 @@ class MainActivity : ComponentActivity() {
                 val diagnosticsLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.CreateDocument("application/json"),
                 ) { uri -> uri?.let(modelSetupViewModel::exportDiagnostics) }
+                var pendingMarkdownExportId by remember { mutableStateOf<String?>(null) }
+                val markdownExportLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("text/markdown"),
+                ) { uri ->
+                    val conversationId = pendingMarkdownExportId
+                    pendingMarkdownExportId = null
+                    if (uri != null && conversationId != null) {
+                        chatViewModel.exportConversationMarkdown(uri, conversationId)
+                    }
+                }
                 val phonePermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions(),
                 ) {
@@ -155,6 +165,17 @@ class MainActivity : ComponentActivity() {
                             officeExportLauncher.launch(
                                 "wochat-office-${System.currentTimeMillis()}.aichatoffice",
                             )
+                        },
+                        onExportConversation = { conversationId ->
+                            pendingMarkdownExportId = conversationId
+                            val safeName = chatState.conversations
+                                .firstOrNull { it.id == conversationId }?.title.orEmpty()
+                                .replace(Regex("[^A-Za-z0-9-_ ]+"), "")
+                                .trim()
+                                .replace(' ', '-')
+                                .take(40)
+                                .ifEmpty { "chat" }
+                            markdownExportLauncher.launch("$safeName.md")
                         },
                         onImportOffice = {
                             officeImportLauncher.launch(

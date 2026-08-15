@@ -538,10 +538,13 @@ class ChatTurnRunner(
                                 )
                             }
                         }
-                        val merged = mergeContinuation(target.content, continuation.toString())
                         val now = System.currentTimeMillis()
                         if (now - lastSavedAt >= 250 || continuation.length < 40) {
-                            assistant = assistant.copy(content = merged)
+                            // Overlap dedup scans the accumulated continuation; only pay
+                            // it at save boundaries, not on every streamed delta.
+                            assistant = assistant.copy(
+                                content = mergeContinuation(target.content, continuation.toString()),
+                            )
                             chatRepository.updateMessage(assistant)
                             lastSavedAt = now
                         }

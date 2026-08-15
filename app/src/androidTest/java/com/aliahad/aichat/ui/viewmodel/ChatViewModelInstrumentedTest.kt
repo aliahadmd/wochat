@@ -41,6 +41,7 @@ import com.aliahad.aichat.core.TurnOrigin
 import com.aliahad.aichat.core.UserTurn
 import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.data.ChatRepository
+import com.aliahad.aichat.data.ChatSearchResult
 import com.aliahad.aichat.inference.InferenceEngine
 import com.aliahad.aichat.memory.ConversationSummaryRepository
 import com.aliahad.aichat.memory.MemoryRepository
@@ -122,6 +123,7 @@ class ChatViewModelInstrumentedTest {
 
         viewModel = ChatViewModel(
             savedStateHandle = SavedStateHandle(),
+            application = ApplicationProvider.getApplicationContext(),
             chatRepository = fakeChatRepo,
             modelRepository = fakeModelRepo,
             skillRepository = fakeSkillRepo,
@@ -331,6 +333,9 @@ private class FakeChatRepository : ChatRepository {
 
     override fun messages(conversationId: String): Flow<List<ChatMessage>> = flowOf(emptyList())
     override suspend fun getMessages(conversationId: String): List<ChatMessage> = emptyList()
+    override suspend fun conversation(id: String): Conversation? =
+        _conversations.value.firstOrNull { it.id == id }
+    override suspend fun searchConversations(query: String): List<ChatSearchResult> = emptyList()
     override suspend fun createConversation(qualityMode: ChatQualityMode, temporary: Boolean): Conversation {
         val c = nextCreatedConversation ?: Conversation(
             id = "auto-${System.nanoTime()}",

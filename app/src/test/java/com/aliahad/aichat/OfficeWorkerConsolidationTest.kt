@@ -145,20 +145,41 @@ class OfficeWorkerConsolidationTest {
     }
 
     @Test
-    fun healthMetricKeysAreScopedToTheCollectionWindow() {
+    fun healthMetricKeysCollapseSameDayWindowsIntoOneKeyPerDay() {
         val windowStart = 1_781_200_000_000L
-        // Keys derive from the window itself, not from the collection instant or
-        // the local day: same window -> same key, different window -> new key.
-        assertEquals("health:steps:$windowStart", healthStepsStableKey(windowStart))
-        assertEquals("health:sleep:$windowStart", healthSleepStableKey(windowStart))
-        assertEquals(healthStepsStableKey(windowStart), healthStepsStableKey(windowStart))
-        assertNotEquals(
+        // The rolling 24-hour window is sampled every 6 hours; every run of the same
+        // day shares one window-start date, so overlapping snapshots dedupe to one
+        // row per day instead of double-counting steps/sleep.
+        val day = java.time.Instant.ofEpochMilli(windowStart)
+            .atZone(java.time.ZoneId.systemDefault())
+            .toLocalDate()
+            .toEpochDay()
+        assertEquals("health:steps:$day", healthStepsStableKey(windowStart))
+        assertEquals("health:sleep:$day", healthSleepStableKey(windowStart))
+        assertEquals(
             healthStepsStableKey(windowStart),
             healthStepsStableKey(windowStart + TimeUnit.HOURS.toMillis(6)),
         )
+        assertEquals(
+            healthStepsStableKey(windowStart + TimeUnit.HOURS.toMillis(6)),
+            healthStepsStableKey(windowStart + TimeUnit.HOURS.toMillis(12)),
+        )
+        assertEquals(
+            healthSleepStableKey(windowStart),
+            healthSleepStableKey(windowStart + TimeUnit.HOURS.toMillis(18)),
+        )
+    }
+
+    @Test
+    fun healthMetricKeysDifferAcrossDays() {
+        val windowStart = 1_781_200_000_000L
+        assertNotEquals(
+            healthStepsStableKey(windowStart),
+            healthStepsStableKey(windowStart + TimeUnit.DAYS.toMillis(1)),
+        )
         assertNotEquals(
             healthSleepStableKey(windowStart),
-            healthSleepStableKey(windowStart + TimeUnit.HOURS.toMillis(6)),
+            healthSleepStableKey(windowStart + TimeUnit.DAYS.toMillis(1)),
         )
     }
 

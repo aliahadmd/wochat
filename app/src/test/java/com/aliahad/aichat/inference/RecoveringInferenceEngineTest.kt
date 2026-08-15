@@ -103,6 +103,41 @@ class RecoveringInferenceEngineTest {
     }
 
     @Test
+    fun staleFallbackFromCancelledRestoreDoesNotLeakIntoNextTurn() = runTest {
+        val cpu = FakeInferenceEngine(BackendMode.CPU).apply {
+            generation = { flowOf(GenerationEvent.Completed(GenerationStopReason.EOG, 0, 0)) }
+        }
+        val vulkan = FakeInferenceEngine(BackendMode.VULKAN).apply {
+            restoreFailure = BackendInferenceException(
+                BackendMode.VULKAN,
+                BackendFailureStage.RESTORE,
+                "restore crash",
+            )
+        }
+        val policy = FakeRecoveryPolicy(BackendMode.VULKAN)
+        val engine = RecoveringInferenceEngine(cpu, vulkan, policy)
+
+        engine.loadModel("/model", "Gemma", modelConfiguration())
+        // Turn 1: the Vulkan restore fails mid-turn and the engine recovers to CPU,
+        // queueing a non-destructive fallback event. The turn is then cancelled
+        // before its generate runs, leaving the event pending.
+        engine.restoreSession("chat", emptyList(), GenerationSettings())
+        assertEquals(BackendMode.CPU, (engine.state.value as InferenceState.Ready).backend)
+
+        // Turn 2: a fresh restore invalidates the stale signal; generate must not
+        // emit a spurious BackendFallback for a turn that never touched Vulkan.
+        engine.restoreSession("chat2", emptyList(), GenerationSettings())
+        val events = engine.generate(
+            UserTurn("chat2", "hello"),
+            GenerationSettings(),
+            InferenceExecutionProfile.NORMAL,
+        ).toList()
+
+        assertTrue(events.filterIsInstance<GenerationEvent.BackendFallback>().isEmpty())
+        assertTrue(events.any { it is GenerationEvent.Completed })
+    }
+
+    @Test
     fun cpuFailureIsNotRetried() = runTest {
         val cpu = FakeInferenceEngine(BackendMode.CPU).apply {
             generation = { flow { throw IllegalStateException("cpu failed") } }
@@ -282,6 +317,7 @@ private class FakeInferenceEngine(
     override var modelContextLimit: Int = 128_000
     override var activeContextSize: Int = 0
     var loadFailure: Throwable? = null
+    var restoreFailure: Throwable? = null
     var benchmarkFailure: Throwable? = null
     var benchmarkResult: Map<BackendMode, InferenceBenchmarkSample> = emptyMap()
     var generation: () -> Flow<GenerationEvent> = {
@@ -321,6 +357,7 @@ private class FakeInferenceEngine(
         settings: GenerationSettings,
     ) {
         restoreCount++
+        restoreFailure?.let { throw it }
     }
 
     override fun generate(

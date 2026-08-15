@@ -717,11 +717,12 @@ private suspend fun collectCalendar(context: Context, container: AppContainer) {
 /**
  * Reads the last 24 hours of Health Connect data (steps, sleep, exercise) and
  * records it as HEALTH activity events. Stable keys are scoped to the data
- * itself: metrics key off the collection window start epoch (not the collection
- * day, so collection hour and timezone changes cannot double-count), and
- * exercise sessions key off the session start time plus title (not a positional
- * index, so a shifting session set cannot remap records). Repeated collections
- * of the same window stay no-ops at the DAO level (insert IGNORE).
+ * itself: metrics key off the local date of the collection window start, so
+ * the overlapping 24-hour windows sampled every few hours collapse into one
+ * row per day instead of one row per collection run, and exercise sessions key
+ * off the session start time plus title (not a positional index, so a shifting
+ * session set cannot remap records). Repeated collections of the same day stay
+ * no-ops at the DAO level (insert IGNORE).
  */
 private suspend fun collectHealth(
     @Suppress("UNUSED_PARAMETER") context: Context,
@@ -786,11 +787,22 @@ private suspend fun collectHealth(
 
 /** Stable key for a health metric snapshot, scoped to its collection window. */
 internal fun healthStepsStableKey(windowStartEpochMillis: Long): String =
-    "health:steps:$windowStartEpochMillis"
+    "health:steps:${healthWindowDayKey(windowStartEpochMillis)}"
 
 /** Stable key for a health sleep snapshot, scoped to its collection window. */
 internal fun healthSleepStableKey(windowStartEpochMillis: Long): String =
-    "health:sleep:$windowStartEpochMillis"
+    "health:sleep:${healthWindowDayKey(windowStartEpochMillis)}"
+
+/**
+ * Day-scoped key for the rolling health window. The 24-hour window is sampled on a
+ * sub-daily cadence, so every run of a given day shares one window-start date and the
+ * overlapping snapshots dedupe to a single row per day.
+ */
+internal fun healthWindowDayKey(windowStartEpochMillis: Long): Long =
+    Instant.ofEpochMilli(windowStartEpochMillis)
+        .atZone(ZoneId.systemDefault())
+        .toLocalDate()
+        .toEpochDay()
 
 /** Stable key for an exercise session, keyed by session identity, not position. */
 internal fun healthExerciseStableKey(startedAtMillis: Long, title: String): String =

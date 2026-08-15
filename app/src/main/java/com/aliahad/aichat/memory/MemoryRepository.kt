@@ -12,6 +12,7 @@ import com.aliahad.aichat.core.MemoryStatus
 import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.ActivitySource
+import com.aliahad.aichat.core.sha256
 import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.data.MemoryCorrectionEntity
 import com.aliahad.aichat.data.MemoryItemEntity
@@ -24,7 +25,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
-import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -610,6 +610,21 @@ internal data class ActivityRetrievalIntent(
     val broadPhoneActivity: Boolean,
 )
 
+// Compiled once: retrieval intent runs on every memory-enabled chat turn.
+private val APP_USAGE_INTENT = Regex("""\b(app|apps|application|screen time|used|opened)\b""")
+private val APP_INSTALL_INTENT = Regex("""\b(install|installed|uninstall|package|app inventory)\b""")
+private val NOTIFICATION_INTENT = Regex("""\b(notification|notifications|alert|alerts)\b""")
+private val ACCESSIBILITY_INTENT =
+    Regex("""\b(on my screen|screen context|visible text|what was i reading)\b""")
+private val LOCATION_INTENT = Regex("""\b(where was i|location|locations|place|places|gps)\b""")
+private val SENSOR_INTENT =
+    Regex("""\b(sensor|sensors|temperature|light|pressure|humidity|step|steps)\b""")
+private val CONTACT_INTENT = Regex("""\b(contact|contacts|address book)\b""")
+private val CALENDAR_INTENT =
+    Regex("""\b(calendar|meeting|meetings|appointment|appointments|schedule|event|events)\b""")
+private val BROAD_PHONE_ACTIVITY_INTENT =
+    Regex("""\b(what did i do|my day|my week|recent phone activity|phone activity|activity today)\b""")
+
 internal fun activityRetrievalIntent(
     query: String,
     now: Long,
@@ -617,34 +632,32 @@ internal fun activityRetrievalIntent(
 ): ActivityRetrievalIntent {
     val normalized = normalize(query)
     val sources = buildSet {
-        if (Regex("""\b(app|apps|application|screen time|used|opened)\b""").containsMatchIn(normalized)) {
+        if (APP_USAGE_INTENT.containsMatchIn(normalized)) {
             add(ActivitySource.APP_USAGE)
         }
-        if (Regex("""\b(install|installed|uninstall|package|app inventory)\b""").containsMatchIn(normalized)) {
+        if (APP_INSTALL_INTENT.containsMatchIn(normalized)) {
             add(ActivitySource.APP_INSTALL)
         }
-        if (Regex("""\b(notification|notifications|alert|alerts)\b""").containsMatchIn(normalized)) {
+        if (NOTIFICATION_INTENT.containsMatchIn(normalized)) {
             add(ActivitySource.NOTIFICATION)
         }
-        if (Regex("""\b(on my screen|screen context|visible text|what was i reading)\b""").containsMatchIn(normalized)) {
+        if (ACCESSIBILITY_INTENT.containsMatchIn(normalized)) {
             add(ActivitySource.ACCESSIBILITY)
         }
-        if (Regex("""\b(where was i|location|locations|place|places|gps)\b""").containsMatchIn(normalized)) {
+        if (LOCATION_INTENT.containsMatchIn(normalized)) {
             add(ActivitySource.LOCATION)
         }
-        if (Regex("""\b(sensor|sensors|temperature|light|pressure|humidity|step|steps)\b""").containsMatchIn(normalized)) {
+        if (SENSOR_INTENT.containsMatchIn(normalized)) {
             add(ActivitySource.SENSOR)
         }
-        if (Regex("""\b(contact|contacts|address book)\b""").containsMatchIn(normalized)) {
+        if (CONTACT_INTENT.containsMatchIn(normalized)) {
             add(ActivitySource.CONTACT)
         }
-        if (Regex("""\b(calendar|meeting|meetings|appointment|appointments|schedule|event|events)\b""").containsMatchIn(normalized)) {
+        if (CALENDAR_INTENT.containsMatchIn(normalized)) {
             add(ActivitySource.CALENDAR)
         }
     }
-    val broad = Regex(
-        """\b(what did i do|my day|my week|recent phone activity|phone activity|activity today)\b""",
-    ).containsMatchIn(normalized)
+    val broad = BROAD_PHONE_ACTIVITY_INTENT.containsMatchIn(normalized)
     val today = Instant.ofEpochMilli(now).atZone(zoneId).toLocalDate()
     val (periodStart, periodEnd) = when {
         "yesterday" in normalized -> {
@@ -849,7 +862,11 @@ private fun com.aliahad.aichat.core.ActivitySource.retrievalTerms(): String = wh
 }
 
 object SensitiveTextRedactor {
-    private val otp = Regex("""(?i)\b(?:otp|verification\s+code|one[- ]time\s+code)\D{0,12}(\d{4,8})\b""")
+    private val otp = Regex(
+        """(?i)\b(?:otp|2fa|mfa|totp|passcode|pin|verify|verification|""" +
+            """verification\s+code|one[- ]time\s+code|backup\s+code|recovery\s+code|""" +
+            """code|secret|token|login)\D{0,12}(\d{4,8})\b""",
+    )
     private val password = Regex("""(?i)\b(password|passcode|pin)\s*(?:is|=|:)\s*\S+""")
     private val card = Regex("""\b(?:\d[ -]*?){13,19}\b""")
 
@@ -879,13 +896,11 @@ private fun inferType(content: String): MemoryType {
 private fun titleFor(content: String): String =
     content.replace(Regex("\\s+"), " ").trim().take(96).ifEmpty { "Memory" }
 
-private fun normalize(content: String): String =
-    content.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+// Compiled once: normalize runs per candidate row on every memory search.
+private val NORMALIZE_SEPARATOR = Regex("[^\\p{L}\\p{N}]+")
 
-private fun sha256(value: String): String =
-    MessageDigest.getInstance("SHA-256")
-        .digest(value.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
+private fun normalize(content: String): String =
+    content.lowercase().replace(NORMALIZE_SEPARATOR, " ").trim()
 
 private fun MemoryItemEntity.toDomain() = MemoryItem(
     id = id,

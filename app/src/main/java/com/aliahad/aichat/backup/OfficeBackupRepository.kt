@@ -48,7 +48,9 @@ class EncryptedOfficeBackupRepository(
     private val settings: AppSettingsRepository,
 ) : OfficeBackupRepository {
     override suspend fun export(uri: Uri, passphrase: CharArray) = withContext(Dispatchers.IO) {
-        require(passphrase.size >= 8) { "Use a backup passphrase with at least 8 characters" }
+        // Backups are portable files derived with PBKDF2, so the only brake on
+        // offline brute-force is passphrase entropy; keep the minimum high.
+        require(passphrase.size >= 12) { "Use a backup passphrase with at least 12 characters" }
         val working = createWorkingDirectory("export")
         try {
             val snapshot = File(working, DATABASE_ENTRY)

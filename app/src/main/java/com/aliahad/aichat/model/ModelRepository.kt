@@ -70,6 +70,7 @@ class DefaultModelRepository(
         File(context.noBackupFilesDir, "models").apply { mkdirs() }
 
     override suspend fun ensureOfficialRecords() {
+        recoverInterruptedInstalls()
         retireUnsupportedArtifacts()
         ModelConstants.OFFICIAL_MODELS.forEach { spec ->
             val existing = dao.get(spec.id)
@@ -341,6 +342,21 @@ class DefaultModelRepository(
                 error = null,
             ),
         )
+    }
+
+    /**
+     * Restores `*.old` install backups left by a process death inside AtomicFileInstaller's
+     * rename sequence, before the retire sweep below can classify them as stray files. Must
+     * run before [retireUnsupportedArtifacts].
+     */
+    private suspend fun recoverInterruptedInstalls() = withContext(Dispatchers.IO) {
+        modelsDirectory().listFiles().orEmpty()
+            .filter { it.isFile && it.name.endsWith(".old") }
+            .forEach { backup ->
+                AtomicFileInstaller.recoverInterrupted(
+                    File(modelsDirectory(), backup.name.removeSuffix(".old")),
+                )
+            }
     }
 
     private suspend fun retireUnsupportedArtifacts() = withContext(Dispatchers.IO) {

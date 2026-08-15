@@ -15,6 +15,8 @@ interface ChatRepository {
     val conversations: Flow<List<Conversation>>
     fun messages(conversationId: String): Flow<List<ChatMessage>>
     suspend fun getMessages(conversationId: String): List<ChatMessage>
+    suspend fun conversation(id: String): Conversation?
+    suspend fun searchConversations(query: String): List<ChatSearchResult>
     suspend fun createConversation(
         qualityMode: ChatQualityMode = ChatQualityMode.FAST,
         temporary: Boolean = false,
@@ -46,6 +48,30 @@ class RoomChatRepository(
 
     override suspend fun getMessages(conversationId: String): List<ChatMessage> =
         messagesDao.getForConversation(conversationId).map(MessageEntity::toDomain)
+
+    override suspend fun conversation(id: String): Conversation? =
+        conversationsDao.get(id)?.toDomain()
+
+    override suspend fun searchConversations(query: String): List<ChatSearchResult> {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        val hits = messagesDao.searchContent(trimmed)
+        if (hits.isEmpty()) return emptyList()
+        val conversationsById = hits.map(MessageEntity::conversationId).distinct()
+            .mapNotNull { conversationsDao.get(it) }
+            .associateBy(ConversationEntity::id)
+        return hits.groupBy(MessageEntity::conversationId)
+            .mapNotNull { (conversationId, messages) ->
+                val conversation = conversationsById[conversationId] ?: return@mapNotNull null
+                ChatSearchResult(
+                    conversationId = conversationId,
+                    title = conversation.title,
+                    snippet = snippetAround(messages.first().content, trimmed),
+                    updatedAt = conversation.updatedAt,
+                )
+            }
+            .sortedByDescending(ChatSearchResult::updatedAt)
+    }
 
     override suspend fun createConversation(
         qualityMode: ChatQualityMode,
@@ -99,7 +125,12 @@ class RoomChatRepository(
     override suspend fun updateMessage(message: ChatMessage) {
         database.withTransaction {
             messagesDao.update(message.toEntity())
-            conversationsDao.touch(message.conversationId, System.currentTimeMillis())
+            // Touching re-emits the whole conversations flow; during streaming that
+            // fires ~4x/second. Only advance the conversation timestamp once the
+            // message reaches a terminal state.
+            if (message.status != MessageStatus.STREAMING) {
+                conversationsDao.touch(message.conversationId, System.currentTimeMillis())
+            }
         }
     }
 
@@ -117,6 +148,26 @@ class RoomChatRepository(
 
 private fun ConversationEntity.toDomain() =
     Conversation(id, title, createdAt, updatedAt, qualityMode, temporary)
+
+/** A full-text chat search hit: the newest matching message per conversation. */
+data class ChatSearchResult(
+    val conversationId: String,
+    val title: String,
+    val snippet: String,
+    val updatedAt: Long,
+)
+
+internal fun snippetAround(content: String, query: String, radius: Int = 60): String {
+    val index = content.indexOf(query, ignoreCase = true)
+    if (index < 0) return content.take(radius * 2).replace('\n', ' ')
+    val start = (index - radius).coerceAtLeast(0)
+    val end = (index + query.length + radius).coerceAtMost(content.length)
+    return buildString {
+        if (start > 0) append('…')
+        append(content.substring(start, end).replace('\n', ' '))
+        if (end < content.length) append('…')
+    }
+}
 
 private fun Conversation.toEntity() =
     ConversationEntity(id, title, createdAt, updatedAt, qualityMode, temporary)

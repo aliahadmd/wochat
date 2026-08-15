@@ -49,6 +49,9 @@ class ModelDownloadWorker(
                         url = spec.downloadUrl,
                         expectedBytes = spec.sizeBytes,
                         sha256 = spec.sha256,
+                        // Null while the device is locked (the token key requires an
+                        // unlocked device); the official artifacts are public, so the
+                        // download proceeds without authentication in that case.
                         authorization = app.container.settings.token()?.let { "Bearer $it" },
                     ),
                     partial = partial,

@@ -155,6 +155,12 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY createdAt ASC")
     suspend fun getForConversation(conversationId: String): List<MessageEntity>
 
+    @Query(
+        "SELECT * FROM messages WHERE content LIKE '%' || :query || '%' " +
+            "ORDER BY createdAt DESC LIMIT 50",
+    )
+    suspend fun searchContent(query: String): List<MessageEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(message: MessageEntity)
 

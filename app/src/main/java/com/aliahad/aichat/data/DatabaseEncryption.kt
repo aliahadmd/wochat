@@ -122,6 +122,7 @@ class DatabaseEncryptionMigrator(
     }
 
     fun sweepResidueFromFailedMigration() {
+        if (recoverInterruptedMigration(databaseFile, backupFile)) return
         migrationResidueTargets(databaseFile, backupFile, encryptedTemp)
             .forEach { deleteDatabaseFiles(it) }
     }
@@ -183,6 +184,20 @@ class DatabaseEncryptionMigrator(
         File(file.path + "-shm").delete()
         File(file.path + "-journal").delete()
     }
+}
+
+/**
+ * Recovers from a process death between the two renames inside
+ * `replacePlaintextWithEncrypted` (plaintext -> backup succeeded, encrypted-temp -> database
+ * did not). In that state the main database is absent and the backup file is the only
+ * surviving copy, so it must be restored — never swept — or the next residue sweep would
+ * delete it and lose all data. Returns true when the backup was restored, in which case the
+ * plaintext-to-encrypted migration simply re-runs on the next open.
+ */
+internal fun recoverInterruptedMigration(databaseFile: File, backupFile: File): Boolean {
+    if (databaseFile.exists() || !backupFile.exists()) return false
+    check(backupFile.renameTo(databaseFile)) { "Unable to recover the plaintext database" }
+    return true
 }
 
 /**

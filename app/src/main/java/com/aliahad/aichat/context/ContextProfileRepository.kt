@@ -9,12 +9,12 @@ import com.aliahad.aichat.core.ContextVerificationMetrics
 import com.aliahad.aichat.core.ContextVerificationState
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelRecord
+import com.aliahad.aichat.core.sha256
 import com.aliahad.aichat.data.ModelContextProfileDao
 import com.aliahad.aichat.data.ModelContextProfileEntity
 import com.aliahad.aichat.settings.AppSettingsRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
-import java.security.MessageDigest
 
 interface ContextProfileRepository {
     val profiles: Flow<List<ModelContextProfile>>
@@ -302,8 +302,3 @@ private fun maxNullable(first: Long?, second: Long?): Long? = when {
     second == null -> first
     else -> maxOf(first, second)
 }
-
-private fun sha256(value: String): String =
-    MessageDigest.getInstance("SHA-256")
-        .digest(value.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }

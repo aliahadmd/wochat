@@ -21,6 +21,7 @@ import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.core.ProjectorRecord
 import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.core.SkillRecord
+import com.aliahad.aichat.data.ChatSearchResult
 import com.aliahad.aichat.residency.ModelResidencyState
 import com.aliahad.aichat.ui.navigation.AppRoute
 
@@ -44,6 +45,8 @@ data class ChatUiState(
     val usedMemoryCount: Int = 0,
     val isSending: Boolean = false,
     val modelCatalogLoaded: Boolean = false,
+    val searchQuery: String = "",
+    val searchResults: List<ChatSearchResult> = emptyList(),
 )
 
 data class ModelSetupUiState(

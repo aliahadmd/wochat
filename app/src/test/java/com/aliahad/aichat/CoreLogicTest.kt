@@ -1,10 +1,6 @@
 package com.aliahad.aichat
 
-import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.GenerationSettings
-import com.aliahad.aichat.core.MessageRole
-import com.aliahad.aichat.core.MessageStatus
-import com.aliahad.aichat.inference.HistoryTrimmer
 import com.aliahad.aichat.model.GgufValidator
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.attachment.AttachmentTypeDetector
@@ -61,26 +57,6 @@ class CoreLogicTest {
         assertEquals(8192, settings.maxAnswerTokens)
         assertEquals(2f, settings.temperature)
         assertTrue(settings.systemPrompt.isNotBlank())
-    }
-
-    @Test
-    fun historyTrimmerKeepsNewestMessagesInOrder() {
-        val messages = (1..8).map { index ->
-            ChatMessage(
-                id = index.toString(),
-                conversationId = "chat",
-                role = if (index % 2 == 0) MessageRole.ASSISTANT else MessageRole.USER,
-                content = "x".repeat(900),
-                createdAt = index.toLong(),
-                status = MessageStatus.COMPLETE,
-            )
-        }
-
-        val trimmed = HistoryTrimmer.trim(messages, contextSize = 1024)
-
-        assertTrue(trimmed.size < messages.size)
-        assertEquals(messages.last().id, trimmed.last().id)
-        assertEquals(trimmed.sortedBy { it.createdAt }, trimmed)
     }
 
     @Test

@@ -58,6 +58,20 @@ class RestoreSessionFingerprintTest {
     }
 
     @Test
+    fun changedLastMessageContentDoesNotSkip() {
+        // Continuations mutate the target assistant row in place: same id, new
+        // content. The fingerprint must change so the native KV cache is replayed.
+        val fingerprint = restoreFingerprint("chat", settings, history)
+        val continued = listOf(
+            history.first(),
+            turn("m2", MessageRole.ASSISTANT, "hi there, continued with more text"),
+        )
+        val continuedFingerprint = restoreFingerprint("chat", settings, continued)
+
+        assertFalse(shouldSkipRestore("chat", fingerprint, "chat", continuedFingerprint))
+    }
+
+    @Test
     fun emptyHistoryIsFingerprintedWithoutACrash() {
         val fingerprint = restoreFingerprint("chat", settings, emptyList())
         assertTrue(shouldSkipRestore("chat", fingerprint, "chat", fingerprint))

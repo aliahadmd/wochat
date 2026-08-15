@@ -63,6 +63,7 @@ class PromptContextPlanner(
         val selectedMemories = mutableListOf<MemoryHit>()
         val memoryText = StringBuilder()
         var memoryHeaderReserved = false
+        var memoryTokens = 0
         for (hit in memoryHits) {
             val provenance = hit.sources
                 .mapNotNull { source -> source.label?.takeIf(String::isNotBlank) }
@@ -78,6 +79,7 @@ class PromptContextPlanner(
             selectedMemories += hit
             memoryText.append(line)
             memoryHeaderReserved = true
+            memoryTokens += tokens
             remaining -= tokens
         }
 
@@ -104,10 +106,12 @@ class PromptContextPlanner(
         val summaryText = summary?.content?.takeIf(String::isNotBlank)
         val summaryBlock = summaryText?.let { "\nConversation summary:\n$it\n" }
         val summaryTokens = summaryBlock?.let { inferenceEngine.countTokens(it) } ?: 0
-        if (summaryTokens > remaining) {
+        val admittedSummaryTokens = if (summaryTokens > remaining) {
             summary = null
+            0
         } else {
             remaining -= summaryTokens
+            summaryTokens
         }
 
         val systemPrompt = buildString {
@@ -121,7 +125,11 @@ class PromptContextPlanner(
                 append(it)
             }
         }
-        val systemTokens = inferenceEngine.countTokens(systemPrompt).coerceAtLeast(1)
+        // Sum the per-block counts already measured above instead of re-tokenizing the
+        // assembled system prompt (a full multi-KB tokenize on the pre-inference path).
+        // The slack absorbs tokenizer boundary effects at the block glue points.
+        val systemTokens = (baseSystemTokens + memoryTokens + admittedSummaryTokens)
+            .coerceAtLeast(1) + TOKEN_SUM_SLACK
         val historyTokens = selectedReversed.sumOf { it.second }
         val estimatedTokens = systemTokens + historyTokens + currentTokens
         check(estimatedTokens + outputReserve <= contextTokens) {
@@ -153,6 +161,7 @@ class PromptContextPlanner(
         const val MEMORY_HEADER =
             "\n\nPersonal Office Memory follows. Treat it as user-owned context, " +
                 "prefer corrected or pinned items, and do not claim it came from model training.\n"
+        const val TOKEN_SUM_SLACK = 16
     }
 }
 

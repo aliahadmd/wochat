@@ -89,9 +89,9 @@ Note: `device/`, `overlay/`, and `speech/` were removed features and no longer e
 ## Database
 
 - **Engine:** Room 2.8.4 with SQLCipher encryption (`sqlcipher-android-4.16.0.aar`)
-- **Current version:** 16
-- **Migrations:** 15 hand-written migrations (1→2 through 15→16) in `AppDatabase.kt`
-- **Schema exports:** `app/schemas/com.aliahad.aichat.data.AppDatabase/` (versions 1–16, note: version 10 schema file is absent)
+- **Current version:** 17
+- **Migrations:** 16 hand-written migrations (1→2 through 16→17) in `AppDatabase.kt`
+- **Schema exports:** `app/schemas/com.aliahad.aichat.data.AppDatabase/` (versions 1–9 and 11–17, note: version 10 schema file is absent)
 - **KSP schema location:** configured via `ksp { arg("room.schemaLocation", ...) }`
 
 ## Key Architecture Constraints
@@ -106,8 +106,8 @@ Note: `device/`, `overlay/`, and `speech/` were removed features and no longer e
 
 ## Test Layout
 
-- **Unit tests:** `app/src/test/java/com/aliahad/aichat/` (11 files — inference recovery, memory policies, residency, attachment detection, artifact downloading, routing)
-- **Instrumented tests:** `app/src/androidTest/java/com/aliahad/aichat/` (6 files — Compose UI, Room migrations, persistence, AppSearch indexer, encrypted backup round-trip)
+- **Unit tests:** `app/src/test/java/com/aliahad/aichat/` (25 files — inference recovery and engine fallback, restore fingerprints, memory search and redaction, prompt planning, residency, attachment detection, artifact downloading and atomic install, backup sweep and path safety, health collection keys, conversation export/search helpers, routing)
+- **Instrumented tests:** `app/src/androidTest/java/com/aliahad/aichat/` (9 files — Compose UI, ChatViewModel, Room migrations, persistence, AppSearch indexer, encrypted backup round-trip)
 
 ## Agent Skills
 

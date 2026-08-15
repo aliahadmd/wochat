@@ -42,6 +42,7 @@ class AiChatViewModelFactory(
             )
             ChatViewModel::class.java -> ChatViewModel(
                 savedStateHandle = savedStateHandle,
+                application = container.application,
                 chatRepository = container.chatRepository,
                 modelRepository = container.modelRepository,
                 skillRepository = container.skillRepository,

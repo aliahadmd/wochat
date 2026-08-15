@@ -25,4 +25,16 @@ internal object AtomicFileInstaller {
         }
         backup.delete()
     }
+
+    /**
+     * Recovers from a process death between the backup and final renames inside [replace]:
+     * the destination is absent and the `.old` backup holds the previously installed file.
+     * Restoring it avoids losing a multi-gigabyte model to a crash window.
+     */
+    fun recoverInterrupted(destination: File) {
+        val backup = File(destination.parentFile, "${destination.name}.old")
+        if (!destination.exists() && backup.exists()) {
+            check(backup.renameTo(destination)) { "Unable to recover ${destination.name}" }
+        }
+    }
 }

@@ -209,6 +209,14 @@ class RecoveringInferenceEngine(
         settings: GenerationSettings,
     ) = operationGate.runExclusive {
         session = RestoredSession(conversationId, history, settings)
+        // A new restore supersedes any RESTORE-stage recovery signal from a prior turn: if
+        // that turn was cancelled before its generate ran, the stale event must not leak
+        // into the next turn's generate. LOAD/PROJECTOR/PROMPT-stage signals are excluded:
+        // they are set before this turn's restore (loadModel/loadProjector/countTokens all
+        // precede restoreSession) and must survive to this turn's generate.
+        if (pendingFallback?.stage == BackendFailureStage.RESTORE) {
+            pendingFallback = null
+        }
         try {
             active.restoreSession(conversationId, history, settings)
             syncFromActive()

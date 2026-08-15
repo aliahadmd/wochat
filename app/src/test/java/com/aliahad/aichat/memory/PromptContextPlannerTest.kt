@@ -269,25 +269,47 @@ class PromptContextPlannerTest {
     }
 
     @Test
-    fun overflowBeyondContextThrowsIllegalStateException() = runTest {
-        // The final check recounts the assembled system prompt; an engine whose token
-        // counts grow on repeat calls makes the recount exceed the budgeted fit.
-        val engine = FakeInferenceEngine(secondCallMultiplier = 10)
-        val planner = PromptContextPlanner(engine, FakeMemoryRepository(), summariesDatabase())
+    fun oversizedSystemPromptFailsFastBeforePlanning() = runTest {
+        val planner = PromptContextPlanner(
+            FakeInferenceEngine(),
+            FakeMemoryRepository(),
+            summariesDatabase(),
+        )
 
         try {
             planner.plan(
                 conversationId = "chat",
                 history = emptyList(),
                 currentText = "hello",
-                settings = settings.copy(systemPrompt = "s".repeat(4_000)),
+                settings = settings.copy(systemPrompt = "s".repeat(40_000)),
                 contextTokens = 6_000,
                 memoryEnabled = false,
             )
-            fail("Expected IllegalStateException from the context budget check")
-        } catch (expected: IllegalStateException) {
-            assertEquals("Prompt planning exceeded the loaded model context", expected.message)
+            fail("Expected IllegalArgumentException from the context budget check")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("does not fit the selected context"))
         }
+    }
+
+    @Test
+    fun assembledSystemPromptIsNotRetokenized() = runTest {
+        // Budget accounting sums the per-block token counts; the assembled system
+        // prompt is never re-tokenized (previously a second full tokenize of a
+        // multi-KB string on the pre-inference critical path).
+        val engine = FakeInferenceEngine(secondCallMultiplier = 10)
+        val planner = PromptContextPlanner(engine, FakeMemoryRepository(), summariesDatabase())
+
+        val plan = planner.plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "hello",
+            settings = settings.copy(systemPrompt = "SYSMARKER " + "s".repeat(200)),
+            contextTokens = 6_000,
+            memoryEnabled = false,
+        )
+
+        assertEquals(1, engine.tokenCalls.count { it.contains("SYSMARKER") })
+        assertTrue(plan.estimatedTokens + plan.outputReserveTokens <= 6_000)
     }
 
     @Test
