@@ -25,3 +25,4 @@ dependencyResolutionManagement {
 rootProject.name = "Aichat"
 include(":app")
 include(":baselineprofile")
+include(":benchmark")

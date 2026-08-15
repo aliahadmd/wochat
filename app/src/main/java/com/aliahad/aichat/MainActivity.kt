@@ -29,6 +29,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -46,6 +48,7 @@ import com.aliahad.aichat.ui.viewmodel.MemoryViewModel
 import com.aliahad.aichat.ui.viewmodel.ModelSetupViewModel
 import com.aliahad.aichat.ui.viewmodel.SkillsViewModel
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 class MainActivity : ComponentActivity() {
     // Lazy on purpose: building the factory touches container.modelRepository,
     // which forces the encrypted database open. It must not resolve until the
@@ -158,7 +161,16 @@ class MainActivity : ComponentActivity() {
                     if (success) pendingCameraUri?.let(chatViewModel::stageAttachment)
                     pendingCameraUri = null
                 }
-                Surface(modifier = Modifier.fillMaxSize()) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // Publishes Compose testTags into the accessibility tree as
+                        // resource ids. UiAutomator (and therefore the macrobenchmarks
+                        // in :benchmark) cannot see testTag otherwise — it is not a
+                        // test-only hook, it changes no runtime behaviour, and it is
+                        // the documented way to make a Compose app measurable.
+                        .semantics { testTagsAsResourceId = true },
+                ) {
                     shellState.launchDestination?.let { launchDestination ->
                         AiChatApp(
                         launchDestination = launchDestination,
