@@ -1,8 +1,8 @@
-# AIchat — Agent Guide
+# wochat — Agent Guide
 
 ## Project Overview
 
-AIchat is an on-device AI chat Android app. It runs Gemma 4 E4B locally via llama.cpp (GGUF) with CPU and Vulkan GPU backends. All inference, memory indexing, and conversation persistence happen on-device — there is no cloud LLM dependency.
+wochat is an on-device AI chat Android app. It runs Gemma 4 E4B locally via llama.cpp (GGUF) with CPU and Vulkan GPU backends. All inference, memory indexing, and conversation persistence happen on-device — there is no cloud LLM dependency.
 
 - **Package:** `com.aliahad.aichat`
 - **Min SDK:** 33 · **Target SDK:** 36 · **Compile SDK:** 36
