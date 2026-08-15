@@ -173,57 +173,47 @@ class MainActivity : ComponentActivity() {
                                     DeviceSettingsNavigator.openNotificationAccess(this)
                                 ActivitySource.ACCESSIBILITY ->
                                     DeviceSettingsNavigator.openAccessibility(this)
-                                ActivitySource.LOCATION -> {
-                                    val foregroundGranted =
-                                        ContextCompat.checkSelfPermission(
-                                            this,
-                                            Manifest.permission.ACCESS_FINE_LOCATION,
-                                        ) == PackageManager.PERMISSION_GRANTED ||
-                                            ContextCompat.checkSelfPermission(
-                                                this,
-                                                Manifest.permission.ACCESS_COARSE_LOCATION,
-                                            ) == PackageManager.PERMISSION_GRANTED
-                                    if (foregroundGranted) {
-                                        DeviceSettingsNavigator.openAppPermissions(this)
-                                    } else {
-                                        phonePermissionLauncher.launch(
-                                            arrayOf(
-                                                Manifest.permission.ACCESS_COARSE_LOCATION,
-                                                Manifest.permission.ACCESS_FINE_LOCATION,
-                                            ),
-                                        )
-                                    }
-                                }
-                                ActivitySource.SENSOR -> {
-                                    if (hasPermission(Manifest.permission.ACTIVITY_RECOGNITION)) {
-                                        DeviceSettingsNavigator.openAppPermissions(this)
-                                    } else {
-                                        phonePermissionLauncher.launch(
-                                            arrayOf(Manifest.permission.ACTIVITY_RECOGNITION),
-                                        )
-                                    }
-                                }
-                                ActivitySource.CONTACT -> {
-                                    if (hasPermission(Manifest.permission.READ_CONTACTS)) {
-                                        DeviceSettingsNavigator.openAppPermissions(this)
-                                    } else {
-                                        phonePermissionLauncher.launch(
-                                            arrayOf(Manifest.permission.READ_CONTACTS),
-                                        )
-                                    }
-                                }
+                                ActivitySource.LOCATION,
+                                ActivitySource.SENSOR,
+                                ActivitySource.CONTACT,
                                 ActivitySource.CALENDAR -> {
-                                    if (hasPermission(Manifest.permission.READ_CALENDAR)) {
+                                    // The user opts into phone-source collection as a whole, so
+                                    // every missing standard runtime permission is requested in
+                                    // one batch instead of one dialog per source.
+                                    val missing = buildList {
+                                        val foregroundLocation =
+                                            hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) ||
+                                                hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+                                        if (!foregroundLocation) {
+                                            add(Manifest.permission.ACCESS_COARSE_LOCATION)
+                                            add(Manifest.permission.ACCESS_FINE_LOCATION)
+                                        }
+                                        if (!hasPermission(Manifest.permission.READ_CONTACTS)) {
+                                            add(Manifest.permission.READ_CONTACTS)
+                                        }
+                                        if (!hasPermission(Manifest.permission.READ_CALENDAR)) {
+                                            add(Manifest.permission.READ_CALENDAR)
+                                        }
+                                        if (!hasPermission(Manifest.permission.ACTIVITY_RECOGNITION)) {
+                                            add(Manifest.permission.ACTIVITY_RECOGNITION)
+                                        }
+                                    }
+                                    if (missing.isEmpty()) {
+                                        // Everything requestable is granted; background location
+                                        // and other elevations live in system settings only.
                                         DeviceSettingsNavigator.openAppPermissions(this)
                                     } else {
-                                        phonePermissionLauncher.launch(
-                                            arrayOf(Manifest.permission.READ_CALENDAR),
+                                        phonePermissionLauncher.launch(missing.toTypedArray())
+                                    }
+                                }
+                                ActivitySource.HEALTH -> {
+                                    val container = (application as AiChatApplication).container
+                                    if (container.phoneSourceAccessManager.healthConnectAvailable) {
+                                        healthPermissionLauncher.launch(
+                                            container.healthDataSource.readPermissions,
                                         )
                                     }
                                 }
-                                ActivitySource.HEALTH -> healthPermissionLauncher.launch(
-                                    (application as AiChatApplication).container.healthDataSource.readPermissions,
-                                )
                                 else -> Unit
                             }
                         },

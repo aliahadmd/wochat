@@ -3,12 +3,16 @@ package com.aliahad.aichat
 import com.aliahad.aichat.activity.COLLECTIBLE_SOURCES
 import com.aliahad.aichat.activity.OfficeWorkScheduler
 import com.aliahad.aichat.activity.collectorName
+import com.aliahad.aichat.activity.healthExerciseStableKey
+import com.aliahad.aichat.activity.healthSleepStableKey
+import com.aliahad.aichat.activity.healthStepsStableKey
 import com.aliahad.aichat.activity.isPeriodicWorkHealthy
 import com.aliahad.aichat.activity.shouldCollectSourceNow
 import com.aliahad.aichat.activity.sourceIntervalMillis
 import com.aliahad.aichat.core.ActivitySource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.TimeUnit
@@ -26,6 +30,7 @@ class OfficeWorkerConsolidationTest {
                 ActivitySource.SENSOR,
                 ActivitySource.CONTACT,
                 ActivitySource.CALENDAR,
+                ActivitySource.HEALTH,
             ),
             COLLECTIBLE_SOURCES.toSet(),
         )
@@ -50,12 +55,13 @@ class OfficeWorkerConsolidationTest {
         assertEquals("sensor", collectorName(ActivitySource.SENSOR))
         assertEquals("contacts", collectorName(ActivitySource.CONTACT))
         assertEquals("calendar", collectorName(ActivitySource.CALENDAR))
+        assertEquals("health", collectorName(ActivitySource.HEALTH))
     }
 
     @Test
     fun sourcesWithCadenceIntervalsAlwaysRun() {
         val now = TimeUnit.DAYS.toMillis(10)
-        listOf(ActivitySource.APP_USAGE, ActivitySource.LOCATION, ActivitySource.SENSOR)
+        listOf(ActivitySource.APP_USAGE, ActivitySource.LOCATION, ActivitySource.SENSOR, ActivitySource.HEALTH)
             .forEach { source ->
                 assertEquals(sixHours, sourceIntervalMillis(source))
                 assertTrue(
@@ -136,5 +142,38 @@ class OfficeWorkerConsolidationTest {
         assertFalse(isPeriodicWorkHealthy(listOf("CANCELLED")))
         assertFalse(isPeriodicWorkHealthy(listOf("FAILED", "SUCCEEDED")))
         assertFalse(isPeriodicWorkHealthy(listOf("BLOCKED")))
+    }
+
+    @Test
+    fun healthMetricKeysAreScopedToTheCollectionWindow() {
+        val windowStart = 1_781_200_000_000L
+        // Keys derive from the window itself, not from the collection instant or
+        // the local day: same window -> same key, different window -> new key.
+        assertEquals("health:steps:$windowStart", healthStepsStableKey(windowStart))
+        assertEquals("health:sleep:$windowStart", healthSleepStableKey(windowStart))
+        assertEquals(healthStepsStableKey(windowStart), healthStepsStableKey(windowStart))
+        assertNotEquals(
+            healthStepsStableKey(windowStart),
+            healthStepsStableKey(windowStart + TimeUnit.HOURS.toMillis(6)),
+        )
+        assertNotEquals(
+            healthSleepStableKey(windowStart),
+            healthSleepStableKey(windowStart + TimeUnit.HOURS.toMillis(6)),
+        )
+    }
+
+    @Test
+    fun exerciseKeysFollowSessionIdentityNotPosition() {
+        val title = "Exercise session · 30 min"
+        val first = healthExerciseStableKey(1_781_200_000_000L, title)
+        val second = healthExerciseStableKey(1_781_203_600_000L, title)
+        // Same identity re-collected dedups; a different session start is distinct
+        // even at the same position in the session list.
+        assertEquals(first, healthExerciseStableKey(1_781_200_000_000L, title))
+        assertNotEquals(first, second)
+        assertNotEquals(
+            healthExerciseStableKey(1_781_200_000_000L, title),
+            healthExerciseStableKey(1_781_200_000_000L, "Exercise session · 45 min"),
+        )
     }
 }

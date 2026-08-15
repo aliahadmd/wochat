@@ -31,6 +31,13 @@ enum class TurnOrigin {
 
 enum class InferenceExecutionProfile {
     NORMAL,
+
+    /**
+     * Best-effort background work (rolling summarization, archive digests). Never
+     * preempts interactive turns: the engine serializes it through the same runtime
+     * gate and cancels it as soon as chat inference begins.
+     */
+    UTILITY,
 }
 
 sealed interface GenerationEvent {
@@ -387,6 +394,12 @@ data class MemoryQuery(
     val text: String,
     val limit: Int = 8,
     val includePrivate: Boolean = true,
+    /**
+     * Extra recall-only text (e.g. recent conversation history). It widens the
+     * AppSearch candidate lookup but never influences retrieval semantics: intent
+     * detection, lexical scoring, and phrase matching use [text] only.
+     */
+    val expansion: String = "",
 )
 
 data class MemoryHit(

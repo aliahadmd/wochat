@@ -26,6 +26,7 @@ import com.aliahad.aichat.inference.RuntimeOperationGate
 import com.aliahad.aichat.model.DefaultModelRepository
 import com.aliahad.aichat.model.ModelRepository
 import com.aliahad.aichat.memory.AppSearchMemoryIndexer
+import com.aliahad.aichat.memory.BackgroundConversationSummarizer
 import com.aliahad.aichat.memory.ConversationSummaryRepository
 import com.aliahad.aichat.memory.MemoryIndexer
 import com.aliahad.aichat.memory.MemoryRepository
@@ -61,10 +62,13 @@ class AiChatApplication : Application() {
         container = AppContainer(this)
         OfficeWorkScheduler.schedule(this)
         applicationScope.launch {
-            runCatching { OfficeWorkScheduler.verifyAndRepair(this@AiChatApplication) }
-                .onFailure { error ->
-                    Log.e("AiChatApplication", "Periodic work verification failed", error)
-                }
+            try {
+                OfficeWorkScheduler.verifyAndRepair(this@AiChatApplication)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.e("AiChatApplication", "Periodic work verification failed", error)
+            }
             reconcileStartupStep("interrupted work") {
                 container.chatRepository.markInterruptedMessages()
                 container.attachmentRepository.markInterrupted()
@@ -101,7 +105,7 @@ class AppContainer(val application: Application) {
     val chatRepository: ChatRepository = RoomChatRepository(database)
     val runtimeOperationGate = RuntimeOperationGate()
     val memoryIndexer: MemoryIndexer = AppSearchMemoryIndexer(application)
-    val memoryRepository: MemoryRepository = RoomMemoryRepository(
+    val memoryRepository: RoomMemoryRepository = RoomMemoryRepository(
         database,
         memoryIndexer,
     )
@@ -127,6 +131,9 @@ class AppContainer(val application: Application) {
             runtimeRevision = BuildConfig.LLAMA_RUNTIME_REVISION,
         ),
         operationGate = runtimeOperationGate,
+        utilityUseBarrier = {
+            ::residencyController.isInitialized && residencyController.isInteractiveUseActive
+        },
         cpuFallbackConfigurationResolver = { original ->
             val model = modelRepository.models.first().firstOrNull { candidate ->
                 candidate.id == original.modelId ||
@@ -156,6 +163,8 @@ class AppContainer(val application: Application) {
     lateinit var promptContextPlanner: PromptContextPlanner
         private set
     lateinit var residencyController: ModelResidencyController
+        private set
+    lateinit var conversationSummarizer: BackgroundConversationSummarizer
         private set
     lateinit var inferenceBenchmarkRunner: InferenceBenchmarkRunner
         private set
@@ -192,6 +201,17 @@ class AppContainer(val application: Application) {
             contextProfiles = contextProfileRepository,
             settingsRepository = settings,
         )
+        conversationSummarizer = BackgroundConversationSummarizer(
+            inferenceEngine = inferenceEngine,
+            residencyState = residencyController.state,
+            interactiveUseActive = { residencyController.isInteractiveUseActive },
+        )
+        // Interactive turns cancel-and-join any in-flight background summarization
+        // so a rolling summary can never delay a chat turn behind the runtime gate
+        // or interleave with the turn's session restore.
+        residencyController.registerBackgroundWorkCancellation {
+            conversationSummarizer.cancelAndJoin()
+        }
         inferenceBenchmarkRunner = DefaultInferenceBenchmarkRunner(
             context = application,
             modelRepository = modelRepository,

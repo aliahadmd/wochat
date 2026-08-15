@@ -80,7 +80,7 @@ class DatabaseConverters {
         CollectorCheckpointEntity::class,
         ModelBenchmarkEntity::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -489,6 +489,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // The unique index references the column, so it must go first.
+                db.execSQL("DROP INDEX IF EXISTS index_memory_items_searchRowId")
+                db.execSQL("ALTER TABLE memory_items DROP COLUMN searchRowId")
+            }
+        }
+
         fun create(context: Context): AppDatabase {
             System.loadLibrary("sqlcipher")
             val passphrase = DatabaseKeyManager(context).passphrase()
@@ -516,6 +524,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_13_14,
                     MIGRATION_14_15,
                     MIGRATION_15_16,
+                    MIGRATION_16_17,
                 )
                 .build()
             migrator.sweepResidueFromFailedMigration()
@@ -526,6 +535,6 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         const val DATABASE_NAME = "aichat.db"
-        const val VERSION = 16
+        const val VERSION = 17
     }
 }

@@ -294,13 +294,11 @@ data class ConversationSummaryEntity(
         Index("status"),
         Index("updatedAt"),
         Index("supersedesId"),
-        Index("searchRowId", unique = true),
         Index("contentHash", unique = true),
     ],
 )
 data class MemoryItemEntity(
     @PrimaryKey val id: String,
-    val searchRowId: Long,
     val type: MemoryType,
     val title: String,
     val content: String,

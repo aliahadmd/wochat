@@ -14,6 +14,7 @@ import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.InferenceMetrics
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.MemoryItem
+import com.aliahad.aichat.core.MemorySource
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.core.PhoneSourceStatus
@@ -65,6 +66,7 @@ data class ModelSetupUiState(
 
 data class MemoryUiState(
     val memories: List<MemoryItem> = emptyList(),
+    val memorySources: Map<String, List<MemorySource>> = emptyMap(),
     val memoryEnabled: Boolean = true,
     val collectionPaused: Boolean = false,
     val phoneSourceStatuses: Map<ActivitySource, PhoneSourceStatus> = emptyMap(),

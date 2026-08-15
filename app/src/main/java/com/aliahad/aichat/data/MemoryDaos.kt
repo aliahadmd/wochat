@@ -11,6 +11,9 @@ interface ConversationSummaryDao {
     @Query("SELECT * FROM conversation_summaries WHERE conversationId = :conversationId")
     suspend fun get(conversationId: String): ConversationSummaryEntity?
 
+    @Query("SELECT * FROM conversation_summaries")
+    suspend fun all(): List<ConversationSummaryEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(summary: ConversationSummaryEntity)
 }
@@ -90,6 +93,22 @@ interface MemoryDao {
             ")",
     )
     suspend fun markActivitySourceDeleted(sourceLabel: String, updatedAt: Long)
+
+    @Query(
+        "SELECT id FROM memory_items " +
+            "WHERE status IN ('DELETED', 'SUPERSEDED') AND updatedAt < :cutoff " +
+            "ORDER BY updatedAt LIMIT :limit",
+    )
+    suspend fun purgeableIds(cutoff: Long, limit: Int): List<String>
+
+    @Query("DELETE FROM memory_sources WHERE memoryId IN (:memoryIds)")
+    suspend fun deleteSourcesFor(memoryIds: List<String>)
+
+    @Query("DELETE FROM memory_corrections WHERE memoryId IN (:memoryIds)")
+    suspend fun deleteCorrectionsFor(memoryIds: List<String>)
+
+    @Query("DELETE FROM memory_items WHERE id IN (:memoryIds)")
+    suspend fun deleteByIds(memoryIds: List<String>)
 }
 
 @Dao

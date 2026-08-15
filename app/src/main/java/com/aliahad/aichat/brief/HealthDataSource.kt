@@ -14,8 +14,17 @@ import java.time.Duration
 data class HealthBriefSnapshot(
     val stepCount: Long? = null,
     val sleepMinutes: Long? = null,
-    val exerciseSessions: List<String> = emptyList(),
+    val exerciseSessions: List<HealthExerciseSession> = emptyList(),
     val available: Boolean = false,
+)
+
+/**
+ * One exercise session with its own start time so collection stable keys can be
+ * derived from the session identity instead of a positional index.
+ */
+data class HealthExerciseSession(
+    val title: String,
+    val startedAtMillis: Long,
 )
 
 interface HealthDataSource {
@@ -63,7 +72,10 @@ class HealthConnectDataSource(
             health.readRecords(ReadRecordsRequest(ExerciseSessionRecord::class, timeRange))
                 .records.map { session ->
                     val minutes = Duration.between(session.startTime, session.endTime).toMinutes()
-                    "Exercise session · ${minutes} min"
+                    HealthExerciseSession(
+                        title = "Exercise session · ${minutes} min",
+                        startedAtMillis = session.startTime.toEpochMilli(),
+                    )
                 }
         } else emptyList()
         return HealthBriefSnapshot(

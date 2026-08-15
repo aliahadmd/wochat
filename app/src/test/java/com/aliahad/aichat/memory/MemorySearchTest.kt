@@ -292,6 +292,42 @@ class MemorySearchTest {
 
         assertEquals(listOf("weak"), hits.map { it.memory.id })
     }
+
+    @Test
+    fun indexQueryTextCombinesCurrentTextAndExpansionForAppSearch() {
+        assertEquals(
+            "tea ceremony matcha history",
+            memoryIndexQueryText("Tea ceremony", "matcha history"),
+        )
+        assertEquals("tea ceremony", memoryIndexQueryText("Tea ceremony", ""))
+        assertEquals("tea ceremony", memoryIndexQueryText("Tea ceremony", "   "))
+    }
+
+    /**
+     * Merge-level freeze: a fully-bonused activity event scores raw
+     * 0.52 + 0.35 + 0.12 + 0.38 + 0.28 + 0.18 + 0.25 = 2.08, but the activity
+     * hit is capped at the 1.5 memory ceiling and a memory hit at that ceiling
+     * keeps precedence at equal scores.
+     */
+    @Test
+    fun cappedActivityScoreNeverOutranksMemoryCeiling() = runTest {
+        val intent = ActivityRetrievalIntent(
+            sources = setOf(ActivitySource.NOTIFICATION),
+            periodStart = NOW - 1_000,
+            periodEnd = null,
+            broadPhoneActivity = true,
+        )
+        val activity = requireNotNull(
+            activityEvent("event-max", title = "coffee meeting", pinned = true)
+                .toMemoryHit("coffee meeting", setOf("coffee", "meeting"), NOW, intent),
+        )
+        assertEquals(1.5f, activity.score, 0.0001f)
+
+        val memory = activityHit("memory-max", 1.5f)
+        val merged = mergeSearchHits(listOf(memory), listOf(activity), 8)
+
+        assertEquals(listOf("memory-max", "activity:event-max"), merged.map { it.memory.id })
+    }
 }
 
 /**
@@ -488,7 +524,6 @@ private fun memoryRow(
     updatedAt: Long = NOW,
 ) = MemoryItemEntity(
     id = id,
-    searchRowId = 1L,
     type = MemoryType.FACT,
     title = content.take(96),
     content = content,

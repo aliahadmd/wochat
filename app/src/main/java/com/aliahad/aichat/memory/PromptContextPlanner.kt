@@ -50,7 +50,13 @@ class PromptContextPlanner(
         }
 
         val memoryHits = if (memoryEnabled) {
-            memoryRepository.search(MemoryQuery(memoryQueryText(history, currentText), limit = 16))
+            memoryRepository.search(
+                MemoryQuery(
+                    text = currentText,
+                    limit = 16,
+                    expansion = memoryQueryExpansion(history),
+                ),
+            )
         } else {
             emptyList()
         }
@@ -160,15 +166,15 @@ internal fun initialPromptTokensRemaining(
 
 /**
  * Widens the memory retrieval query with salient text from the last few turns so
- * recall is not limited to the current message. Prompt assembly keeps using only
- * [currentText]; this expansion never reaches the prompt.
+ * AppSearch candidate recall is not limited to the current message. The expansion
+ * is recall-only: retrieval intent, lexical scoring, and phrase matching use the
+ * current message text exclusively, and prompt assembly never sees it.
  */
-internal fun memoryQueryText(history: List<ChatTurn>, currentText: String): String = buildString {
-    append(currentText)
+internal fun memoryQueryExpansion(history: List<ChatTurn>): String = buildString {
     history.takeLast(MEMORY_QUERY_HISTORY_TURNS).forEach { turn ->
         val salient = turn.message.content.trim().take(MEMORY_QUERY_TURN_CHARS)
         if (salient.isNotEmpty()) {
-            append(' ')
+            if (isNotEmpty()) append(' ')
             append(salient)
         }
     }

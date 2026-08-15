@@ -365,6 +365,8 @@ class EncryptedOfficeBackupRepository(
                 PRE_MEMORY_TABLES.forEach { copyTable(source, target, it) }
                 OPTIONAL_USER_TABLES.forEach { copyTableIfPresent(source, target, it) }
                 copyTable(source, target, "memory_items") { values ->
+                    // Archives exported before schema v17 still carry the dropped column.
+                    values.remove("searchRowId")
                     val oldId = values.getAsString("id")
                     val mappedId = memoryIds.getValue(oldId)
                     if (mappedId != oldId) return@copyTable false

@@ -292,6 +292,7 @@ class MemoryViewModel internal constructor(
 
     init {
         collect(memoryRepository.memories) { memories -> copy(memories = memories) }
+        collect(memoryRepository.memorySources) { sources -> copy(memorySources = sources) }
         collect(settings.memoryEnabled) { enabled -> copy(memoryEnabled = enabled) }
         collect(settings.collectionPaused) { paused -> copy(collectionPaused = paused) }
         collect(phoneSources.statuses) { statuses -> copy(phoneSourceStatuses = statuses) }

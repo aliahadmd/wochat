@@ -95,6 +95,7 @@ class RecoveringInferenceEngine(
     private val cpuFallbackConfigurationResolver: CpuFallbackConfigurationResolver = { configuration ->
         configuration.safeCpuFallback()
     },
+    private val utilityUseBarrier: () -> Boolean = { false },
 ) : InferenceEngine, BenchmarkFailureSource {
     private val _state = MutableStateFlow<InferenceState>(InferenceState.Idle)
     override val state: StateFlow<InferenceState> = _state.asStateFlow()
@@ -227,7 +228,16 @@ class RecoveringInferenceEngine(
         settings: GenerationSettings,
         profile: InferenceExecutionProfile,
     ): Flow<GenerationEvent> = flow {
+        // Interactive-use barrier guarantee: while an interactive chat turn is
+        // active (utilityUseBarrier reports true), UTILITY-profile generation is
+        // rejected outright — checked both before acquiring the runtime gate and
+        // again immediately after, so a utility operation that slips past the
+        // summarizer's own barrier checks can never flip the engine session state
+        // (restoreSession/KV cache) mid-turn. The rejection is thrown before any
+        // backend call, so the engine never records a terminal error for it.
+        requireUtilityAllowed(profile)
         operationGate.runExclusive {
+            requireUtilityAllowed(profile)
             pendingFallback?.let {
                 emit(it)
                 pendingFallback = null
@@ -281,6 +291,14 @@ class RecoveringInferenceEngine(
                     }
                 syncFromActive()
             }
+        }
+    }
+
+    private fun requireUtilityAllowed(profile: InferenceExecutionProfile) {
+        if (profile == InferenceExecutionProfile.UTILITY && utilityUseBarrier()) {
+            throw IllegalStateException(
+                "Utility generation rejected: interactive inference is active.",
+            )
         }
     }
 

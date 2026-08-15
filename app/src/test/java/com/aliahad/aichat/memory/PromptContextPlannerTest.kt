@@ -192,40 +192,43 @@ class PromptContextPlannerTest {
         assertEquals(1, repository.queries.size)
         val query = repository.queries.single()
         assertEquals(16, query.limit)
-        assertTrue("query must start with the current message", query.text.startsWith("what about tea"))
-        assertTrue("query should include the latest turn", query.text.contains("MARKER-LATEST"))
-        assertTrue("query should include the previous turn", query.text.contains("MARKER-PREVIOUS"))
-        assertFalse("query must not reach past the last two turns", query.text.contains("MARKER-OLD"))
+        assertEquals(
+            "query text must be exactly the current message",
+            "what about tea",
+            query.text,
+        )
+        assertTrue("expansion should include the latest turn", query.expansion.contains("MARKER-LATEST"))
+        assertTrue("expansion should include the previous turn", query.expansion.contains("MARKER-PREVIOUS"))
+        assertFalse("expansion must not reach past the last two turns", query.expansion.contains("MARKER-OLD"))
         // Expansion must not leak into prompt assembly: no memories selected,
         // so the system prompt is exactly the configured base prompt.
         assertEquals("systemprompt", plan.systemPrompt)
     }
 
     @Test
-    fun memoryQueryTextAppendsTrimmedRecentTurnsOnly() {
+    fun memoryQueryExpansionAppendsTrimmedRecentTurnsOnly() {
         val history = listOf(
             turn("m1", MessageRole.USER, "first turn text ".repeat(40)),
             turn("m2", MessageRole.ASSISTANT, "b".repeat(500)),
             turn("m3", MessageRole.USER, "c".repeat(500)),
         )
 
-        val text = memoryQueryText(history, "current question")
+        val expansion = memoryQueryExpansion(history)
 
-        assertTrue(text.startsWith("current question "))
-        assertTrue(text.contains("b".repeat(200)))
-        assertTrue(text.contains("c".repeat(200)))
-        assertFalse("each appended turn must be capped at 200 chars", text.contains("b".repeat(201)))
-        assertFalse("only the last two turns may expand the query", text.contains("first turn"))
-        assertEquals("current question ".length + 200 + 1 + 200, text.length)
+        assertTrue(expansion.startsWith("b".repeat(200)))
+        assertTrue(expansion.contains("c".repeat(200)))
+        assertFalse("each appended turn must be capped at 200 chars", expansion.contains("b".repeat(201)))
+        assertFalse("only the last two turns may expand the query", expansion.contains("first turn"))
+        assertEquals(200 + 1 + 200, expansion.length)
     }
 
     @Test
-    fun memoryQueryTextSkipsBlankTurnsAndEmptyHistory() {
+    fun memoryQueryExpansionSkipsBlankTurnsAndEmptyHistory() {
         assertEquals(
-            "only current",
-            memoryQueryText(listOf(turn("m1", MessageRole.USER, "   ")), "only current"),
+            "",
+            memoryQueryExpansion(listOf(turn("m1", MessageRole.USER, "   "))),
         )
-        assertEquals("only current", memoryQueryText(emptyList(), "only current"))
+        assertEquals("", memoryQueryExpansion(emptyList()))
     }
 
     @Test
@@ -464,6 +467,9 @@ private class FakeMemoryRepository(
 
     override val memories: Flow<List<MemoryItem>> = MutableStateFlow(emptyList())
 
+    override val memorySources: Flow<Map<String, List<com.aliahad.aichat.core.MemorySource>>> =
+        MutableStateFlow<Map<String, List<com.aliahad.aichat.core.MemorySource>>>(emptyMap())
+
     override suspend fun search(query: MemoryQuery): List<MemoryHit> {
         searchCalls++
         queries += query
@@ -473,6 +479,12 @@ private class FakeMemoryRepository(
     override suspend fun rememberMessage(
         message: ChatMessage,
         conversationTemporary: Boolean,
+    ): Unit = error("unused")
+
+    override suspend fun rememberAttachment(
+        attachmentId: String,
+        displayName: String,
+        content: String,
     ): Unit = error("unused")
 
     override suspend fun remember(
@@ -501,6 +513,8 @@ private class FakeMemoryRepository(
     override suspend fun forgetActivitySource(source: ActivitySource): Unit = error("unused")
 
     override suspend fun purgeStaleIndexDocs(): Unit = error("unused")
+
+    override suspend fun purgeExpiredMemories(now: Long): Int = error("unused")
 }
 
 private class FakeConversationSummaryDao : ConversationSummaryDao {
@@ -508,6 +522,8 @@ private class FakeConversationSummaryDao : ConversationSummaryDao {
 
     override suspend fun get(conversationId: String): ConversationSummaryEntity? =
         upserted.lastOrNull { it.conversationId == conversationId }
+
+    override suspend fun all(): List<ConversationSummaryEntity> = upserted.toList()
 
     override suspend fun upsert(summary: ConversationSummaryEntity) {
         upserted.removeAll { it.conversationId == summary.conversationId }

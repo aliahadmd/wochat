@@ -53,6 +53,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_13_14,
                 AppDatabase.MIGRATION_14_15,
                 AppDatabase.MIGRATION_15_16,
+                AppDatabase.MIGRATION_16_17,
             )
             .build()
         try {
@@ -166,6 +167,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_13_14,
                 AppDatabase.MIGRATION_14_15,
                 AppDatabase.MIGRATION_15_16,
+                AppDatabase.MIGRATION_16_17,
             )
             .build()
         try {
@@ -184,6 +186,52 @@ class DatabaseMigrationInstrumentedTest {
             database.close()
             context.deleteDatabase(name)
         }
+    }
+
+    @Test
+    fun migrationSixteenToSeventeenDropsMemorySearchRowId() {
+        val name = "migration-16-17"
+        helper.createDatabase(name, 16).apply {
+            execSQL(
+                "INSERT INTO memory_items(" +
+                    "id, searchRowId, type, title, content, normalizedContent, contentHash, " +
+                    "confidence, importance, sensitivity, status, pinned, validFrom, validTo, " +
+                    "supersedesId, createdAt, updatedAt" +
+                    ") VALUES('kept', 11, 'FACT', 'Kept memory', 'Keep me', 'keep me', " +
+                    "'hash-kept', 1.0, 0.9, 'PRIVATE', 'ACTIVE', 0, 5, NULL, NULL, 5, 5)",
+            )
+            execSQL(
+                "INSERT INTO memory_items(" +
+                    "id, searchRowId, type, title, content, normalizedContent, contentHash, " +
+                    "confidence, importance, sensitivity, status, pinned, validFrom, validTo, " +
+                    "supersedesId, createdAt, updatedAt" +
+                    ") VALUES('old', 22, 'FACT', 'Old memory', 'Drop me later', 'drop me later', " +
+                    "'hash-old', 1.0, 0.4, 'PRIVATE', 'SUPERSEDED', 0, 5, NULL, 'kept', 5, 5)",
+            )
+            close()
+        }
+
+        helper.runMigrationsAndValidate(name, 17, true, AppDatabase.MIGRATION_16_17).use { database ->
+            database.query("SELECT id, title FROM memory_items ORDER BY id").use { cursor ->
+                assertEquals(2, cursor.count)
+                cursor.moveToFirst()
+                assertEquals("kept", cursor.getString(0))
+                assertEquals("Kept memory", cursor.getString(1))
+            }
+            val columns = mutableSetOf<String>()
+            database.query("PRAGMA table_info(memory_items)").use { cursor ->
+                while (cursor.moveToNext()) {
+                    columns.add(cursor.getString(1))
+                }
+            }
+            assertEquals(false, "searchRowId" in columns)
+            val indexPresent = database.query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' " +
+                    "AND name = 'index_memory_items_searchRowId'",
+            ).use { it.moveToFirst() }
+            assertEquals(false, indexPresent)
+        }
+        ApplicationProvider.getApplicationContext<Context>().deleteDatabase(name)
     }
 
     private fun androidx.sqlite.db.SupportSQLiteDatabase.insertLegacyAttachment(

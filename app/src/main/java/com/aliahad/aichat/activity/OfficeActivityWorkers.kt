@@ -18,6 +18,7 @@ import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.util.Log
 import androidx.core.content.ContextCompat
+import androidx.room.withTransaction
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
@@ -30,6 +31,7 @@ import androidx.work.workDataOf
 import com.aliahad.aichat.AiChatApplication
 import com.aliahad.aichat.AppContainer
 import com.aliahad.aichat.core.ActivitySource
+import com.aliahad.aichat.data.ActivityEventEntity
 import com.aliahad.aichat.data.CollectorCheckpointEntity
 import com.aliahad.aichat.data.MemorySummaryEntity
 import kotlinx.coroutines.CancellationException
@@ -37,6 +39,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -49,6 +53,7 @@ internal val COLLECTIBLE_SOURCES = listOf(
     ActivitySource.SENSOR,
     ActivitySource.CONTACT,
     ActivitySource.CALENDAR,
+    ActivitySource.HEALTH,
 )
 
 /** Checkpoint collector key for the notification listener binding signal. */
@@ -61,6 +66,7 @@ internal fun collectorName(source: ActivitySource): String = when (source) {
     ActivitySource.SENSOR -> "sensor"
     ActivitySource.CONTACT -> "contacts"
     ActivitySource.CALENDAR -> "calendar"
+    ActivitySource.HEALTH -> "health"
     else -> source.name.lowercase()
 }
 
@@ -109,7 +115,13 @@ class CollectAllWorker(
         for (source in COLLECTIBLE_SOURCES) {
             if (!container.shouldCollect(source)) continue
             val collector = collectorName(source)
-            val checkpoint = runCatching { dao.checkpoint(collector) }.getOrNull()
+            val checkpoint = try {
+                dao.checkpoint(collector)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
             val due = shouldCollectSourceNow(
                 lastCollectedAt = checkpoint?.lastCollectedAt,
                 intervalMillis = sourceIntervalMillis(source),
@@ -167,58 +179,185 @@ class ActivityRetentionWorker(
         val container = app.container
         val dao = container.database.activityDao()
         val now = System.currentTimeMillis()
+        var digestsGenerated = 0
         RETENTION_DAYS.forEach { (source, days) ->
             val cutoff = now - TimeUnit.DAYS.toMillis(days)
             while (true) {
                 val events = dao.uncompactedBefore(source, cutoff, 500)
                 if (events.isEmpty()) break
                 val summaryId = UUID.randomUUID().toString()
-                val topPackages = events.mapNotNull { it.packageName }
-                    .groupingBy { it }
-                    .eachCount()
-                    .entries
-                    .sortedByDescending { it.value }
-                    .take(5)
-                    .joinToString { "${it.key} (${it.value})" }
-                val content = buildString {
-                    append("${events.size} ${source.name.lowercase()} events were archived.")
-                    if (topPackages.isNotEmpty()) append(" Most frequent apps: $topPackages.")
+                val fallbackContent = archiveFallbackContent(
+                    source,
+                    events.size,
+                    archiveTopPackagesText(events),
+                )
+                // Best-effort LLM digest over the archived events; any failure keeps
+                // the deterministic fallback content so retention never stalls. The
+                // per-run cap bounds worker duration when a large backlog compacts.
+                val digestPrompt = archiveDigestPrompt(source, events)
+                val enriched = if (digestPrompt != null && digestsGenerated < MAX_DIGESTS_PER_RUN) {
+                    val digest = try {
+                        container.conversationSummarizer.generateText(digestPrompt)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (digest != null) digestsGenerated++
+                    digest
+                } else {
+                    null
                 }
-                dao.upsertSummary(
-                    MemorySummaryEntity(
-                        id = summaryId,
-                        source = source,
-                        periodStart = events.minOf { it.startedAt },
-                        periodEnd = events.maxOf { it.endedAt ?: it.startedAt },
-                        content = content,
-                        eventCount = events.size,
-                        createdAt = now,
-                        updatedAt = now,
-                    ),
-                )
-                container.memoryRepository.rememberActivitySummary(
-                    source = source,
-                    summaryId = summaryId,
-                    title = "${source.name.lowercase()} archive",
-                    content = content,
-                    importance = 0.35f,
-                )
+                val content = selectArchiveContent(fallbackContent, enriched)
                 val ids = events.map { it.id }
-                dao.markCompacted(ids, summaryId)
-                dao.deleteByIds(ids)
+                // The entire compaction commits atomically: digest is computed
+                // first, then the summary row, the archive memory, the compacted
+                // marks, and the event deletions land in one transaction. A
+                // cancellation between steps can no longer leave events
+                // uncompacted with the summary already published (which would
+                // re-compact with a new digest and duplicate the archive memory).
+                val archived = container.database.withTransaction {
+                    dao.upsertSummary(
+                        MemorySummaryEntity(
+                            id = summaryId,
+                            source = source,
+                            periodStart = events.minOf { it.startedAt },
+                            periodEnd = events.maxOf { it.endedAt ?: it.startedAt },
+                            content = content,
+                            eventCount = events.size,
+                            createdAt = now,
+                            updatedAt = now,
+                        ),
+                    )
+                    val item = container.memoryRepository.rememberActivitySummaryInTransaction(
+                        source = source,
+                        summaryId = summaryId,
+                        title = "${source.name.lowercase()} archive",
+                        content = content,
+                        importance = 0.5f,
+                    )
+                    dao.markCompacted(ids, summaryId)
+                    dao.deleteByIds(ids)
+                    item
+                }
+                container.memoryRepository.indexMemory(archived)
             }
+        }
+        try {
+            container.memoryRepository.purgeExpiredMemories(now)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.e(TAG, "Memory purge failed", error)
+        }
+        try {
+            summarizeDueConversations(container)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.e(TAG, "Conversation summary refresh failed", error)
         }
         return Result.success()
     }
 
+    /**
+     * Runs the rolling LLM summarizer over conversations whose raw summary content
+     * grew past the distillation threshold. Purely periodic and best-effort: chat
+     * turns never trigger synchronous summarization, and PromptContextPlanner keeps
+     * its synchronous truncation fallback untouched.
+     */
+    private suspend fun summarizeDueConversations(container: AppContainer) {
+        val summarizer = container.conversationSummarizer
+        if (!summarizer.isAvailable()) return
+        val due = container.conversationSummaryRepository
+            .dueForLlmRefresh(SUMMARY_REFRESH_CONVERSATION_LIMIT)
+        for (summary in due) {
+            if (!summarizer.isAvailable()) break
+            container.conversationSummaryRepository.summarizeFrom(
+                conversationId = summary.conversationId,
+                existingSummary = summary.content,
+                trimmedMessages = emptyList(),
+                tokenCount = container.inferenceEngine::countTokens,
+                generator = summarizer::generateText,
+            )
+        }
+    }
+
     private companion object {
+        const val SUMMARY_REFRESH_CONVERSATION_LIMIT = 3
+        const val MAX_DIGESTS_PER_RUN = 4
+
         val RETENTION_DAYS = mapOf(
             ActivitySource.ACCESSIBILITY to 90L,
             ActivitySource.NOTIFICATION to 90L,
             ActivitySource.LOCATION to 180L,
             ActivitySource.APP_USAGE to 365L,
+            ActivitySource.APP_INSTALL to 365L,
+            ActivitySource.CONTACT to 365L,
+            ActivitySource.CALENDAR to 365L,
+            ActivitySource.HEALTH to 365L,
             ActivitySource.SENSOR to 7L,
         )
+    }
+}
+
+/** Character cap for the batched event text fed to the archive digest prompt. */
+private const val ARCHIVE_DIGEST_INPUT_CHARS = 12_000
+
+/** Bound for the LLM digest appended to an archived activity summary. */
+internal const val ARCHIVE_DIGEST_MAX_CHARS = 1_200
+
+/** Deterministic boilerplate for compacted activity batches. Same input, same output. */
+internal fun archiveFallbackContent(
+    source: ActivitySource,
+    eventCount: Int,
+    topPackages: String,
+): String = buildString {
+    append("$eventCount ${source.name.lowercase()} events were archived.")
+    if (topPackages.isNotEmpty()) append(" Most frequent apps: $topPackages.")
+}
+
+internal fun archiveTopPackagesText(events: List<ActivityEventEntity>): String =
+    events.mapNotNull { it.packageName }
+        .groupingBy { it }
+        .eachCount()
+        .entries
+        .sortedByDescending { it.value }
+        .take(5)
+        .joinToString { "${it.key} (${it.value})" }
+
+/**
+ * Prefers the LLM digest when it produced usable text; otherwise returns the
+ * deterministic fallback verbatim so archive memories never regress.
+ */
+internal fun selectArchiveContent(fallback: String, enriched: String?): String {
+    val digest = enriched?.trim()?.takeIf(String::isNotBlank) ?: return fallback
+    return "$fallback\nDigest: ${digest.take(ARCHIVE_DIGEST_MAX_CHARS)}"
+}
+
+/**
+ * Batched, capped extraction prompt for archived events. Returns null when the
+ * batch carries no describable detail (e.g., sensor snapshots without titles).
+ */
+internal fun archiveDigestPrompt(
+    source: ActivitySource,
+    events: List<ActivityEventEntity>,
+): String? {
+    val lines = events.mapNotNull { event ->
+        val detail = listOfNotNull(
+            event.eventType.takeIf(String::isNotBlank),
+            event.title?.takeIf(String::isNotBlank) ?: event.packageName,
+        ).joinToString(" ").take(120)
+        detail.takeIf(String::isNotBlank)
+    }
+    if (lines.isEmpty()) return null
+    return buildString {
+        append("Summarize the following archived ")
+        append(source.name.lowercase())
+        append(" activity events into a dense factual digest of what the user did: ")
+        append("apps used, routines, locations, events. Preserve specifics; no commentary.")
+        append("\n\n")
+        append(lines.joinToString("\n").take(ARCHIVE_DIGEST_INPUT_CHARS))
     }
 }
 
@@ -323,6 +462,7 @@ private suspend fun collectSource(
         ActivitySource.SENSOR -> collectSensors(context, container)
         ActivitySource.CONTACT -> collectContacts(context, container)
         ActivitySource.CALENDAR -> collectCalendar(context, container)
+        ActivitySource.HEALTH -> collectHealth(context, container)
         else -> Unit
     }
 }
@@ -574,6 +714,88 @@ private suspend fun collectCalendar(context: Context, container: AppContainer) {
     container.recordCollectorSuccess("calendar")
 }
 
+/**
+ * Reads the last 24 hours of Health Connect data (steps, sleep, exercise) and
+ * records it as HEALTH activity events. Stable keys are scoped to the data
+ * itself: metrics key off the collection window start epoch (not the collection
+ * day, so collection hour and timezone changes cannot double-count), and
+ * exercise sessions key off the session start time plus title (not a positional
+ * index, so a shifting session set cannot remap records). Repeated collections
+ * of the same window stay no-ops at the DAO level (insert IGNORE).
+ */
+private suspend fun collectHealth(
+    @Suppress("UNUSED_PARAMETER") context: Context,
+    container: AppContainer,
+) {
+    val dataSource = container.healthDataSource
+    if (!dataSource.isAvailable()) {
+        Log.w(TAG, "Skipping health collection: Health Connect unavailable")
+        container.recordCollectorError("health", "health connect unavailable")
+        return
+    }
+    val granted = try {
+        dataSource.grantedPermissions()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        emptySet()
+    }
+    if (!dataSource.readPermissions.all(granted::contains)) {
+        Log.w(TAG, "Skipping health collection: permission missing")
+        container.recordCollectorError("health", "permission missing")
+        return
+    }
+    val now = System.currentTimeMillis()
+    val windowStart = now - TimeUnit.HOURS.toMillis(24)
+    val snapshot = dataSource.read(Instant.ofEpochMilli(windowStart), Instant.ofEpochMilli(now))
+    snapshot.stepCount?.let { steps ->
+        container.activityRepository.record(
+            source = ActivitySource.HEALTH,
+            eventType = "steps",
+            startedAt = windowStart,
+            endedAt = now,
+            title = "Steps",
+            metadataJson = """{"count":$steps}""",
+            stableKey = healthStepsStableKey(windowStart),
+        )
+    }
+    snapshot.sleepMinutes?.let { minutes ->
+        container.activityRepository.record(
+            source = ActivitySource.HEALTH,
+            eventType = "sleep",
+            startedAt = windowStart,
+            endedAt = now,
+            title = "Sleep",
+            metadataJson = """{"minutes":$minutes}""",
+            stableKey = healthSleepStableKey(windowStart),
+        )
+    }
+    snapshot.exerciseSessions.forEach { session ->
+        container.activityRepository.record(
+            source = ActivitySource.HEALTH,
+            eventType = "exercise",
+            startedAt = session.startedAtMillis,
+            endedAt = now,
+            title = session.title,
+            metadataJson = """{"windowStart":$windowStart}""",
+            stableKey = healthExerciseStableKey(session.startedAtMillis, session.title),
+        )
+    }
+    container.recordCollectorSuccess("health")
+}
+
+/** Stable key for a health metric snapshot, scoped to its collection window. */
+internal fun healthStepsStableKey(windowStartEpochMillis: Long): String =
+    "health:steps:$windowStartEpochMillis"
+
+/** Stable key for a health sleep snapshot, scoped to its collection window. */
+internal fun healthSleepStableKey(windowStartEpochMillis: Long): String =
+    "health:sleep:$windowStartEpochMillis"
+
+/** Stable key for an exercise session, keyed by session identity, not position. */
+internal fun healthExerciseStableKey(startedAtMillis: Long, title: String): String =
+    "health:exercise:$startedAtMillis:$title"
+
 private const val TAG = "OfficeActivity"
 
 private const val MIN_SESSION_MILLIS = 1_000L
@@ -593,7 +815,7 @@ internal suspend fun AppContainer.shouldCollect(
 }
 
 internal suspend fun AppContainer.recordCollectorSuccess(collector: String) {
-    runCatching {
+    try {
         val dao = database.activityDao()
         val existing = dao.checkpoint(collector)
         dao.upsertCheckpoint(
@@ -605,6 +827,10 @@ internal suspend fun AppContainer.recordCollectorSuccess(collector: String) {
                 error = null,
             ),
         )
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        // Checkpoint bookkeeping is best-effort and must never fail collection.
     }
 }
 
@@ -612,7 +838,7 @@ internal suspend fun AppContainer.recordCollectorError(
     collector: String,
     error: String,
 ) {
-    runCatching {
+    try {
         val dao = database.activityDao()
         val existing = dao.checkpoint(collector)
         dao.upsertCheckpoint(
@@ -624,6 +850,10 @@ internal suspend fun AppContainer.recordCollectorError(
                 error = error.take(200),
             ),
         )
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        // Checkpoint bookkeeping is best-effort and must never fail collection.
     }
 }
 

@@ -448,7 +448,10 @@ private class FakeInferenceEngine : InferenceEngine {
 
 private class FakeMemoryRepository : MemoryRepository {
     override val memories: Flow<List<MemoryItem>> = flowOf(emptyList())
+    override val memorySources: Flow<Map<String, List<com.aliahad.aichat.core.MemorySource>>> =
+        flowOf(emptyMap())
     override suspend fun rememberMessage(message: ChatMessage, conversationTemporary: Boolean) = Unit
+    override suspend fun rememberAttachment(attachmentId: String, displayName: String, content: String) = Unit
     override suspend fun remember(type: com.aliahad.aichat.core.MemoryType, title: String, content: String, importance: Float, sensitivity: com.aliahad.aichat.core.MemorySensitivity): MemoryItem =
         throw UnsupportedOperationException()
     override suspend fun search(query: MemoryQuery): List<MemoryHit> = emptyList()
@@ -460,6 +463,7 @@ private class FakeMemoryRepository : MemoryRepository {
         throw UnsupportedOperationException()
     override suspend fun forgetActivitySource(source: com.aliahad.aichat.core.ActivitySource) = Unit
     override suspend fun purgeStaleIndexDocs() = Unit
+    override suspend fun purgeExpiredMemories(now: Long): Int = 0
 }
 
 private class FakeContextProfileRepository : ContextProfileRepository {

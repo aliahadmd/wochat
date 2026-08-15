@@ -89,8 +89,28 @@ class ModelResidencyController(
     val state: StateFlow<ModelResidencyState> = _state.asStateFlow()
 
     @Volatile private var uiForeground = false
+    @Volatile private var backgroundWorkCancellation: (suspend () -> Unit)? = null
     private var loadedSignature: ModelLoadSignature? = null
     private var verificationJob: Job? = null
+
+    /**
+     * True while at least one interactive inference flow (chat turn) is active.
+     * Background utility generation checks this barrier before and after touching
+     * the engine, and the engine rejects UTILITY-profile operations while it is
+     * true, so utility work can never interleave with an interactive turn.
+     */
+    val isInteractiveUseActive: Boolean
+        get() = inferenceUseCounter.count > 0
+
+    /**
+     * Registers the cancellation invoked when interactive inference starts. Best-effort
+     * background generation (rolling summarization) uses it to yield the runtime gate
+     * instead of delaying the user's turn. The lambda is suspend so the cancellation
+     * can be awaited (cancel-and-join) before the interactive turn proceeds.
+     */
+    fun registerBackgroundWorkCancellation(cancellation: suspend () -> Unit) {
+        backgroundWorkCancellation = cancellation
+    }
 
     suspend fun preloadAfterUnlock() {
         if (!userManager.isUserUnlocked) {
@@ -140,6 +160,20 @@ class ModelResidencyController(
             verificationJob?.let { job ->
                 job.cancel()
                 job.cancelAndJoin()
+            }
+            // The use counter is already incremented, so isInteractiveUseActive is
+            // true BEFORE this cancellation runs: background generation started
+            // concurrently sees the barrier and aborts, and the awaitable join
+            // guarantees any in-flight utility generation has fully released the
+            // engine gate before the interactive turn proceeds.
+            try {
+                backgroundWorkCancellation?.invoke()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                // Best-effort: background work cancellation must never block an
+                // interactive turn.
+                Log.w(TAG, "Background work cancellation failed while starting inference use", error)
             }
         }
     }

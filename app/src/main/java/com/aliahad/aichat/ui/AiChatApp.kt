@@ -143,6 +143,7 @@ import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
 import com.aliahad.aichat.core.MemoryItem
+import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.core.ProjectorRecord
@@ -1579,13 +1580,19 @@ private fun MemoryCenter(
     var exporting by remember { mutableStateOf(false) }
     var managingSourceData by remember { mutableStateOf(false) }
     var clearingSource by remember { mutableStateOf<ActivitySource?>(null) }
-    val visible = remember(state.memories, query) {
+    var typeFilter by remember { mutableStateOf<MemoryType?>(null) }
+    val visible = remember(state.memories, query, typeFilter) {
         val value = query.trim()
-        if (value.isEmpty()) state.memories else state.memories.filter {
-            it.title.contains(value, ignoreCase = true) ||
-                it.content.contains(value, ignoreCase = true) ||
-                it.type.name.contains(value, ignoreCase = true)
+        state.memories.filter { typeFilter == null || it.type == typeFilter }.let { rows ->
+            if (value.isEmpty()) rows else rows.filter {
+                it.title.contains(value, ignoreCase = true) ||
+                    it.content.contains(value, ignoreCase = true) ||
+                    it.type.name.contains(value, ignoreCase = true)
+            }
         }
+    }
+    val memoryTypes = remember(state.memories) {
+        state.memories.map(MemoryItem::type).distinct()
     }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -1721,6 +1728,31 @@ private fun MemoryCenter(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+        if (memoryTypes.size > 1) {
+            item {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    FilterChip(
+                        selected = typeFilter == null,
+                        onClick = { typeFilter = null },
+                        label = { Text("All") },
+                    )
+                    memoryTypes.forEach { type ->
+                        FilterChip(
+                            selected = typeFilter == type,
+                            onClick = {
+                                typeFilter = if (typeFilter == type) null else type
+                            },
+                            label = {
+                                Text(type.name.lowercase().replaceFirstChar(Char::uppercase))
+                            },
+                        )
+                    }
+                }
+            }
+        }
         item {
             Button(onClick = { creating = true }, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.Add, contentDescription = null)
@@ -1757,6 +1789,22 @@ private fun MemoryCenter(
                         }
                     }
                     Text(memory.content, maxLines = 5, overflow = TextOverflow.Ellipsis)
+                    val provenance = remember(memory.id, state.memorySources) {
+                        state.memorySources[memory.id].orEmpty()
+                            .mapNotNull { it.label }
+                            .filter(String::isNotBlank)
+                            .distinct()
+                            .joinToString(" \u00b7 ")
+                    }
+                    if (provenance.isNotEmpty()) {
+                        Text(
+                            "From $provenance",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = { actions.pinMemory(memory.id, !memory.pinned) }) {

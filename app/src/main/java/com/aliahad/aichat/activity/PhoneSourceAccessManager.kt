@@ -41,7 +41,13 @@ class PhoneSourceAccessManager(
                 "Health Connect is not available on this device",
             )
         }
-        val granted = runCatching { healthDataSource.grantedPermissions() }.getOrDefault(emptySet())
+        val granted = try {
+            healthDataSource.grantedPermissions()
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            emptySet()
+        }
         val complete = healthDataSource.readPermissions.all(granted::contains)
         return PhoneSourceStatus(
             source = ActivitySource.HEALTH,

@@ -29,11 +29,14 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
 interface MemoryRepository {
     val memories: Flow<List<MemoryItem>>
+    val memorySources: Flow<Map<String, List<MemorySource>>>
     suspend fun rememberMessage(message: ChatMessage, conversationTemporary: Boolean)
+    suspend fun rememberAttachment(attachmentId: String, displayName: String, content: String)
     suspend fun remember(
         type: MemoryType,
         title: String,
@@ -54,6 +57,7 @@ interface MemoryRepository {
     ): MemoryItem
     suspend fun forgetActivitySource(source: ActivitySource)
     suspend fun purgeStaleIndexDocs()
+    suspend fun purgeExpiredMemories(now: Long): Int
 }
 
 class RoomMemoryRepository(
@@ -78,6 +82,17 @@ class RoomMemoryRepository(
     override val memories: Flow<List<MemoryItem>> =
         dao.observeActive().map { rows -> rows.map(MemoryItemEntity::toDomain) }
 
+    override val memorySources: Flow<Map<String, List<MemorySource>>> =
+        dao.observeActive().map { rows ->
+            if (rows.isEmpty()) {
+                emptyMap()
+            } else {
+                dao.sourcesFor(rows.map(MemoryItemEntity::id))
+                    .groupBy(MemorySourceEntity::memoryId)
+                    .mapValues { (_, sources) -> sources.map(MemorySourceEntity::toDomain) }
+            }
+        }
+
     override suspend fun rememberMessage(
         message: ChatMessage,
         conversationTemporary: Boolean,
@@ -98,6 +113,28 @@ class RoomMemoryRepository(
             sourceId = message.id,
             sourceLabel = "Chat message",
             stableId = "message:${message.id}",
+        )
+    }
+
+    override suspend fun rememberAttachment(
+        attachmentId: String,
+        displayName: String,
+        content: String,
+    ) {
+        val redacted = SensitiveTextRedactor.redact(content).trim()
+        if (redacted.isBlank()) return
+        val type = inferType(redacted)
+        insertIfAbsent(
+            type = type,
+            title = titleFor(redacted),
+            content = redacted,
+            confidence = if (type == MemoryType.EPISODE) 0.72f else 0.9f,
+            importance = if (type == MemoryType.EPISODE) 0.45f else 0.78f,
+            sensitivity = MemorySensitivity.PRIVATE,
+            sourceKind = MemorySourceKind.ATTACHMENT,
+            sourceId = attachmentId,
+            sourceLabel = displayName.takeIf(String::isNotBlank) ?: "Attachment",
+            stableId = "attachment:$attachmentId",
         )
     }
 
@@ -126,8 +163,13 @@ class RoomMemoryRepository(
     override suspend fun search(query: MemoryQuery): List<MemoryHit> {
         val normalized = normalize(query.text)
         val terms = normalized.split(' ').filter { it.length > 1 }.toSet()
+        // The expansion widens AppSearch candidate recall only; retrieval intent,
+        // lexical terms/floor, and phrase matching below use query.text alone.
         val indexedIds = runCatching {
-            indexer.searchIds(normalized, (query.limit.coerceIn(1, 24) * 8).coerceAtMost(128))
+            indexer.searchIds(
+                memoryIndexQueryText(query.text, query.expansion),
+                (query.limit.coerceIn(1, 24) * 8).coerceAtMost(128),
+            )
         }.getOrDefault(emptyList())
         val now = System.currentTimeMillis()
         val memoryHits = searchMemoryRows(
@@ -153,9 +195,7 @@ class RoomMemoryRepository(
             rankedActivityHits,
             perSourceActivityLimit(activityIntent.sources.size),
         )
-        return (memoryHits + activityHits)
-            .sortedByDescending(MemoryHit::score)
-            .take(query.limit.coerceIn(1, 24))
+        return mergeSearchHits(memoryHits, activityHits, query.limit)
     }
 
     override suspend fun correct(id: String, content: String, reason: String?): MemoryItem {
@@ -220,6 +260,47 @@ class RoomMemoryRepository(
         title: String,
         content: String,
         importance: Float,
+    ): MemoryItem = rememberActivitySummaryRow(
+        source = source,
+        summaryId = summaryId,
+        title = title,
+        content = content,
+        importance = importance,
+        upsertIndex = true,
+    )
+
+    /**
+     * Same semantics as [rememberActivitySummary] but skips the AppSearch index
+     * upsert, for use inside an enclosing Room transaction (archive compaction).
+     * The caller indexes the returned item via [indexMemory] after the commit.
+     */
+    suspend fun rememberActivitySummaryInTransaction(
+        source: ActivitySource,
+        summaryId: String,
+        title: String,
+        content: String,
+        importance: Float,
+    ): MemoryItem = rememberActivitySummaryRow(
+        source = source,
+        summaryId = summaryId,
+        title = title,
+        content = content,
+        importance = importance,
+        upsertIndex = false,
+    )
+
+    /** Best-effort AppSearch upsert for a memory written outside the index path. */
+    suspend fun indexMemory(item: MemoryItem) {
+        runCatching { indexer.upsert(item) }
+    }
+
+    private suspend fun rememberActivitySummaryRow(
+        source: ActivitySource,
+        summaryId: String,
+        title: String,
+        content: String,
+        importance: Float,
+        upsertIndex: Boolean,
     ): MemoryItem = insertIfAbsent(
         type = MemoryType.EPISODE,
         title = title,
@@ -231,6 +312,7 @@ class RoomMemoryRepository(
         sourceId = summaryId,
         sourceLabel = source.name,
         stableId = "activity-summary:$summaryId",
+        upsertIndex = upsertIndex,
     )
 
     override suspend fun forgetActivitySource(source: ActivitySource) {
@@ -247,6 +329,29 @@ class RoomMemoryRepository(
         }
     }
 
+    override suspend fun purgeExpiredMemories(now: Long): Int {
+        val cutoff = memoryPurgeCutoff(now)
+        var purged = 0
+        while (true) {
+            val ids = dao.purgeableIds(cutoff, MEMORY_PURGE_BATCH_SIZE)
+            if (ids.isEmpty()) break
+            // Remove index docs BEFORE deleting the rows: a crash between the two
+            // steps then leaves a missing doc for a dead row (visible to the
+            // startup sweep) instead of an orphan doc that nothing references.
+            // Removal is idempotent; the rows are already non-ACTIVE.
+            ids.forEach { id ->
+                runCatching { indexer.remove(id) }
+            }
+            database.withTransaction {
+                dao.deleteSourcesFor(ids)
+                dao.deleteCorrectionsFor(ids)
+                dao.deleteByIds(ids)
+            }
+            purged += ids.size
+        }
+        return purged
+    }
+
     private suspend fun insertIfAbsent(
         type: MemoryType,
         title: String,
@@ -258,6 +363,7 @@ class RoomMemoryRepository(
         sourceId: String?,
         sourceLabel: String?,
         stableId: String? = null,
+        upsertIndex: Boolean = true,
     ): MemoryItem {
         val normalized = normalize(content)
         val hash = sha256("${type.name}:$normalized")
@@ -272,7 +378,9 @@ class RoomMemoryRepository(
                     createdAt = System.currentTimeMillis(),
                 ),
             )
-            return existing.toDomain().also { runCatching { indexer.upsert(it) } }
+            return existing.toDomain().also {
+                if (upsertIndex) runCatching { indexer.upsert(it) }
+            }
         }
         val now = System.currentTimeMillis()
         val row = entity(
@@ -298,7 +406,9 @@ class RoomMemoryRepository(
                 ),
             )
         }
-        return row.toDomain().also { runCatching { indexer.upsert(it) } }
+        return row.toDomain().also {
+            if (upsertIndex) runCatching { indexer.upsert(it) }
+        }
     }
 
     private fun entity(
@@ -313,12 +423,8 @@ class RoomMemoryRepository(
         now: Long,
     ): MemoryItemEntity {
         val normalized = normalize(content)
-        val searchRowId = id.fold(1125899906842597L) { value, char -> value * 31 + char.code }
-            .and(Long.MAX_VALUE)
-            .coerceAtLeast(1L)
         return MemoryItemEntity(
             id = id,
-            searchRowId = searchRowId,
             type = type,
             title = title.take(120),
             content = content,
@@ -429,6 +535,28 @@ internal fun perSourceActivityLimit(intentSourceCount: Int): Int =
     if (intentSourceCount == 1) 8 else 3
 
 /**
+ * Normalized AppSearch query text: the current message plus the recall-only
+ * expansion. Used exclusively for [MemoryIndexer.searchIds] candidate lookup.
+ */
+internal fun memoryIndexQueryText(text: String, expansion: String): String =
+    normalize(
+        if (expansion.isBlank()) text else "$text $expansion",
+    )
+
+/**
+ * Merges memory and activity hits into the final ranked result. Stable sort: at
+ * equal (capped) scores memory hits keep precedence over activity hits because
+ * they are concatenated first.
+ */
+internal fun mergeSearchHits(
+    memoryHits: List<MemoryHit>,
+    activityHits: List<MemoryHit>,
+    limit: Int,
+): List<MemoryHit> = (memoryHits + activityHits)
+    .sortedByDescending(MemoryHit::score)
+    .take(limit.coerceIn(1, 24))
+
+/**
  * AppSearch documents are stale when their Room row is no longer ACTIVE
  * (superseded by a correction or deleted). Removal is idempotent: the
  * indexer tolerates ids that were never indexed.
@@ -438,6 +566,26 @@ internal fun isStaleIndexStatus(status: MemoryStatus): Boolean =
 
 internal fun staleIndexDocIds(rows: List<MemoryStatusRow>): List<String> =
     rows.filter { isStaleIndexStatus(it.status) }.map(MemoryStatusRow::id)
+
+/** Physical deletion grace period for DELETED/SUPERSEDED memories, in days. */
+internal const val MEMORY_PURGE_RETENTION_DAYS = 30L
+
+/** Batch size used when purging expired memory rows in a single transaction. */
+internal const val MEMORY_PURGE_BATCH_SIZE = 500
+
+/** Timestamp before which a non-ACTIVE memory is eligible for physical deletion. */
+internal fun memoryPurgeCutoff(now: Long, retentionDays: Long = MEMORY_PURGE_RETENTION_DAYS): Long =
+    now - TimeUnit.DAYS.toMillis(retentionDays)
+
+/**
+ * A memory is purgeable once it is no longer ACTIVE (deleted or superseded) and its
+ * last update predates the retention cutoff. Active memories are never purged.
+ */
+internal fun isMemoryPurgeable(
+    status: MemoryStatus,
+    updatedAt: Long,
+    cutoff: Long,
+): Boolean = isStaleIndexStatus(status) && updatedAt < cutoff
 
 internal fun applyPerSourceActivityQuota(
     rankedHits: List<Pair<ActivitySource, MemoryHit>>,
@@ -588,7 +736,9 @@ internal fun ActivityEventEntity.toMemoryHit(
     )
     return MemoryHit(
         memory = memory,
-        score = score.coerceIn(0f, 1.5f),
+        // Cap at the memory score ceiling so fully-bonused activity events
+        // (raw scores can exceed 2.0) never outrank genuine memories.
+        score = score.coerceAtMost(1.5f),
         sources = listOf(
             MemorySource(
                 id = "activity-source:$id",

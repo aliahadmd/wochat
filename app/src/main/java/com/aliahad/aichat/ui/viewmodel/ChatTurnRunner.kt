@@ -237,6 +237,18 @@ class ChatTurnRunner(
             skillRepository.recordInvocation(user.id, activeSkills)
             if (settingsRepository.memoryEnabled.first()) {
                 memoryRepository.rememberMessage(user, request.conversationTemporary)
+                if (!request.conversationTemporary) {
+                    contexts.forEach { attachmentContext ->
+                        val memoryContent =
+                            attachmentMemoryContent(attachmentContext.extractedText)
+                                ?: return@forEach
+                        memoryRepository.rememberAttachment(
+                            attachmentId = attachmentContext.attachmentId,
+                            displayName = attachmentContext.displayName,
+                            content = memoryContent,
+                        )
+                    }
+                }
             }
             attachmentRepository.bind(
                 user.id,
@@ -654,4 +666,18 @@ internal fun mergeContinuation(existing: String, continuation: String): String {
         }
     }
     return existing + continuation
+}
+
+/** Hard cap for attachment text ingested into memory in a single entry. */
+internal const val MAX_ATTACHMENT_MEMORY_CHARS = 4_000
+
+/**
+ * Normalizes extracted attachment text for memory ingestion. Blank extractions
+ * (images, audio, unsupported formats) are skipped and long documents are
+ * capped so a single attachment cannot flood the memory store.
+ */
+internal fun attachmentMemoryContent(extractedText: String): String? {
+    val trimmed = extractedText.trim()
+    if (trimmed.isBlank()) return null
+    return trimmed.take(MAX_ATTACHMENT_MEMORY_CHARS)
 }
