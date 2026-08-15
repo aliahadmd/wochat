@@ -2,6 +2,7 @@ package com.aliahad.aichat.residency
 
 import android.content.Context
 import android.os.UserManager
+import com.aliahad.aichat.data.isDeviceCurrentlyLocked
 import android.util.Log
 import com.aliahad.aichat.attachment.AttachmentRepository
 import com.aliahad.aichat.context.ContextCandidates
@@ -76,7 +77,20 @@ class ModelResidencyController(
     private val contextProfiles: ContextProfileRepository,
     private val settingsRepository: AppSettingsRepository,
 ) : ContextVerifier {
+    private val appContext = context.applicationContext
     private val userManager = context.getSystemService(UserManager::class.java)
+
+    /**
+     * Whether the database-backed model catalog can actually be touched.
+     *
+     * `isUserUnlocked` alone is not enough: it is the Direct Boot signal and
+     * stays true behind the keyguard once the user has unlocked since boot.
+     * The database key is created with `setUnlockedDeviceRequired(true)`, so it
+     * also needs the device to be unlocked *right now* — otherwise every path
+     * below throws DatabaseLockedException from a background thread.
+     */
+    private val deviceUsable: Boolean
+        get() = userManager.isUserUnlocked && !appContext.isDeviceCurrentlyLocked()
     private val runtimeMonitor = ContextRuntimeMonitor(context)
     private val scope = CoroutineScope(
         SupervisorJob() +
@@ -113,7 +127,7 @@ class ModelResidencyController(
     }
 
     suspend fun preloadAfterUnlock() {
-        if (!userManager.isUserUnlocked) {
+        if (!deviceUsable) {
             _state.value = ModelResidencyState.WaitingForUnlock
             return
         }
@@ -423,7 +437,7 @@ class ModelResidencyController(
             }?.let { contextProfiles.markPaused(it) }
             throw cancelled
         } finally {
-            if (inferenceUseCounter.count == 0 && userManager.isUserUnlocked) {
+            if (inferenceUseCounter.count == 0 && deviceUsable) {
                 runCatching {
                     mutex.withLock { ensureLoadedLocked(MultimodalRequirement.NONE, 280) }
                 }
@@ -510,7 +524,7 @@ class ModelResidencyController(
     private fun canStartVerification(): Boolean =
         uiForeground &&
             inferenceUseCounter.count == 0 &&
-            userManager.isUserUnlocked
+            deviceUsable
 
     private suspend fun eligibleForVerification(): Boolean =
         canStartVerification() &&

@@ -36,6 +36,12 @@ data class ChatUiState(
     val selectedSkillIds: List<String> = emptyList(),
     val messageSkills: Map<String, List<SkillPromptBlock>> = emptyMap(),
     val draftKey: String = "",
+    /**
+     * The composer's text. Owned here rather than by the composable so it
+     * survives configuration changes and process death, and so it is cleared
+     * with the rest of the draft when the conversation changes.
+     */
+    val input: String = "",
     val selectedConversationId: String? = null,
     val inferenceState: InferenceState = InferenceState.Uninitialized,
     val inferenceMetrics: InferenceMetrics = InferenceMetrics(),

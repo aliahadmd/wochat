@@ -3,6 +3,7 @@ package com.aliahad.aichat.ui
 import android.animation.ValueAnimator
 import android.os.PowerManager
 import androidx.compose.animation.AnimatedContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateContentSize
@@ -124,6 +125,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -160,6 +162,7 @@ import com.aliahad.aichat.ui.viewmodel.AppShellUiState
 import com.aliahad.aichat.ui.viewmodel.AppShellViewModel
 import com.aliahad.aichat.ui.viewmodel.ChatUiState
 import com.aliahad.aichat.ui.viewmodel.ChatViewModel
+import com.aliahad.aichat.ui.viewmodel.MAX_MESSAGE_ATTACHMENTS
 import com.aliahad.aichat.ui.viewmodel.MemoryUiState
 import com.aliahad.aichat.ui.viewmodel.MemoryViewModel
 import com.aliahad.aichat.ui.viewmodel.ModelSetupUiState
@@ -222,6 +225,12 @@ fun AiChatApp(
         if (navController.currentDestination?.route != destination.route) {
             navController.navigate(destination.route) {
                 launchSingleTop = true
+                // These are two top-level destinations, not a drill-down. Popping
+                // back to the start destination keeps the stack one entry deep;
+                // without it, leaving settings pushed a second CHAT entry and
+                // system back took the user back into settings.
+                // saveState/restoreState must be paired — restoreState alone is inert.
+                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
                 restoreState = true
             }
         }
@@ -326,6 +335,7 @@ fun AiChatApp(
                 composable(AppRoute.CHAT.route) { ChatScreen(
                     state = chat,
                     onSend = { chatActions.sendMessage(it) },
+                    onInputChange = chatActions::setInput,
                     onStop = chatActions::stopGeneration,
                     onContinue = chatActions::continueResponse,
                     onToggleThinking = chatActions::toggleThinking,
@@ -506,6 +516,7 @@ private fun ConversationDrawer(
 private fun ChatScreen(
     state: ChatUiState,
     onSend: (String) -> Unit,
+    onInputChange: (String) -> Unit,
     onStop: () -> Unit,
     onContinue: () -> Unit,
     onToggleThinking: (String) -> Unit,
@@ -520,7 +531,13 @@ private fun ChatScreen(
     onSelectPages: (String, Set<Int>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var input by remember { mutableStateOf("") }
+    // While a response is streaming, back stops generation instead of sending
+    // the user out of the app mid-turn. Disabled otherwise, so ordinary back
+    // behaviour is untouched.
+    BackHandler(enabled = state.isSending) { onStop() }
+    // The draft lives in ChatUiState so it survives configuration changes and
+    // process death, and is cleared when the conversation changes.
+    val input = state.input
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var previewAttachment by remember { mutableStateOf<Attachment?>(null) }
     val selectedModel = if (state.modelCatalogLoaded) {
@@ -581,7 +598,7 @@ private fun ChatScreen(
         }
         Composer(
             input = input,
-            onInputChange = { input = it },
+            onInputChange = onInputChange,
             sending = state.isSending,
             enabled = state.modelCatalogLoaded && selectedModel != null,
             thinkingEnabled = state.thinkingEnabled,
@@ -597,8 +614,8 @@ private fun ChatScreen(
             blockingReason = mediaBlockingReason,
             onSend = {
                 if (input.isNotBlank() || state.draftAttachments.isNotEmpty()) {
+                    // The ViewModel clears the draft once the turn commits.
                     onSend(input)
-                    input = ""
                 }
             },
             onStop = onStop,
@@ -1186,10 +1203,19 @@ private fun Composer(
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
+        // A disabled attach button with no explanation reads as a broken app.
+        AnimatedVisibility(visible = attachments.size >= MAX_MESSAGE_ATTACHMENTS) {
+            Text(
+                "Attachment limit reached ($MAX_MESSAGE_ATTACHMENTS per message).",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
         Row(verticalAlignment = Alignment.Bottom) {
             IconButton(
                 onClick = onAttach,
-                enabled = enabled && !sending && attachments.size < 20,
+                enabled = enabled && !sending && attachments.size < MAX_MESSAGE_ATTACHMENTS,
                 modifier = Modifier.size(50.dp),
             ) {
                 Icon(Icons.Default.AttachFile, contentDescription = "Add attachment")

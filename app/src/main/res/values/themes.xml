@@ -10,4 +10,16 @@
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
     </style>
+
+    <!--
+      Launch theme. Covers the window between process start and the first
+      Compose frame, which is spent warming the encrypted database and the
+      native inference runtime. MainActivity hands off to Theme.Aichat via
+      postSplashScreenTheme as soon as the container is ready.
+    -->
+    <style name="Theme.Aichat.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/aichat_window_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/Theme.Aichat</item>
+    </style>
 </resources>
