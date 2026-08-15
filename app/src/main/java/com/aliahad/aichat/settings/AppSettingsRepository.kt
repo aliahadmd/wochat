@@ -1,6 +1,8 @@
 package com.aliahad.aichat.settings
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -19,7 +21,12 @@ private val Context.settingsDataStore by preferencesDataStore("settings")
 class AppSettingsRepository(
     private val context: Context,
     private val tokenCipher: TokenCipher,
+    private val dataStore: DataStore<Preferences>? = null,
 ) {
+    // Test seam: production callers use the process-wide delegate singleton; tests inject
+    // a fresh DataStore instance for per-test isolation.
+    private val store: DataStore<Preferences> get() = dataStore ?: context.settingsDataStore
+
     private object Keys {
         val backend = stringPreferencesKey("backend")
         val chosenAutoBackend = stringPreferencesKey("chosen_auto_backend")
@@ -35,21 +42,21 @@ class AppSettingsRepository(
         val allowMeteredModelDownloads = booleanPreferencesKey("allow_metered_model_downloads")
     }
 
-    val backendMode: Flow<BackendMode> = context.settingsDataStore.data.map {
+    val backendMode: Flow<BackendMode> = store.data.map {
         it[Keys.backend]
             ?.let { value -> runCatching { BackendMode.valueOf(value) }.getOrNull() }
             ?: BackendMode.CPU
     }
 
-    val chosenAutoBackend: Flow<BackendMode?> = context.settingsDataStore.data.map {
+    val chosenAutoBackend: Flow<BackendMode?> = store.data.map {
         it[Keys.chosenAutoBackend]?.let { value -> runCatching { BackendMode.valueOf(value) }.getOrNull() }
     }
 
-    val vulkanQuarantines: Flow<Set<String>> = context.settingsDataStore.data.map {
+    val vulkanQuarantines: Flow<Set<String>> = store.data.map {
         decodeStringSet(it[Keys.vulkanQuarantines])
     }
 
-    val generationSettings: Flow<GenerationSettings> = context.settingsDataStore.data.map {
+    val generationSettings: Flow<GenerationSettings> = store.data.map {
         GenerationSettings(
             maxNewTokens = it[Keys.maxNewTokens] ?: 1024,
             maxAnswerTokens = it[Keys.maxAnswerTokens] ?: 8192,
@@ -59,39 +66,39 @@ class AppSettingsRepository(
         ).normalized()
     }
 
-    val lastQualityMode: Flow<ChatQualityMode> = context.settingsDataStore.data.map {
+    val lastQualityMode: Flow<ChatQualityMode> = store.data.map {
         it[Keys.lastQualityMode]?.let { value ->
             runCatching { ChatQualityMode.valueOf(value) }.getOrNull()
         } ?: ChatQualityMode.FAST
     }
 
-    val thinkingEnabled: Flow<Boolean> = context.settingsDataStore.data.map {
+    val thinkingEnabled: Flow<Boolean> = store.data.map {
         it[Keys.thinking] ?: false
     }
 
-    val memoryEnabled: Flow<Boolean> = context.settingsDataStore.data.map {
+    val memoryEnabled: Flow<Boolean> = store.data.map {
         it[Keys.memoryEnabled] ?: true
     }
 
-    val collectionPaused: Flow<Boolean> = context.settingsDataStore.data.map {
+    val collectionPaused: Flow<Boolean> = store.data.map {
         it[Keys.collectionPaused] ?: false
     }
 
-    val allowMeteredModelDownloads: Flow<Boolean> = context.settingsDataStore.data.map {
+    val allowMeteredModelDownloads: Flow<Boolean> = store.data.map {
         it[Keys.allowMeteredModelDownloads] ?: false
     }
 
     suspend fun setBackend(mode: BackendMode) {
-        context.settingsDataStore.edit { it[Keys.backend] = mode.name }
+        store.edit { it[Keys.backend] = mode.name }
     }
 
     suspend fun setAllowMeteredModelDownloads(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.allowMeteredModelDownloads] = enabled }
+        store.edit { it[Keys.allowMeteredModelDownloads] = enabled }
     }
 
     suspend fun setChosenAutoBackend(mode: BackendMode) {
         require(mode != BackendMode.AUTO)
-        context.settingsDataStore.edit { it[Keys.chosenAutoBackend] = mode.name }
+        store.edit { it[Keys.chosenAutoBackend] = mode.name }
     }
 
     suspend fun effectiveBackend(
@@ -115,7 +122,7 @@ class AppSettingsRepository(
 
     suspend fun quarantineVulkan(modelSha256: String, deviceFingerprint: String, runtimeRevision: String) {
         val key = backendQuarantineKey(modelSha256, deviceFingerprint, runtimeRevision)
-        context.settingsDataStore.edit { preferences ->
+        store.edit { preferences ->
             preferences[Keys.vulkanQuarantines] =
                 (decodeStringSet(preferences[Keys.vulkanQuarantines]) + key).sorted().joinToString(",")
             if (preferences[Keys.backend] == BackendMode.VULKAN.name) {
@@ -127,7 +134,7 @@ class AppSettingsRepository(
     }
 
     suspend fun selectCpuAfterVulkanRejection() {
-        context.settingsDataStore.edit { preferences ->
+        store.edit { preferences ->
             if (preferences[Keys.backend] == BackendMode.VULKAN.name) {
                 preferences[Keys.backend] = BackendMode.CPU.name
             } else {
@@ -142,7 +149,7 @@ class AppSettingsRepository(
         runtimeRevision: String,
     ) {
         val key = backendQuarantineKey(modelSha256, deviceFingerprint, runtimeRevision)
-        context.settingsDataStore.edit { preferences ->
+        store.edit { preferences ->
             preferences[Keys.vulkanQuarantines] =
                 (decodeStringSet(preferences[Keys.vulkanQuarantines]) - key).sorted().joinToString(",")
         }
@@ -163,7 +170,7 @@ class AppSettingsRepository(
 
     suspend fun updateGeneration(settings: GenerationSettings) {
         val value = settings.normalized()
-        context.settingsDataStore.edit {
+        store.edit {
             it[Keys.maxNewTokens] = value.maxNewTokens
             it[Keys.maxAnswerTokens] = value.maxAnswerTokens
             it[Keys.temperature] = value.temperature
@@ -173,19 +180,19 @@ class AppSettingsRepository(
     }
 
     suspend fun setThinkingEnabled(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.thinking] = enabled }
+        store.edit { it[Keys.thinking] = enabled }
     }
 
     suspend fun setLastQualityMode(mode: ChatQualityMode) {
-        context.settingsDataStore.edit { it[Keys.lastQualityMode] = mode.name }
+        store.edit { it[Keys.lastQualityMode] = mode.name }
     }
 
     suspend fun setMemoryEnabled(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.memoryEnabled] = enabled }
+        store.edit { it[Keys.memoryEnabled] = enabled }
     }
 
     suspend fun setCollectionPaused(paused: Boolean) {
-        context.settingsDataStore.edit { it[Keys.collectionPaused] = paused }
+        store.edit { it[Keys.collectionPaused] = paused }
     }
 
     fun hasToken(): Boolean = tokenCipher.hasToken()

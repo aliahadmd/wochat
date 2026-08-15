@@ -1,10 +1,16 @@
 package com.aliahad.aichat.settings
 
 import android.content.Context
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -19,13 +25,32 @@ class AppSettingsRepositoryInstrumentedTest {
 
     private lateinit var context: Context
     private lateinit var settings: AppSettingsRepository
+    private lateinit var dataStoreScope: CoroutineScope
+    private lateinit var dataStoreFile: File
 
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext<Context>()
-        // Delete the DataStore backing file so each test starts from defaults.
+        // Remove pollution left in the production settings file by previous runs.
+        File(context.filesDir, "datastore/settings.preferences_pb").delete()
         File(context.filesDir, "preferences/settings.preferences_pb").delete()
-        settings = AppSettingsRepository(context, TokenCipher(context))
+        // Per-test isolation: the production preferencesDataStore delegate is a
+        // process-wide singleton whose in-memory cache survives across tests, so
+        // deleting the backing file alone cannot reset it. Inject a brand-new
+        // DataStore over a unique file for every test instead.
+        dataStoreScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        dataStoreFile = File(
+            context.filesDir,
+            "preferences/test_settings_${System.nanoTime()}.preferences_pb",
+        )
+        val store = PreferenceDataStoreFactory.create(scope = dataStoreScope) { dataStoreFile }
+        settings = AppSettingsRepository(context, TokenCipher(context), store)
+    }
+
+    @After
+    fun tearDown() {
+        dataStoreScope.cancel()
+        dataStoreFile.delete()
     }
 
     @Test
