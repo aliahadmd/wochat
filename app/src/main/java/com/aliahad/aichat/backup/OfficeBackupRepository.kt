@@ -514,7 +514,7 @@ class EncryptedOfficeBackupRepository(
             ),
         )
         settings.setMemoryEnabled(json.optBoolean("memoryEnabled", true))
-        settings.setCollectionPaused(json.optBoolean("collectionPaused", true))
+        settings.setCollectionPaused(json.optBoolean("collectionPaused", false))
         settings.setAllowMeteredModelDownloads(
             json.optBoolean("allowMeteredModelDownloads", false),
         )

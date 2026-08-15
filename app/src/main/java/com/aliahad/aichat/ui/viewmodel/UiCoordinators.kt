@@ -4,7 +4,6 @@ import android.app.Application
 import com.aliahad.aichat.activity.ActivityRepository
 import com.aliahad.aichat.activity.OfficeWorkScheduler
 import com.aliahad.aichat.activity.PhoneSourceAccessManager
-import com.aliahad.aichat.brief.HealthDataSource
 import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
@@ -58,7 +57,6 @@ class ProjectorPromptCoordinator(
 class PhoneSourceCoordinator(
     private val application: Application,
     private val accessManager: PhoneSourceAccessManager,
-    private val healthDataSource: HealthDataSource,
     private val settings: AppSettingsRepository,
     private val activityRepository: ActivityRepository,
     private val memoryRepository: MemoryRepository,
@@ -68,29 +66,11 @@ class PhoneSourceCoordinator(
     val stats = activityRepository.sourceStats
 
     val healthConnectAvailable: Boolean
-        get() = healthDataSource.isAvailable()
+        get() = accessManager.healthConnectAvailable
 
     suspend fun refresh() {
         val previous = _statuses.value
-        val current = accessManager.snapshot().toMutableMap()
-        if (healthDataSource.isAvailable()) {
-            val granted = runCatching { healthDataSource.grantedPermissions() }.getOrDefault(emptySet())
-            val complete = healthDataSource.readPermissions.all(granted::contains)
-            current[ActivitySource.HEALTH] = PhoneSourceStatus(
-                source = ActivitySource.HEALTH,
-                state = if (complete) {
-                    PhoneSourceAccessState.GRANTED
-                } else {
-                    PhoneSourceAccessState.NOT_GRANTED
-                },
-                detail = if (complete) {
-                    "Health Connect read access granted"
-                } else {
-                    "Health Connect access is optional"
-                },
-                actionLabel = if (complete) "Manage" else "Grant access",
-            )
-        }
+        val current = accessManager.snapshot()
         _statuses.value = current
         if (!settings.collectionPaused.first()) {
             current.values

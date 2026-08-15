@@ -15,7 +15,6 @@ class AiChatViewModelFactory(
     private val phoneSources = PhoneSourceCoordinator(
         application = container.application,
         accessManager = container.phoneSourceAccessManager,
-        healthDataSource = container.healthDataSource,
         settings = container.settings,
         activityRepository = container.activityRepository,
         memoryRepository = container.memoryRepository,

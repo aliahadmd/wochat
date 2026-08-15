@@ -391,6 +391,11 @@ data class ActivitySourceStatsRow(
     val lastEventAt: Long?,
 )
 
+data class MemoryStatusRow(
+    val id: String,
+    val status: MemoryStatus,
+)
+
 @Entity(tableName = "memory_summaries", indices = [Index("periodStart"), Index("source")])
 data class MemorySummaryEntity(
     @PrimaryKey val id: String,

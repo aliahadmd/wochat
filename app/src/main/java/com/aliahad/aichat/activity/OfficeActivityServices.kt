@@ -12,6 +12,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.aliahad.aichat.AiChatApplication
 import com.aliahad.aichat.core.ActivitySource
+import com.aliahad.aichat.data.CollectorCheckpointEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -50,6 +51,33 @@ class OfficeNotificationListenerService : NotificationListenerService() {
                     stableKey = sbn.key + ":" + sbn.postTime,
                 )
             }.onFailure { Log.e(TAG, "Unable to record notification activity", it) }
+        }
+    }
+
+    override fun onListenerConnected() {
+        recordBindingState("connected")
+    }
+
+    override fun onListenerDisconnected() {
+        recordBindingState("disconnected")
+    }
+
+    /** Lightweight liveness signal for diagnostics; never fails the listener. */
+    private fun recordBindingState(state: String) {
+        scope.launch {
+            runCatching {
+                val dao = (application as AiChatApplication).container.database.activityDao()
+                val existing = dao.checkpoint(NOTIFICATION_LISTENER_COLLECTOR)
+                dao.upsertCheckpoint(
+                    CollectorCheckpointEntity(
+                        collector = NOTIFICATION_LISTENER_COLLECTOR,
+                        cursor = state,
+                        lastCollectedAt = System.currentTimeMillis(),
+                        lastCompactedAt = existing?.lastCompactedAt,
+                        error = null,
+                    ),
+                )
+            }.onFailure { Log.e(TAG, "Unable to record notification listener binding", it) }
         }
     }
 

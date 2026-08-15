@@ -459,6 +459,7 @@ private class FakeMemoryRepository : MemoryRepository {
     override suspend fun rememberActivitySummary(source: com.aliahad.aichat.core.ActivitySource, summaryId: String, title: String, content: String, importance: Float): MemoryItem =
         throw UnsupportedOperationException()
     override suspend fun forgetActivitySource(source: com.aliahad.aichat.core.ActivitySource) = Unit
+    override suspend fun purgeStaleIndexDocs() = Unit
 }
 
 private class FakeContextProfileRepository : ContextProfileRepository {

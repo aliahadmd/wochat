@@ -9,6 +9,8 @@ import android.app.appsearch.BatchResultCallback
 import android.app.appsearch.GenericDocument
 import android.app.appsearch.PutDocumentsRequest
 import android.app.appsearch.RemoveByDocumentIdRequest
+import android.app.appsearch.SearchResult
+import android.app.appsearch.SearchResults
 import android.app.appsearch.SearchSpec
 import android.app.appsearch.SetSchemaRequest
 import android.content.Context
@@ -78,31 +80,41 @@ class AppSearchMemoryIndexer(
     override suspend fun searchIds(query: String, limit: Int): List<String> =
         withSession { session ->
             if (query.isBlank()) return@withSession emptyList()
+            val requested = limit.coerceAtLeast(1)
+            val pageSize = requested.coerceIn(1, 64)
             val spec = SearchSpec.Builder()
                 .addFilterSchemas(SCHEMA)
                 .setTermMatch(SearchSpec.TERM_MATCH_PREFIX)
                 .setRankingStrategy(SearchSpec.RANKING_STRATEGY_RELEVANCE_SCORE)
-                .setResultCountPerPage(limit.coerceIn(1, 64))
+                .setResultCountPerPage(pageSize)
                 .build()
             val results = session.search(query, spec)
             try {
-                suspendCoroutine { continuation ->
-                    results.getNextPage(executor) { result ->
-                        if (result.isSuccess) {
-                            continuation.resume(
-                                result.resultValue.orEmpty().map {
-                                    it.genericDocument.id
-                                },
-                            )
-                        } else {
-                            continuation.resumeWithException(
-                                IllegalStateException(result.errorMessage),
-                            )
-                        }
-                    }
+                // The platform caps each page at 64 results; when the requested
+                // window is larger, page through until the window is filled or
+                // matches are exhausted.
+                val ids = mutableListOf<String>()
+                while (ids.size < requested) {
+                    val page = nextPage(results)
+                    ids += page.map { it.genericDocument.id }
+                    if (page.size < pageSize) break
                 }
+                ids.take(requested)
             } finally {
                 results.close()
+            }
+        }
+
+    private suspend fun nextPage(results: SearchResults): List<SearchResult> =
+        suspendCoroutine { continuation ->
+            results.getNextPage(executor) { result ->
+                if (result.isSuccess) {
+                    continuation.resume(result.resultValue.orEmpty())
+                } else {
+                    continuation.resumeWithException(
+                        IllegalStateException(result.errorMessage),
+                    )
+                }
             }
         }
 

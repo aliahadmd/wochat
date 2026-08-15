@@ -12,18 +12,52 @@ import android.os.Process
 import android.view.accessibility.AccessibilityManager
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.aliahad.aichat.brief.HealthDataSource
 import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
 
 class PhoneSourceAccessManager(
     private val context: Context,
+    private val healthDataSource: HealthDataSource,
 ) {
-    fun snapshot(): Map<ActivitySource, PhoneSourceStatus> =
-        ActivitySource.entries.associateWith(::status)
+    suspend fun snapshot(): Map<ActivitySource, PhoneSourceStatus> =
+        ActivitySource.entries.associateWith { source ->
+            if (source == ActivitySource.HEALTH) healthStatus() else status(source)
+        }
 
-    fun hasAccess(source: ActivitySource): Boolean =
-        status(source).state == PhoneSourceAccessState.GRANTED
+    suspend fun hasAccess(source: ActivitySource): Boolean =
+        (if (source == ActivitySource.HEALTH) healthStatus() else status(source))
+            .state == PhoneSourceAccessState.GRANTED
+
+    val healthConnectAvailable: Boolean
+        get() = healthDataSource.isAvailable()
+
+    /** Single source of truth for Health Connect availability + read permissions. */
+    suspend fun healthStatus(): PhoneSourceStatus {
+        if (!healthDataSource.isAvailable()) {
+            return unavailable(
+                ActivitySource.HEALTH,
+                "Health Connect is not available on this device",
+            )
+        }
+        val granted = runCatching { healthDataSource.grantedPermissions() }.getOrDefault(emptySet())
+        val complete = healthDataSource.readPermissions.all(granted::contains)
+        return PhoneSourceStatus(
+            source = ActivitySource.HEALTH,
+            state = if (complete) {
+                PhoneSourceAccessState.GRANTED
+            } else {
+                PhoneSourceAccessState.NOT_GRANTED
+            },
+            detail = if (complete) {
+                "Health Connect read access granted"
+            } else {
+                "Health Connect access is optional"
+            },
+            actionLabel = if (complete) "Manage" else "Grant access",
+        )
+    }
 
     fun status(source: ActivitySource): PhoneSourceStatus = when (source) {
         ActivitySource.APP_USAGE -> status(
@@ -69,7 +103,7 @@ class PhoneSourceAccessManager(
         )
         ActivitySource.HEALTH -> unavailable(
             source,
-            "Health Connect ingestion is not implemented yet",
+            "Health Connect status is resolved through healthStatus()",
         )
         ActivitySource.DOCUMENT -> unavailable(
             source,

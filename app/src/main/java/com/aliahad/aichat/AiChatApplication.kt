@@ -61,19 +61,21 @@ class AiChatApplication : Application() {
         container = AppContainer(this)
         OfficeWorkScheduler.schedule(this)
         applicationScope.launch {
+            runCatching { OfficeWorkScheduler.verifyAndRepair(this@AiChatApplication) }
+                .onFailure { error ->
+                    Log.e("AiChatApplication", "Periodic work verification failed", error)
+                }
             reconcileStartupStep("interrupted work") {
                 container.chatRepository.markInterruptedMessages()
                 container.attachmentRepository.markInterrupted()
                 container.attachmentRepository.cleanupAbandonedDrafts()
-            }
-            reconcileStartupStep("retired model storage") {
-                java.io.File(noBackupFilesDir, "embeddings").deleteRecursively()
             }
             reconcileStartupStep("model catalog") {
                 container.modelRepository.ensureOfficialRecords()
             }
             reconcileStartupStep("memory index") {
                 container.memoryIndexer.rebuild(container.memoryRepository.memories.first())
+                container.memoryRepository.purgeStaleIndexDocs()
             }
         }
     }
@@ -106,7 +108,8 @@ class AppContainer(val application: Application) {
     val skillRepository: SkillRepository = RoomSkillRepository(database)
     val contextProfileRepository: ContextProfileRepository =
         RoomContextProfileRepository(application, database.modelContextProfileDao(), settings)
-    val phoneSourceAccessManager = PhoneSourceAccessManager(application)
+    val healthDataSource: HealthDataSource = HealthConnectDataSource(application)
+    val phoneSourceAccessManager = PhoneSourceAccessManager(application, healthDataSource)
     val activityRepository: ActivityRepository = RoomActivityRepository(database)
     val conversationSummaryRepository = ConversationSummaryRepository(database)
     val attachmentRepository: AttachmentRepository = DefaultAttachmentRepository(application, database)
@@ -149,7 +152,6 @@ class AppContainer(val application: Application) {
             )
         },
     )
-    val healthDataSource: HealthDataSource = HealthConnectDataSource(application)
     val diagnosticsReportBuilder = DiagnosticsReportBuilder(application, this)
     lateinit var promptContextPlanner: PromptContextPlanner
         private set

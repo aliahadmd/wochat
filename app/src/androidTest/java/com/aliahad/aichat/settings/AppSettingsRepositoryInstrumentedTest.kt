@@ -67,14 +67,14 @@ class AppSettingsRepositoryInstrumentedTest {
     }
 
     @Test
-    fun defaultCollectionPausedIsTrue() = runBlocking {
-        assertTrue(settings.collectionPaused.first())
+    fun defaultCollectionPausedIsFalse() = runBlocking {
+        assertFalse(settings.collectionPaused.first())
     }
 
     @Test
     fun setCollectionPausedRoundTrip() = runBlocking {
-        settings.setCollectionPaused(false)
-        assertFalse(settings.collectionPaused.first())
+        settings.setCollectionPaused(true)
+        assertTrue(settings.collectionPaused.first())
     }
 
     @Test

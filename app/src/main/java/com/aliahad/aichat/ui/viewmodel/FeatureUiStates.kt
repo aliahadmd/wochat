@@ -66,7 +66,7 @@ data class ModelSetupUiState(
 data class MemoryUiState(
     val memories: List<MemoryItem> = emptyList(),
     val memoryEnabled: Boolean = true,
-    val collectionPaused: Boolean = true,
+    val collectionPaused: Boolean = false,
     val phoneSourceStatuses: Map<ActivitySource, PhoneSourceStatus> = emptyMap(),
     val phoneSourceStats: Map<ActivitySource, ActivitySourceStats> = emptyMap(),
     val pendingBackupImportUri: Uri? = null,

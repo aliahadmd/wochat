@@ -1,6 +1,7 @@
 package com.aliahad.aichat.ui
 
 import android.animation.ValueAnimator
+import android.os.PowerManager
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -96,6 +97,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -109,6 +111,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -118,6 +121,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -147,6 +153,7 @@ import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.model.formatBytes
 import com.aliahad.aichat.residency.ModelResidencyState
+import com.aliahad.aichat.settings.DeviceSettingsNavigator
 import com.aliahad.aichat.ui.navigation.AppRoute
 import com.aliahad.aichat.ui.viewmodel.AppShellUiState
 import com.aliahad.aichat.ui.viewmodel.AppShellViewModel
@@ -604,6 +611,26 @@ private fun ModelRequiredBanner(onOpenSettings: () -> Unit) {
     ) {
         Text("A local GGUF model is required.", modifier = Modifier.weight(1f))
         TextButton(onClick = onOpenSettings) { Text("Set up") }
+    }
+}
+
+@Composable
+private fun CollectionPausedBanner(onResume: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "Collection is paused — phone activity is not being memorized",
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onResume) {
+            Text("Resume", color = MaterialTheme.colorScheme.onErrorContainer)
+        }
     }
 }
 
@@ -1602,6 +1629,11 @@ private fun MemoryCenter(
                 }
             }
         }
+        if (state.collectionPaused) {
+            item {
+                CollectionPausedBanner(onResume = { actions.setCollectionPaused(false) })
+            }
+        }
         item {
             Card {
                 Column(Modifier.padding(16.dp)) {
@@ -1666,6 +1698,8 @@ private fun MemoryCenter(
                             HorizontalDivider(Modifier.padding(vertical = 4.dp))
                         }
                     }
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                    BatteryOptimizationRow(exempt = rememberBatteryOptimizationExempt())
                     if (state.phoneSourceStats.values.any { it.eventCount > 0 }) {
                         Spacer(Modifier.height(8.dp))
                         OutlinedButton(
@@ -2006,6 +2040,72 @@ private fun PhoneSourceRow(
             )
             status.actionLabel?.let { label ->
                 TextButton(onClick = onAccess) { Text(label) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberBatteryOptimizationExempt(): Boolean {
+    val context = LocalContext.current
+    var exempt by remember {
+        mutableStateOf(
+            context.getSystemService(PowerManager::class.java)
+                .isIgnoringBatteryOptimizations(context.packageName),
+        )
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                exempt = context.getSystemService(PowerManager::class.java)
+                    .isIgnoringBatteryOptimizations(context.packageName)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    return exempt
+}
+
+@Composable
+private fun BatteryOptimizationRow(exempt: Boolean) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            "Battery optimization",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "HyperOS may stop background collection while the app is closed",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (exempt) {
+                    "Exempt · background collection can run"
+                } else {
+                    "Restricted · collection may stop when the app is closed"
+                },
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (exempt) {
+                    sourceGrantedColor()
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
+            if (!exempt) {
+                TextButton(onClick = { DeviceSettingsNavigator.openBatteryOptimization(context) }) {
+                    Text("Disable")
+                }
             }
         }
     }

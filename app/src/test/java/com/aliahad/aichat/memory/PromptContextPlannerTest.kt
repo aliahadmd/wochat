@@ -171,6 +171,64 @@ class PromptContextPlannerTest {
     }
 
     @Test
+    fun memoryQueryExpandsWithRecentTurnsWhilePromptUsesCurrentTextOnly() = runTest {
+        val repository = FakeMemoryRepository()
+        val planner = PromptContextPlanner(FakeInferenceEngine(), repository, summariesDatabase())
+        val history = listOf(
+            turn("m1", MessageRole.USER, "oldest turn MARKER-OLD ".repeat(20)),
+            turn("m2", MessageRole.ASSISTANT, "previous turn MARKER-PREVIOUS ".repeat(20)),
+            turn("m3", MessageRole.USER, "latest turn MARKER-LATEST ".repeat(20)),
+        )
+
+        val plan = planner.plan(
+            conversationId = "chat",
+            history = history,
+            currentText = "what about tea",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+        )
+
+        assertEquals(1, repository.queries.size)
+        val query = repository.queries.single()
+        assertEquals(16, query.limit)
+        assertTrue("query must start with the current message", query.text.startsWith("what about tea"))
+        assertTrue("query should include the latest turn", query.text.contains("MARKER-LATEST"))
+        assertTrue("query should include the previous turn", query.text.contains("MARKER-PREVIOUS"))
+        assertFalse("query must not reach past the last two turns", query.text.contains("MARKER-OLD"))
+        // Expansion must not leak into prompt assembly: no memories selected,
+        // so the system prompt is exactly the configured base prompt.
+        assertEquals("systemprompt", plan.systemPrompt)
+    }
+
+    @Test
+    fun memoryQueryTextAppendsTrimmedRecentTurnsOnly() {
+        val history = listOf(
+            turn("m1", MessageRole.USER, "first turn text ".repeat(40)),
+            turn("m2", MessageRole.ASSISTANT, "b".repeat(500)),
+            turn("m3", MessageRole.USER, "c".repeat(500)),
+        )
+
+        val text = memoryQueryText(history, "current question")
+
+        assertTrue(text.startsWith("current question "))
+        assertTrue(text.contains("b".repeat(200)))
+        assertTrue(text.contains("c".repeat(200)))
+        assertFalse("each appended turn must be capped at 200 chars", text.contains("b".repeat(201)))
+        assertFalse("only the last two turns may expand the query", text.contains("first turn"))
+        assertEquals("current question ".length + 200 + 1 + 200, text.length)
+    }
+
+    @Test
+    fun memoryQueryTextSkipsBlankTurnsAndEmptyHistory() {
+        assertEquals(
+            "only current",
+            memoryQueryText(listOf(turn("m1", MessageRole.USER, "   ")), "only current"),
+        )
+        assertEquals("only current", memoryQueryText(emptyList(), "only current"))
+    }
+
+    @Test
     fun summaryBlockIncludedWhenItFitsAndExcludedWhenTooLarge() = runTest {
         val fitting = summariesDatabase(seedContent = "tiny")
         val fittingPlan = PromptContextPlanner(
@@ -402,11 +460,13 @@ private class FakeMemoryRepository(
     private val hits: List<MemoryHit> = emptyList(),
 ) : MemoryRepository {
     var searchCalls = 0
+    val queries = mutableListOf<MemoryQuery>()
 
     override val memories: Flow<List<MemoryItem>> = MutableStateFlow(emptyList())
 
     override suspend fun search(query: MemoryQuery): List<MemoryHit> {
         searchCalls++
+        queries += query
         return hits
     }
 
@@ -439,6 +499,8 @@ private class FakeMemoryRepository(
     ): MemoryItem = error("unused")
 
     override suspend fun forgetActivitySource(source: ActivitySource): Unit = error("unused")
+
+    override suspend fun purgeStaleIndexDocs(): Unit = error("unused")
 }
 
 private class FakeConversationSummaryDao : ConversationSummaryDao {
@@ -451,8 +513,6 @@ private class FakeConversationSummaryDao : ConversationSummaryDao {
         upserted.removeAll { it.conversationId == summary.conversationId }
         upserted += summary
     }
-
-    override suspend fun all(): List<ConversationSummaryEntity> = upserted.toList()
 }
 
 private class FakeAppDatabase(

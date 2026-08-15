@@ -16,6 +16,7 @@ import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.data.MemoryCorrectionEntity
 import com.aliahad.aichat.data.MemoryItemEntity
 import com.aliahad.aichat.data.MemorySourceEntity
+import com.aliahad.aichat.data.MemoryStatusRow
 import com.aliahad.aichat.data.ActivityEventEntity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -52,6 +53,7 @@ interface MemoryRepository {
         importance: Float,
     ): MemoryItem
     suspend fun forgetActivitySource(source: ActivitySource)
+    suspend fun purgeStaleIndexDocs()
 }
 
 class RoomMemoryRepository(
@@ -125,7 +127,7 @@ class RoomMemoryRepository(
         val normalized = normalize(query.text)
         val terms = normalized.split(' ').filter { it.length > 1 }.toSet()
         val indexedIds = runCatching {
-            indexer.searchIds(normalized, query.limit.coerceIn(1, 24) * 4)
+            indexer.searchIds(normalized, (query.limit.coerceIn(1, 24) * 8).coerceAtMost(128))
         }.getOrDefault(emptyList())
         val now = System.currentTimeMillis()
         val memoryHits = searchMemoryRows(
@@ -196,7 +198,10 @@ class RoomMemoryRepository(
                 ),
             )
         }
-        return replacement.toDomain().also { runCatching { indexer.upsert(it) } }
+        return replacement.toDomain().also {
+            runCatching { indexer.upsert(it) }
+            runCatching { indexer.remove(previous.id) }
+        }
     }
 
     override suspend fun setPinned(id: String, pinned: Boolean) {
@@ -232,6 +237,12 @@ class RoomMemoryRepository(
         val ids = dao.activityMemoryIds(source.name)
         dao.markActivitySourceDeleted(source.name, System.currentTimeMillis())
         ids.forEach { id ->
+            runCatching { indexer.remove(id) }
+        }
+    }
+
+    override suspend fun purgeStaleIndexDocs() {
+        staleIndexDocIds(dao.idStatusRows()).forEach { id ->
             runCatching { indexer.remove(id) }
         }
     }
@@ -352,6 +363,9 @@ internal suspend fun searchMemoryRows(
     val terms = normalized.split(' ').filter { it.length > 1 }.toSet()
     val indexRanks = indexedIds.withIndex().associate { it.value to it.index }
     val pinnedIds = source.pinnedIds()
+    // Candidates vouched for by the AppSearch index (or by pinning) earned their
+    // slot and are exempt from the lexical floor applied to scan-only rows.
+    val floorExemptIds = (indexedIds + pinnedIds).toSet()
     val candidates = if (indexedIds.isNotEmpty()) {
         source.candidatesIn(includePrivate, (indexedIds + pinnedIds).distinct())
     } else {
@@ -384,7 +398,9 @@ internal suspend fun searchMemoryRows(
                 lexicalScore = lexicalScore,
             )
         }
-        .filter { terms.isEmpty() || it.lexicalScore > 0.08f }
+        .filter {
+            terms.isEmpty() || it.row.id in floorExemptIds || it.lexicalScore > 0.08f
+        }
         .sortedByDescending(RankedMemoryRow::score)
         .take(limit.coerceIn(1, 24))
         .toList()
@@ -411,6 +427,17 @@ internal suspend fun searchMemoryRows(
 
 internal fun perSourceActivityLimit(intentSourceCount: Int): Int =
     if (intentSourceCount == 1) 8 else 3
+
+/**
+ * AppSearch documents are stale when their Room row is no longer ACTIVE
+ * (superseded by a correction or deleted). Removal is idempotent: the
+ * indexer tolerates ids that were never indexed.
+ */
+internal fun isStaleIndexStatus(status: MemoryStatus): Boolean =
+    status == MemoryStatus.SUPERSEDED || status == MemoryStatus.DELETED
+
+internal fun staleIndexDocIds(rows: List<MemoryStatusRow>): List<String> =
+    rows.filter { isStaleIndexStatus(it.status) }.map(MemoryStatusRow::id)
 
 internal fun applyPerSourceActivityQuota(
     rankedHits: List<Pair<ActivitySource, MemoryHit>>,
@@ -503,7 +530,7 @@ internal fun activityRetrievalIntent(
     )
 }
 
-private fun ActivityEventEntity.toMemoryHit(
+internal fun ActivityEventEntity.toMemoryHit(
     normalizedQuery: String,
     terms: Set<String>,
     now: Long,
@@ -537,10 +564,10 @@ private fun ActivityEventEntity.toMemoryHit(
         overlap * 0.52f +
             phrase +
             recency * 0.12f +
-            if (requestedSource) 0.38f else 0f +
-            if (intent.periodStart != null) 0.28f else 0f +
-            if (intent.broadPhoneActivity) 0.18f else 0f +
-            if (pinned) 0.25f else 0f
+            (if (requestedSource) 0.38f else 0f) +
+            (if (intent.periodStart != null) 0.28f else 0f) +
+            (if (intent.broadPhoneActivity) 0.18f else 0f) +
+            (if (pinned) 0.25f else 0f)
     val sourceLabel = source.name.lowercase().replace('_', ' ')
     val content = formatActivityForPrompt()
     val memory = MemoryItem(

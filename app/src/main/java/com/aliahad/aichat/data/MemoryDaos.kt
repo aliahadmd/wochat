@@ -4,7 +4,6 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
-import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -14,9 +13,6 @@ interface ConversationSummaryDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(summary: ConversationSummaryEntity)
-
-    @Query("SELECT * FROM conversation_summaries")
-    suspend fun all(): List<ConversationSummaryEntity>
 }
 
 @Dao
@@ -39,21 +35,6 @@ interface MemoryDao {
     @Query(
         "SELECT * FROM memory_items WHERE status = 'ACTIVE' " +
             "AND (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
-            "AND (normalizedContent LIKE '%' || :query || '%' OR lower(title) LIKE '%' || :query || '%') " +
-            "ORDER BY pinned DESC, importance DESC, updatedAt DESC LIMIT :limit",
-    )
-    suspend fun search(query: String, includePrivate: Boolean, limit: Int): List<MemoryItemEntity>
-
-    @Query(
-        "SELECT * FROM memory_items WHERE status = 'ACTIVE' " +
-            "AND (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
-            "ORDER BY pinned DESC, importance DESC, updatedAt DESC LIMIT :limit",
-    )
-    suspend fun recent(includePrivate: Boolean, limit: Int): List<MemoryItemEntity>
-
-    @Query(
-        "SELECT * FROM memory_items WHERE status = 'ACTIVE' " +
-            "AND (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
             "ORDER BY pinned DESC, importance DESC, updatedAt DESC LIMIT :limit",
     )
     suspend fun candidates(includePrivate: Boolean, limit: Int): List<MemoryItemEntity>
@@ -72,9 +53,6 @@ interface MemoryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(memory: MemoryItemEntity): Long
 
-    @Update
-    suspend fun update(memory: MemoryItemEntity)
-
     @Query(
         "UPDATE memory_items SET status = 'SUPERSEDED', updatedAt = :updatedAt " +
             "WHERE id = :id AND status != 'DELETED'",
@@ -90,23 +68,14 @@ interface MemoryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertSource(source: MemorySourceEntity): Long
 
-    @Query("SELECT * FROM memory_sources WHERE memoryId = :memoryId ORDER BY createdAt")
-    suspend fun sources(memoryId: String): List<MemorySourceEntity>
-
     @Query("SELECT * FROM memory_sources WHERE memoryId IN (:memoryIds) ORDER BY createdAt")
     suspend fun sourcesFor(memoryIds: List<String>): List<MemorySourceEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCorrection(correction: MemoryCorrectionEntity)
 
-    @Query("SELECT * FROM memory_items")
-    suspend fun allItems(): List<MemoryItemEntity>
-
-    @Query("SELECT * FROM memory_sources")
-    suspend fun allSources(): List<MemorySourceEntity>
-
-    @Query("SELECT * FROM memory_corrections")
-    suspend fun allCorrections(): List<MemoryCorrectionEntity>
+    @Query("SELECT id, status FROM memory_items")
+    suspend fun idStatusRows(): List<MemoryStatusRow>
 
     @Query(
         "SELECT DISTINCT memoryId FROM memory_sources " +
@@ -136,6 +105,9 @@ interface ActivityDao {
 
     @Query("SELECT * FROM collector_checkpoints WHERE collector = :collector")
     suspend fun checkpoint(collector: String): CollectorCheckpointEntity?
+
+    @Query("SELECT * FROM collector_checkpoints ORDER BY collector")
+    suspend fun checkpoints(): List<CollectorCheckpointEntity>
 
     @Query("SELECT * FROM activity_events ORDER BY startedAt DESC LIMIT :limit")
     fun observeRecent(limit: Int): Flow<List<ActivityEventEntity>>
@@ -189,10 +161,4 @@ interface ActivityDao {
 
     @Query("DELETE FROM memory_summaries WHERE source = :source")
     suspend fun deleteSummaries(source: com.aliahad.aichat.core.ActivitySource)
-
-    @Query("SELECT * FROM activity_events")
-    suspend fun allEvents(): List<ActivityEventEntity>
-
-    @Query("SELECT * FROM memory_summaries")
-    suspend fun allSummaries(): List<MemorySummaryEntity>
 }

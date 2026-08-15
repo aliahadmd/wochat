@@ -50,7 +50,7 @@ class PromptContextPlanner(
         }
 
         val memoryHits = if (memoryEnabled) {
-            memoryRepository.search(MemoryQuery(currentText, limit = 10))
+            memoryRepository.search(MemoryQuery(memoryQueryText(history, currentText), limit = 16))
         } else {
             emptyList()
         }
@@ -157,3 +157,22 @@ internal fun initialPromptTokensRemaining(
     currentTokens: Int,
     systemTokens: Int,
 ): Int = contextTokens - outputReserve - safetyReserve - currentTokens - systemTokens
+
+/**
+ * Widens the memory retrieval query with salient text from the last few turns so
+ * recall is not limited to the current message. Prompt assembly keeps using only
+ * [currentText]; this expansion never reaches the prompt.
+ */
+internal fun memoryQueryText(history: List<ChatTurn>, currentText: String): String = buildString {
+    append(currentText)
+    history.takeLast(MEMORY_QUERY_HISTORY_TURNS).forEach { turn ->
+        val salient = turn.message.content.trim().take(MEMORY_QUERY_TURN_CHARS)
+        if (salient.isNotEmpty()) {
+            append(' ')
+            append(salient)
+        }
+    }
+}
+
+private const val MEMORY_QUERY_HISTORY_TURNS = 2
+private const val MEMORY_QUERY_TURN_CHARS = 200

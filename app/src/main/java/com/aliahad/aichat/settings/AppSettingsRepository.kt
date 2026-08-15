@@ -74,7 +74,7 @@ class AppSettingsRepository(
     }
 
     val collectionPaused: Flow<Boolean> = context.settingsDataStore.data.map {
-        it[Keys.collectionPaused] ?: true
+        it[Keys.collectionPaused] ?: false
     }
 
     val allowMeteredModelDownloads: Flow<Boolean> = context.settingsDataStore.data.map {

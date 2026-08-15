@@ -5,9 +5,15 @@ import android.os.Build
 import android.os.Debug
 import android.os.PowerManager
 import android.os.StatFs
+import androidx.core.app.NotificationManagerCompat
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.aliahad.aichat.AppContainer
 import com.aliahad.aichat.BuildConfig
+import com.aliahad.aichat.activity.OfficeWorkScheduler
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -75,6 +81,42 @@ class DiagnosticsReportBuilder(
                     .put("retryAttempt", projector.retryAttempt)
                     .put("error", projector.error?.take(240))
             }))
+            .put("collectors", collectorsSection())
             .toString(2)
+    }
+
+    private suspend fun collectorsSection(): JSONObject {
+        val now = System.currentTimeMillis()
+        val checkpoints = container.database.activityDao().checkpoints()
+        val powerManager = context.getSystemService(PowerManager::class.java)
+        val workStates = withContext(Dispatchers.IO) {
+            OfficeWorkScheduler.scheduledWorkNames.associateWith { name ->
+                runCatching {
+                    val infos = WorkManager.getInstance(context)
+                        .getWorkInfosForUniqueWork(name).get()
+                    (infos.firstOrNull { it.state == WorkInfo.State.RUNNING }?.state
+                        ?: infos.firstOrNull()?.state)?.name
+                }.getOrNull() ?: "UNKNOWN"
+            }
+        }
+        return JSONObject()
+            .put("collectionPaused", container.settings.collectionPaused.first())
+            .put(
+                "notificationListenerEnabled",
+                context.packageName in NotificationManagerCompat.getEnabledListenerPackages(context),
+            )
+            .put(
+                "ignoringBatteryOptimizations",
+                powerManager.isIgnoringBatteryOptimizations(context.packageName),
+            )
+            .put("workStates", JSONObject().also { json ->
+                workStates.forEach { (name, state) -> json.put(name, state) }
+            })
+            .put("checkpoints", JSONArray(checkpoints.map { checkpoint ->
+                JSONObject()
+                    .put("collector", checkpoint.collector)
+                    .put("ageMillis", now - checkpoint.lastCollectedAt)
+                    .put("error", checkpoint.error?.take(240))
+            }))
     }
 }

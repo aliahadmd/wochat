@@ -235,7 +235,9 @@ class ChatTurnRunner(
                 origin = request.origin,
             )
             skillRepository.recordInvocation(user.id, activeSkills)
-            memoryRepository.rememberMessage(user, request.conversationTemporary)
+            if (settingsRepository.memoryEnabled.first()) {
+                memoryRepository.rememberMessage(user, request.conversationTemporary)
+            }
             attachmentRepository.bind(
                 user.id,
                 request.conversationId,
