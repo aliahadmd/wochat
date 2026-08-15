@@ -1289,7 +1289,14 @@ private fun Composer(
             OutlinedTextField(
                 value = input,
                 onValueChange = onInputChange,
-                enabled = enabled && !sending,
+                // Deliberately not gated on `sending`. On-device generation is
+                // slow, and locking the composer for its whole duration means
+                // the user just watches. A second send cannot slip through:
+                // ChatViewModel.sendMessage returns early while generationJob is
+                // active, and the button below is a Stop button while sending.
+                // Disabling a focused TextField also tears down the keyboard
+                // mid-word, which is the part users actually feel.
+                enabled = enabled,
                 placeholder = {
                     Text(
                         if (enabled) "Message your local model" else "Set up a model first",
@@ -1299,8 +1306,10 @@ private fun Composer(
                 shape = RoundedCornerShape(22.dp),
                 minLines = 1,
                 maxLines = 6,
+                // Enter inserts a newline rather than sending: the field is
+                // multi-line (maxLines = 6) and mapping Enter to send would make
+                // paragraphs impossible. Sending stays on the button.
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                keyboardActions = KeyboardActions(),
             )
             Spacer(Modifier.width(8.dp))
             IconButton(
