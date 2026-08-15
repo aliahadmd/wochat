@@ -12,6 +12,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.ChatQualityMode
+import com.aliahad.aichat.core.ThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
@@ -40,6 +41,8 @@ class AppSettingsRepository(
         val memoryEnabled = booleanPreferencesKey("memory_enabled")
         val collectionPaused = booleanPreferencesKey("collection_paused")
         val allowMeteredModelDownloads = booleanPreferencesKey("allow_metered_model_downloads")
+        val themeMode = stringPreferencesKey("theme_mode")
+        val dynamicColor = booleanPreferencesKey("dynamic_color")
     }
 
     val backendMode: Flow<BackendMode> = store.data.map {
@@ -74,6 +77,25 @@ class AppSettingsRepository(
 
     val thinkingEnabled: Flow<Boolean> = store.data.map {
         it[Keys.thinking] ?: false
+    }
+
+    /** Light/dark override. Defaults to following the system. */
+    val themeMode: Flow<ThemeMode> = store.data.map {
+        it[Keys.themeMode]?.let { value ->
+            runCatching { ThemeMode.valueOf(value) }.getOrNull()
+        } ?: ThemeMode.SYSTEM
+    }
+
+    /**
+     * Material You wallpaper colour. Defaults to **off**, deliberately.
+     *
+     * `AichatTheme` documents why the neutral palette is the default: dynamic
+     * colour makes private-work surfaces look different from device to device.
+     * That is a design decision, so this preference exists to let a user opt
+     * in — not to overturn it by default.
+     */
+    val dynamicColor: Flow<Boolean> = store.data.map {
+        it[Keys.dynamicColor] ?: false
     }
 
     val memoryEnabled: Flow<Boolean> = store.data.map {
@@ -181,6 +203,14 @@ class AppSettingsRepository(
 
     suspend fun setThinkingEnabled(enabled: Boolean) {
         store.edit { it[Keys.thinking] = enabled }
+    }
+
+    suspend fun setThemeMode(mode: ThemeMode) {
+        store.edit { it[Keys.themeMode] = mode.name }
+    }
+
+    suspend fun setDynamicColor(enabled: Boolean) {
+        store.edit { it[Keys.dynamicColor] = enabled }
     }
 
     suspend fun setLastQualityMode(mode: ChatQualityMode) {

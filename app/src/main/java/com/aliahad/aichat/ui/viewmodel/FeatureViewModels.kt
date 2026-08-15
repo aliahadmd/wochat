@@ -9,6 +9,7 @@ import com.aliahad.aichat.backup.OfficeBackupRepository
 import com.aliahad.aichat.context.ContextProfileRepository
 import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.BackendMode
+import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.MemoryType
@@ -102,6 +103,8 @@ class ModelSetupViewModel internal constructor(
         collect(settings.generationSettings) { generationSettings ->
             copy(generationSettings = generationSettings)
         }
+        collect(settings.themeMode) { mode -> copy(themeMode = mode) }
+        collect(settings.dynamicColor) { enabled -> copy(dynamicColor = enabled) }
         collect(settings.allowMeteredModelDownloads) { enabled ->
             copy(allowMeteredModelDownloads = enabled)
         }
@@ -114,6 +117,16 @@ class ModelSetupViewModel internal constructor(
         viewModelScope.launch {
             runCatching { modelRepository.ensureOfficialRecords() }.onFailure(messages::report)
         }
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        _uiState.update { it.copy(themeMode = mode) }
+        launchCatching { settings.setThemeMode(mode) }
+    }
+
+    fun setDynamicColor(enabled: Boolean) {
+        _uiState.update { it.copy(dynamicColor = enabled) }
+        launchCatching { settings.setDynamicColor(enabled) }
     }
 
     fun setAllowMeteredModelDownloads(enabled: Boolean) {

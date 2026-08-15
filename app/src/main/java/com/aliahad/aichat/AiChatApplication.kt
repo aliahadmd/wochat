@@ -1,8 +1,16 @@
 package com.aliahad.aichat
 
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
+import android.os.StrictMode
 import android.util.Log
 import com.aliahad.aichat.data.AppDatabase
+import com.aliahad.aichat.data.DatabaseLockedException
+import com.aliahad.aichat.data.isDeviceCurrentlyLocked
 import com.aliahad.aichat.data.ChatRepository
 import com.aliahad.aichat.data.RoomChatRepository
 import com.aliahad.aichat.attachment.AttachmentRepository
@@ -43,11 +51,18 @@ import com.aliahad.aichat.brief.HealthConnectDataSource
 import com.aliahad.aichat.brief.HealthDataSource
 import com.aliahad.aichat.diagnostics.DiagnosticsReportBuilder
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import com.aliahad.aichat.context.DeviceContextIdentity
 import com.aliahad.aichat.BuildConfig
 
@@ -56,32 +71,184 @@ class AiChatApplication : Application() {
     lateinit var container: AppContainer
         private set
 
+    private val _containerWarm = MutableStateFlow(false)
+
+    /**
+     * False until [AppContainer.warmUp] has finished on a background thread.
+     *
+     * The UI must not touch container-backed ViewModels before this turns true:
+     * doing so forces the lazy database open onto the main thread, which is the
+     * stall this whole arrangement exists to avoid.
+     */
+    val containerWarm: StateFlow<Boolean> = _containerWarm.asStateFlow()
+
+    private val _startupBlockedByLock = MutableStateFlow(false)
+
+    /**
+     * True when startup could not proceed because the device is locked.
+     *
+     * The database key is wrapped by a Keystore key created with
+     * `setUnlockedDeviceRequired(true)`, so nothing that touches the database
+     * can run behind the keyguard. The UI uses this to explain the wait rather
+     * than sit on a splash screen forever.
+     */
+    val startupBlockedByLock: StateFlow<Boolean> = _startupBlockedByLock.asStateFlow()
+
+    /** Serialises startup so the unlock retry cannot race the initial attempt. */
+    private val startupMutex = Mutex()
+
+    private val unlockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            // The user just dismissed the keyguard, so the wrapping key is usable.
+            startStartupSequence()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
+        // Installed before the process check on purpose, so the :vulkan service
+        // process is covered too — it loads native code and is exactly the kind
+        // of place a stray main-thread read would hide.
+        installStrictModeInDebug()
         if (Application.getProcessName() == "$packageName:vulkan") return
+        // Cheap: every expensive member of AppContainer is lazy.
         container = AppContainer(this)
-        OfficeWorkScheduler.schedule(this)
-        applicationScope.launch {
+        ContextCompat.registerReceiver(
+            this,
+            unlockReceiver,
+            IntentFilter(Intent.ACTION_USER_PRESENT),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        startStartupSequence()
+    }
+
+    private fun startStartupSequence() {
+        applicationScope.launch { runStartupSequence() }
+    }
+
+    private suspend fun runStartupSequence() = startupMutex.withLock {
+        if (_containerWarm.value) return@withLock
+        if (isDeviceCurrentlyLocked()) {
+            // Deliberately do not touch the database: the Keystore call would
+            // throw and, uncaught on a worker thread, take the process down.
+            Log.i(TAG, "Startup deferred: device is locked; waiting for ACTION_USER_PRESENT")
+            _startupBlockedByLock.value = true
+            return@withLock
+        }
+
+        // Opening the SQLCipher database (key derivation + Room migrations)
+        // and loading the native inference library used to run on the main
+        // thread, stalling the first frame. Warm them here instead, so
+        // whichever consumer touches them first finds them ready.
+        val warmUp = applicationScope.async {
             try {
-                OfficeWorkScheduler.verifyAndRepair(this@AiChatApplication)
+                container.warmUp()
+                true
+            } catch (locked: DatabaseLockedException) {
+                // Raced the keyguard between the check above and the key access.
+                Log.i(TAG, "Runtime warm-up deferred: device locked", locked)
+                false
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (error: Exception) {
-                Log.e("AiChatApplication", "Periodic work verification failed", error)
-            }
-            reconcileStartupStep("interrupted work") {
-                container.chatRepository.markInterruptedMessages()
-                container.attachmentRepository.markInterrupted()
-                container.attachmentRepository.cleanupAbandonedDrafts()
-            }
-            reconcileStartupStep("model catalog") {
-                container.modelRepository.ensureOfficialRecords()
-            }
-            reconcileStartupStep("memory index") {
-                container.memoryIndexer.rebuild(container.memoryRepository.memories.first())
-                container.memoryRepository.purgeStaleIndexDocs()
+            } catch (error: Throwable) {
+                // A non-lock failure still lets the UI through so it can surface
+                // the problem rather than hiding behind the splash.
+                Log.e(TAG, "Startup reconciliation failed: runtime warmup", error)
+                true
             }
         }
+        // The UI is gated on containerWarm, so this release must be bounded.
+        // warmUp() is blocking and cannot be cancelled, so the deadline lets
+        // the UI through rather than interrupting the work: a slow warm-up
+        // costs a brief stall on first use, a stuck one would otherwise mean
+        // a splash screen that never goes away.
+        val release = applicationScope.launch {
+            val warmed = withTimeoutOrNull(WARM_UP_RELEASE_TIMEOUT_MILLIS) { warmUp.await() }
+            if (warmed == null) {
+                Log.e(
+                    TAG,
+                    "Runtime warm-up still running after " +
+                        "$WARM_UP_RELEASE_TIMEOUT_MILLIS ms; releasing the UI anyway",
+                )
+            }
+            if (warmed != false) _containerWarm.value = true
+        }
+        val warmedSuccessfully = warmUp.await()
+        release.join()
+        if (!warmedSuccessfully) {
+            _startupBlockedByLock.value = true
+            return@withLock
+        }
+        _startupBlockedByLock.value = false
+
+        // WorkManager scheduling touches disk, so it stays off the main thread too.
+        reconcileStartupStep("work scheduling") {
+            OfficeWorkScheduler.schedule(this@AiChatApplication)
+        }
+        try {
+            OfficeWorkScheduler.verifyAndRepair(this@AiChatApplication)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.e(TAG, "Periodic work verification failed", error)
+        }
+        reconcileStartupStep("interrupted work") {
+            container.chatRepository.markInterruptedMessages()
+            container.attachmentRepository.markInterrupted()
+            container.attachmentRepository.cleanupAbandonedDrafts()
+        }
+        reconcileStartupStep("model catalog") {
+            container.modelRepository.ensureOfficialRecords()
+        }
+        reconcileStartupStep("memory index") {
+            container.memoryIndexer.rebuild(container.memoryRepository.memories.first())
+            container.memoryRepository.purgeStaleIndexDocs()
+        }
+    }
+
+    private companion object {
+        /**
+         * How long the splash may wait on warm-up before the UI is let through
+         * anyway. Long enough for a cold SQLCipher open plus the native library
+         * load, short enough that a stuck warm-up cannot strand the user.
+         */
+        const val WARM_UP_RELEASE_TIMEOUT_MILLIS = 8_000L
+        const val TAG = "AiChatApplication"
+    }
+
+    /**
+     * Debug-only self-reporting for main-thread disk I/O, network and leaked
+     * resources.
+     *
+     * This exists because nothing in the project could previously observe such
+     * defects: CI compiles the app and runs JVM tests but never launches it, so
+     * the main-thread database open that plan 016 fixed survived a full audit
+     * and fifteen shipped plans unnoticed. With this in place a regression
+     * announces itself in logcat on the next debug launch.
+     *
+     * `penaltyLog()` only — deliberately not `penaltyDeath()`. Known violations
+     * still exist, and crashing debug builds would block other work. Escalating
+     * is a separate decision to make once the baseline is clean.
+     */
+    private fun installStrictModeInDebug() {
+        if (!BuildConfig.DEBUG) return
+        StrictMode.setThreadPolicy(
+            StrictMode.ThreadPolicy.Builder()
+                .detectDiskReads()
+                .detectDiskWrites()
+                .detectNetwork()
+                .detectCustomSlowCalls()
+                .penaltyLog()
+                .build(),
+        )
+        StrictMode.setVmPolicy(
+            StrictMode.VmPolicy.Builder()
+                .detectLeakedSqlLiteObjects()
+                .detectLeakedClosableObjects()
+                .detectActivityLeaks()
+                .penaltyLog()
+                .build(),
+        )
     }
 
     private suspend fun reconcileStartupStep(
@@ -99,29 +266,52 @@ class AiChatApplication : Application() {
 
 }
 
+/**
+ * Application-wide singletons.
+ *
+ * Every expensive member is `by lazy` on purpose. Constructing the container
+ * must stay cheap because it happens on the main thread in
+ * [AiChatApplication.onCreate], while opening the SQLCipher database (key
+ * derivation plus Room migrations) and loading the native inference library
+ * are slow enough to stall the first frame. [AiChatApplication] warms the
+ * expensive ones on a background dispatcher immediately after construction.
+ *
+ * Do not turn any of these back into eager initializers.
+ */
 class AppContainer(val application: Application) {
-    val database: AppDatabase = AppDatabase.create(application)
-    val settings = AppSettingsRepository(application, TokenCipher(application))
-    val chatRepository: ChatRepository = RoomChatRepository(database)
+    val database: AppDatabase by lazy { AppDatabase.create(application) }
+    val settings by lazy { AppSettingsRepository(application, TokenCipher(application)) }
+    val chatRepository: ChatRepository by lazy { RoomChatRepository(database) }
     val runtimeOperationGate = RuntimeOperationGate()
-    val memoryIndexer: MemoryIndexer = AppSearchMemoryIndexer(application)
-    val memoryRepository: RoomMemoryRepository = RoomMemoryRepository(
-        database,
-        memoryIndexer,
-    )
-    val skillRepository: SkillRepository = RoomSkillRepository(database)
-    val contextProfileRepository: ContextProfileRepository =
+    val memoryIndexer: MemoryIndexer by lazy { AppSearchMemoryIndexer(application) }
+    val memoryRepository: RoomMemoryRepository by lazy {
+        RoomMemoryRepository(
+            database,
+            memoryIndexer,
+        )
+    }
+    val skillRepository: SkillRepository by lazy { RoomSkillRepository(database) }
+    val contextProfileRepository: ContextProfileRepository by lazy {
         RoomContextProfileRepository(application, database.modelContextProfileDao(), settings)
-    val healthDataSource: HealthDataSource = HealthConnectDataSource(application)
-    val phoneSourceAccessManager = PhoneSourceAccessManager(application, healthDataSource)
-    val activityRepository: ActivityRepository = RoomActivityRepository(database)
-    val conversationSummaryRepository = ConversationSummaryRepository(database)
-    val attachmentRepository: AttachmentRepository = DefaultAttachmentRepository(application, database)
-    val modelBenchmarkRepository: ModelBenchmarkRepository =
+    }
+    val healthDataSource: HealthDataSource by lazy { HealthConnectDataSource(application) }
+    val phoneSourceAccessManager by lazy {
+        PhoneSourceAccessManager(application, healthDataSource)
+    }
+    val activityRepository: ActivityRepository by lazy { RoomActivityRepository(database) }
+    val conversationSummaryRepository by lazy { ConversationSummaryRepository(database) }
+    val attachmentRepository: AttachmentRepository by lazy {
+        DefaultAttachmentRepository(application, database)
+    }
+    val modelBenchmarkRepository: ModelBenchmarkRepository by lazy {
         RoomModelBenchmarkRepository(application, database.modelBenchmarkDao())
-    private val cpuInferenceEngine: InferenceEngine = NativeInferenceEngine(application, com.aliahad.aichat.core.BackendMode.CPU)
-    private val vulkanInferenceEngine: InferenceEngine = VulkanInferenceClient(application)
-    val inferenceEngine: InferenceEngine = RecoveringInferenceEngine(
+    }
+    private val cpuInferenceEngine: InferenceEngine by lazy {
+        NativeInferenceEngine(application, com.aliahad.aichat.core.BackendMode.CPU)
+    }
+    private val vulkanInferenceEngine: InferenceEngine by lazy { VulkanInferenceClient(application) }
+    val inferenceEngine: InferenceEngine by lazy {
+        RecoveringInferenceEngine(
         cpu = cpuInferenceEngine,
         vulkan = vulkanInferenceEngine,
         recoveryPolicy = BackendRecoveryPolicy(
@@ -132,7 +322,7 @@ class AppContainer(val application: Application) {
         ),
         operationGate = runtimeOperationGate,
         utilityUseBarrier = {
-            ::residencyController.isInitialized && residencyController.isInteractiveUseActive
+            residencyControllerLazy.isInitialized() && residencyController.isInteractiveUseActive
         },
         cpuFallbackConfigurationResolver = { original ->
             val model = modelRepository.models.first().firstOrNull { candidate ->
@@ -158,61 +348,49 @@ class AppContainer(val application: Application) {
                 backend = com.aliahad.aichat.core.BackendMode.CPU,
             )
         },
-    )
-    val diagnosticsReportBuilder = DiagnosticsReportBuilder(application, this)
-    lateinit var promptContextPlanner: PromptContextPlanner
-        private set
-    lateinit var residencyController: ModelResidencyController
-        private set
-    lateinit var conversationSummarizer: BackgroundConversationSummarizer
-        private set
-    lateinit var inferenceBenchmarkRunner: InferenceBenchmarkRunner
-        private set
-    val modelRepository: ModelRepository = DefaultModelRepository(
-        context = application,
-        dao = database.modelDao(),
-        projectorDao = database.projectorDao(),
-        settings = settings,
-        isPathInUse = { path ->
-            if (::residencyController.isInitialized) {
-                residencyController.isPathInUse(path)
-            } else {
-                inferenceEngine.loadedModelPath == path
-            }
-        },
-    )
-    val officeBackupRepository: OfficeBackupRepository = EncryptedOfficeBackupRepository(
-        context = application,
-        database = database,
-        settings = settings,
-    )
-
-    init {
-        promptContextPlanner = PromptContextPlanner(
+        )
+    }
+    val diagnosticsReportBuilder by lazy { DiagnosticsReportBuilder(application, this) }
+    val promptContextPlanner: PromptContextPlanner by lazy {
+        PromptContextPlanner(
             inferenceEngine = inferenceEngine,
             memoryRepository = memoryRepository,
             summaries = conversationSummaryRepository,
         )
-        residencyController = ModelResidencyController(
+    }
+
+    // Held as an explicit Lazy so collaborators can ask whether the controller
+    // exists yet without forcing it into existence — the barrier below and
+    // modelRepository's isPathInUse both need "if it was built, ask it".
+    private val residencyControllerLazy = lazy {
+        ModelResidencyController(
             context = application,
             inferenceEngine = inferenceEngine,
             modelRepository = modelRepository,
             attachmentRepository = attachmentRepository,
             contextProfiles = contextProfileRepository,
             settingsRepository = settings,
-        )
-        conversationSummarizer = BackgroundConversationSummarizer(
+        ).also { controller ->
+            // Interactive turns cancel-and-join any in-flight background summarization
+            // so a rolling summary can never delay a chat turn behind the runtime gate
+            // or interleave with the turn's session restore. The lambda body is
+            // deferred, so referring to conversationSummarizer here does not force it.
+            controller.registerBackgroundWorkCancellation {
+                conversationSummarizer.cancelAndJoin()
+            }
+        }
+    }
+    val residencyController: ModelResidencyController by residencyControllerLazy
+
+    val conversationSummarizer: BackgroundConversationSummarizer by lazy {
+        BackgroundConversationSummarizer(
             inferenceEngine = inferenceEngine,
             residencyState = residencyController.state,
             interactiveUseActive = { residencyController.isInteractiveUseActive },
         )
-        // Interactive turns cancel-and-join any in-flight background summarization
-        // so a rolling summary can never delay a chat turn behind the runtime gate
-        // or interleave with the turn's session restore.
-        residencyController.registerBackgroundWorkCancellation {
-            conversationSummarizer.cancelAndJoin()
-        }
-        inferenceBenchmarkRunner = DefaultInferenceBenchmarkRunner(
+    }
+    val inferenceBenchmarkRunner: InferenceBenchmarkRunner by lazy {
+        DefaultInferenceBenchmarkRunner(
             context = application,
             modelRepository = modelRepository,
             inferenceEngine = inferenceEngine,
@@ -221,5 +399,61 @@ class AppContainer(val application: Application) {
             benchmarks = modelBenchmarkRepository,
         )
     }
+    val modelRepository: ModelRepository by lazy {
+        DefaultModelRepository(
+            context = application,
+            dao = database.modelDao(),
+            projectorDao = database.projectorDao(),
+            settings = settings,
+            isPathInUse = { path ->
+                if (residencyControllerLazy.isInitialized()) {
+                    residencyController.isPathInUse(path)
+                } else {
+                    inferenceEngine.loadedModelPath == path
+                }
+            },
+        )
+    }
+    val officeBackupRepository: OfficeBackupRepository by lazy {
+        EncryptedOfficeBackupRepository(
+            context = application,
+            database = database,
+            settings = settings,
+        )
+    }
 
+    /**
+     * Forces the slow singletons into existence. Call this from a background
+     * dispatcher only: it opens the encrypted database (running any pending Room
+     * migrations) and loads the native inference library.
+     */
+    fun warmUp() {
+        // Every lazy the ViewModel factory can reach must be listed here.
+        // Warming only a subset does not help: whichever one is missed simply
+        // resolves on the main thread when the factory builds a ViewModel.
+        // StrictMode caught exactly that — inferenceBenchmarkRunner was omitted,
+        // and DeviceContextIdentity.read() inside it cost a 64 ms main-thread
+        // disk read on every launch.
+        database
+        settings
+        chatRepository
+        memoryIndexer
+        memoryRepository
+        skillRepository
+        contextProfileRepository
+        healthDataSource
+        phoneSourceAccessManager
+        activityRepository
+        conversationSummaryRepository
+        attachmentRepository
+        modelBenchmarkRepository
+        inferenceEngine
+        modelRepository
+        officeBackupRepository
+        diagnosticsReportBuilder
+        promptContextPlanner
+        residencyController
+        conversationSummarizer
+        inferenceBenchmarkRunner
+    }
 }

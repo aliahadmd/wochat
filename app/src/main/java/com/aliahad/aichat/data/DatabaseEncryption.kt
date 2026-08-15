@@ -1,5 +1,6 @@
 package com.aliahad.aichat.data
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -7,6 +8,7 @@ import android.util.Base64
 import net.zetetic.database.sqlcipher.SQLiteDatabase
 import java.io.File
 import java.nio.charset.StandardCharsets
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -14,13 +16,51 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+/**
+ * The database key exists but cannot be used right now because the device is
+ * locked.
+ *
+ * The wrapping key is created with `setUnlockedDeviceRequired(true)`, so
+ * Keystore refuses to operate with it while the keyguard is up. That is the
+ * intended security property — this exception exists so callers can wait for
+ * an unlock instead of treating it as corruption and taking the process down.
+ */
+class DatabaseLockedException(cause: Throwable? = null) : IllegalStateException(
+    "The database key is unavailable while the device is locked.",
+    cause,
+)
+
+/**
+ * Whether the keyguard is currently up.
+ *
+ * Note this is deliberately **not** `UserManager.isUserUnlocked()`, which is
+ * the Direct Boot signal and stays true once the user has unlocked at any
+ * point since boot. `setUnlockedDeviceRequired(true)` is enforced against the
+ * *current* lock state, which is what [KeyguardManager.isDeviceLocked] reports.
+ */
+internal fun Context.isDeviceCurrentlyLocked(): Boolean =
+    getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true
+
 class DatabaseKeyManager(
-    context: Context,
+    private val context: Context,
 ) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
 
-    fun passphrase(): ByteArray {
+    /**
+     * @throws DatabaseLockedException when the device is locked. Any other
+     *   Keystore failure propagates unchanged — those mean real key trouble
+     *   and must stay loud.
+     */
+    fun passphrase(): ByteArray = try {
+        readOrCreatePassphrase()
+    } catch (error: GeneralSecurityException) {
+        // Ask the keyguard rather than pattern-matching the exception text:
+        // the message wording is OEM- and version-specific.
+        if (context.isDeviceCurrentlyLocked()) throw DatabaseLockedException(error) else throw error
+    }
+
+    private fun readOrCreatePassphrase(): ByteArray {
         val stored = preferences.getString(KEY_CIPHERTEXT, null)
         if (stored != null) return decrypt(Base64.decode(stored, Base64.NO_WRAP))
         val passphrase = Base64.encode(

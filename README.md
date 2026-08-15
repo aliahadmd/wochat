@@ -1,6 +1,6 @@
-# AIchat
+# wochat
 
-AIchat is a private, on-device Android assistant built around Gemma 4 E4B. Chats,
+wochat is a private, on-device Android assistant built around Gemma 4 E4B. Chats,
 memory, attachments, skills, and model inference stay on the phone. The app does
 not send prompts to a hosted inference service.
 
@@ -19,7 +19,7 @@ not send prompts to a hosted inference service.
 - **Encrypted portable backups** for chats, memory, settings, and attachments.
 - **Encrypted local database** backed by SQLCipher.
 
-AIchat intentionally has no speech-to-text, text-to-speech, floating overlay,
+wochat intentionally has no speech-to-text, text-to-speech, floating overlay,
 screen-action automation, or Daily Brief feature.
 
 ## Requirements
@@ -30,7 +30,7 @@ screen-action automation, or Daily Brief feature.
 - About 946 MB for the optional vision projector.
 - At least 2 GB of additional free space while downloading and installing an
   artifact. Around 8 GB free is recommended for a complete setup.
-- A modern device with ample RAM. AIchat verifies a conservative context size
+- A modern device with ample RAM. wochat verifies a conservative context size
   instead of assuming the model's maximum context will fit.
 
 ## Install
@@ -39,7 +39,7 @@ Download the APK from the repository's **Releases** page and install it on a
 compatible Android device. Android may ask you to allow installation from the
 app used to open the APK.
 
-AIchat does not bundle model weights. On first launch:
+wochat does not bundle model weights. On first launch:
 
 1. Open **Settings → Models**.
 2. Choose whether downloads may use mobile or metered networks.
@@ -145,7 +145,7 @@ database changes.
 
 ## Model artifacts
 
-AIchat supports exactly these official artifacts:
+wochat supports exactly these official artifacts:
 
 | Artifact | Purpose | Approximate size |
 | --- | --- | ---: |
@@ -166,7 +166,7 @@ is installed.
   byte range.
 - Keep at least the displayed required free space available.
 - A metadata-mismatch error means the installed app catalog is outdated. Update
-  AIchat before retrying instead of repeatedly downloading an unverified file.
+  wochat before retrying instead of repeatedly downloading an unverified file.
 
 ## Current release scope
 

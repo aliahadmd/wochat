@@ -3,6 +3,7 @@ package com.aliahad.aichat.ui
 import android.animation.ValueAnimator
 import android.os.PowerManager
 import androidx.compose.animation.AnimatedContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateContentSize
@@ -89,7 +90,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -100,6 +103,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -108,8 +112,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -124,6 +131,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -149,6 +157,7 @@ import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.core.ProjectorRecord
 import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.core.SkillRecord
+import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.model.ModelConstants
@@ -159,7 +168,9 @@ import com.aliahad.aichat.ui.navigation.AppRoute
 import com.aliahad.aichat.ui.viewmodel.AppShellUiState
 import com.aliahad.aichat.ui.viewmodel.AppShellViewModel
 import com.aliahad.aichat.ui.viewmodel.ChatUiState
+import com.aliahad.aichat.ui.viewmodel.UiMessage
 import com.aliahad.aichat.ui.viewmodel.ChatViewModel
+import com.aliahad.aichat.ui.viewmodel.MAX_MESSAGE_ATTACHMENTS
 import com.aliahad.aichat.ui.viewmodel.MemoryUiState
 import com.aliahad.aichat.ui.viewmodel.MemoryViewModel
 import com.aliahad.aichat.ui.viewmodel.ModelSetupUiState
@@ -175,11 +186,14 @@ import com.aliahad.aichat.skill.MAX_SKILL_NAME_CHARS
 import com.mikepenz.markdown.compose.MarkdownSuccess
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.model.rememberMarkdownState
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 import coil3.compose.AsyncImage
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.IconButtonDefaults
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -222,14 +236,32 @@ fun AiChatApp(
         if (navController.currentDestination?.route != destination.route) {
             navController.navigate(destination.route) {
                 launchSingleTop = true
+                // These are two top-level destinations, not a drill-down. Popping
+                // back to the start destination keeps the stack one entry deep;
+                // without it, leaving settings pushed a second CHAT entry and
+                // system back took the user back into settings.
+                // saveState/restoreState must be paired — restoreState alone is inert.
+                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
                 restoreState = true
             }
         }
     }
 
     LaunchedEffect(shellState.error) {
-        shellState.error?.let {
-            snackbarHost.showSnackbar(it)
+        shellState.error?.let { message ->
+            val result = snackbarHost.showSnackbar(
+                message = message.text,
+                actionLabel = message.actionLabel,
+                // A blocking failure that vanishes after four seconds may as well
+                // not have been shown.
+                duration = if (message.important) {
+                    SnackbarDuration.Indefinite
+                } else {
+                    SnackbarDuration.Short
+                },
+                withDismissAction = message.important,
+            )
+            if (result == SnackbarResult.ActionPerformed) message.action?.invoke()
             shellActions.clearError()
         }
     }
@@ -326,6 +358,7 @@ fun AiChatApp(
                 composable(AppRoute.CHAT.route) { ChatScreen(
                     state = chat,
                     onSend = { chatActions.sendMessage(it) },
+                    onInputChange = chatActions::setInput,
                     onStop = chatActions::stopGeneration,
                     onContinue = chatActions::continueResponse,
                     onToggleThinking = chatActions::toggleThinking,
@@ -396,6 +429,7 @@ private fun ConversationDrawer(
     onSearchQueryChange: (String) -> Unit,
     onSettings: () -> Unit,
 ) {
+    val drawerHaptics = LocalHapticFeedback.current
     ModalDrawerSheet(modifier = Modifier.width(304.dp)) {
         Column(
             modifier = Modifier
@@ -485,7 +519,12 @@ private fun ConversationDrawer(
                         IconButton(onClick = { onExport(conversation.id) }) {
                             Icon(Icons.Default.Download, contentDescription = "Export conversation as Markdown")
                         }
-                        IconButton(onClick = { onDelete(conversation.id) }) {
+                        IconButton(onClick = {
+                            // Firmer feedback for a destructive action than for
+                            // an ordinary tap.
+                            drawerHaptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onDelete(conversation.id)
+                        }) {
                             Icon(Icons.Default.Delete, contentDescription = "Delete conversation")
                         }
                     }
@@ -506,6 +545,7 @@ private fun ConversationDrawer(
 private fun ChatScreen(
     state: ChatUiState,
     onSend: (String) -> Unit,
+    onInputChange: (String) -> Unit,
     onStop: () -> Unit,
     onContinue: () -> Unit,
     onToggleThinking: (String) -> Unit,
@@ -520,7 +560,26 @@ private fun ChatScreen(
     onSelectPages: (String, Set<Int>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var input by remember { mutableStateOf("") }
+    // While a response is streaming, back stops generation instead of sending
+    // the user out of the app mid-turn. Disabled otherwise, so ordinary back
+    // behaviour is untouched.
+    BackHandler(enabled = state.isSending) { onStop() }
+
+    // A local answer can take a long time, so the user often looks away. One
+    // confirmation when it lands is the highest-value haptic in the app.
+    // Keyed on the true -> false transition, not on "not sending", so it cannot
+    // re-fire on recomposition or when an old message scrolls back into view.
+    val chatHaptics = LocalHapticFeedback.current
+    var wasSending by remember { mutableStateOf(false) }
+    LaunchedEffect(state.isSending) {
+        if (wasSending && !state.isSending) {
+            chatHaptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        }
+        wasSending = state.isSending
+    }
+    // The draft lives in ChatUiState so it survives configuration changes and
+    // process death, and is cleared when the conversation changes.
+    val input = state.input
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var previewAttachment by remember { mutableStateOf<Attachment?>(null) }
     val selectedModel = if (state.modelCatalogLoaded) {
@@ -581,7 +640,7 @@ private fun ChatScreen(
         }
         Composer(
             input = input,
-            onInputChange = { input = it },
+            onInputChange = onInputChange,
             sending = state.isSending,
             enabled = state.modelCatalogLoaded && selectedModel != null,
             thinkingEnabled = state.thinkingEnabled,
@@ -597,8 +656,8 @@ private fun ChatScreen(
             blockingReason = mediaBlockingReason,
             onSend = {
                 if (input.isNotBlank() || state.draftAttachments.isNotEmpty()) {
+                    // The ViewModel clears the draft once the turn commits.
                     onSend(input)
-                    input = ""
                 }
             },
             onStop = onStop,
@@ -766,6 +825,28 @@ private fun EmptyChat(modelName: String?, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * The inputs that decide whether the message list should follow the latest
+ * content. Collapsed into one value so snapshotFlow emits a single conflatable
+ * update instead of the seven separate LaunchedEffect keys this replaced.
+ */
+private data class ScrollFollowState(
+    val messageCount: Int,
+    val lastContentLength: Int,
+    val thinkingLength: Int,
+    val thinkingExpanded: Boolean,
+    val lastMessageHeight: Int,
+    val renderRevision: Int,
+    val follow: Boolean,
+)
+
+/**
+ * How far the list may be from the target before following snaps instead of
+ * animating. Streaming moves a item or two at a time, which should glide;
+ * switching conversation can move hundreds, which should not be a long scroll.
+ */
+private const val SMOOTH_FOLLOW_ITEM_DISTANCE = 3
+
 @Composable
 internal fun MessageList(
     messages: List<ChatMessage>,
@@ -802,18 +883,41 @@ internal fun MessageList(
     LaunchedEffect(lastMessage?.id) {
         if (lastMessage?.role == MessageRole.USER) followLatest = true
     }
-    LaunchedEffect(
-        messages.size,
-        lastMessage?.content?.length,
-        thinking?.text?.length?.div(80),
-        thinking?.expanded,
-        lastMessageHeight,
-        lastMessageRenderRevision,
-        followLatest,
-    ) {
-        if (followLatest && messages.isNotEmpty()) {
-            listState.scrollToItem(messages.size)
+    // Keyed on nothing that changes per token: the effect starts once and then
+    // observes the scroll-relevant state through snapshotFlow. The previous
+    // version listed lastMessage.content.length among its keys, so every single
+    // token cancelled and relaunched the whole coroutine.
+    //
+    // conflate() collapses a burst of token updates into one scroll per frame
+    // rather than one per token, and the decision logic (followLatest) is
+    // deliberately unchanged — this alters how often the scroll runs, not when
+    // the app decides to follow.
+    LaunchedEffect(listState, conversationId) {
+        snapshotFlow {
+            ScrollFollowState(
+                messageCount = messages.size,
+                lastContentLength = messages.lastOrNull()?.content?.length ?: 0,
+                thinkingLength = thinking?.text?.length?.div(80) ?: 0,
+                thinkingExpanded = thinking?.expanded == true,
+                lastMessageHeight = lastMessageHeight,
+                renderRevision = lastMessageRenderRevision,
+                follow = followLatest,
+            )
         }
+            .conflate()
+            .collect { state ->
+                if (!state.follow || state.messageCount == 0) return@collect
+                val target = state.messageCount
+                val distance = target - listState.firstVisibleItemIndex
+                // Animate the small, continuous case that streaming produces so
+                // the list glides; snap for large jumps (first load, switching
+                // conversation) where an animation would just be a long scroll.
+                if (distance in 0..SMOOTH_FOLLOW_ITEM_DISTANCE) {
+                    listState.animateScrollToItem(target)
+                } else {
+                    listState.scrollToItem(target)
+                }
+            }
     }
 
     Box(modifier = modifier) {
@@ -853,14 +957,18 @@ internal fun MessageList(
                 Spacer(Modifier.height(1.dp))
             }
         }
-        if (!isAtBottom) {
+        androidx.compose.animation.AnimatedVisibility(
+            visible = !isAtBottom,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(200)),
+            modifier = Modifier.align(Alignment.BottomEnd),
+        ) {
             IconButton(
                 onClick = {
                     followLatest = true
                     scope.launch { listState.animateScrollToItem(messages.size) }
                 },
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
                     .padding(16.dp)
                     .background(
                         MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -1126,6 +1234,7 @@ private fun Composer(
     val selectedSkills = selectedSkillIds.mapNotNull { id ->
         skills.firstOrNull { it.id == id && it.enabled }
     }
+    val haptics = LocalHapticFeedback.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1186,10 +1295,19 @@ private fun Composer(
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
+        // A disabled attach button with no explanation reads as a broken app.
+        AnimatedVisibility(visible = attachments.size >= MAX_MESSAGE_ATTACHMENTS) {
+            Text(
+                "Attachment limit reached ($MAX_MESSAGE_ATTACHMENTS per message).",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
         Row(verticalAlignment = Alignment.Bottom) {
             IconButton(
                 onClick = onAttach,
-                enabled = enabled && !sending && attachments.size < 20,
+                enabled = enabled && !sending && attachments.size < MAX_MESSAGE_ATTACHMENTS,
                 modifier = Modifier.size(50.dp),
             ) {
                 Icon(Icons.Default.AttachFile, contentDescription = "Add attachment")
@@ -1197,7 +1315,14 @@ private fun Composer(
             OutlinedTextField(
                 value = input,
                 onValueChange = onInputChange,
-                enabled = enabled && !sending,
+                // Deliberately not gated on `sending`. On-device generation is
+                // slow, and locking the composer for its whole duration means
+                // the user just watches. A second send cannot slip through:
+                // ChatViewModel.sendMessage returns early while generationJob is
+                // active, and the button below is a Stop button while sending.
+                // Disabling a focused TextField also tears down the keyboard
+                // mid-word, which is the part users actually feel.
+                enabled = enabled,
                 placeholder = {
                     Text(
                         if (enabled) "Message your local model" else "Set up a model first",
@@ -1207,26 +1332,35 @@ private fun Composer(
                 shape = RoundedCornerShape(22.dp),
                 minLines = 1,
                 maxLines = 6,
+                // Enter inserts a newline rather than sending: the field is
+                // multi-line (maxLines = 6) and mapping Enter to send would make
+                // paragraphs impossible. Sending stays on the button.
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                keyboardActions = KeyboardActions(),
             )
             Spacer(Modifier.width(8.dp))
-            IconButton(
-                onClick = if (sending) onStop else onSend,
+            FilledIconButton(
+                onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.ContextClick)
+                    if (sending) onStop() else onSend()
+                },
                 enabled = sending || (
                     enabled &&
                         (input.isNotBlank() || attachments.isNotEmpty()) &&
                         attachments.all { it.state == AttachmentProcessingState.READY } &&
                         blockingReason == null
                 ),
-                modifier = Modifier
-                    .size(50.dp)
-                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(50)),
+                modifier = Modifier.size(50.dp),
+                // FilledIconButton rather than IconButton + .background(): a
+                // caller-supplied background ignores `enabled`, so the disabled
+                // send button used to render as a solid primary-coloured circle
+                // that looked completely pressable and did nothing. Letting the
+                // component own its colours is what makes the disabled state
+                // visible at all — the tint must not be hardcoded either.
+                colors = IconButtonDefaults.filledIconButtonColors(),
             ) {
                 Icon(
                     if (sending) Icons.Default.Stop else Icons.AutoMirrored.Filled.Send,
                     contentDescription = if (sending) "Stop generation" else "Send",
-                    tint = MaterialTheme.colorScheme.onPrimary,
                 )
             }
         }
@@ -2216,9 +2350,21 @@ private fun BatteryOptimizationRow(exempt: Boolean) {
     }
 }
 
+/**
+ * Whether the *applied* theme is dark.
+ *
+ * Deliberately not `isSystemInDarkTheme()`: light/dark is now a user preference,
+ * so the system setting and the palette actually in use can disagree. Hand-picked
+ * colours below must follow the palette, or forcing Light on a dark-mode phone
+ * paints dark badges onto a light background.
+ */
+@Composable
+private fun isAppInDarkTheme(): Boolean =
+    MaterialTheme.colorScheme.background.luminance() < 0.5f
+
 @Composable
 private fun PhoneSourceStatusBadge(state: PhoneSourceAccessState) {
-    val dark = isSystemInDarkTheme()
+    val dark = isAppInDarkTheme()
     val background = when (state) {
         PhoneSourceAccessState.GRANTED ->
             if (dark) Color(0xFF173D2B) else Color(0xFFD8F8E6)
@@ -2263,7 +2409,7 @@ private fun PhoneSourceStatusBadge(state: PhoneSourceAccessState) {
 
 @Composable
 private fun sourceGrantedColor(): Color =
-    if (isSystemInDarkTheme()) EmeraldDark else EmeraldLight
+    if (isAppInDarkTheme()) EmeraldDark else EmeraldLight
 
 private fun formatSourceTimestamp(timestamp: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(timestamp))
@@ -2834,6 +2980,50 @@ private fun SettingsScreen(
             }
         }
         if (section == SettingsSection.RUNTIME) {
+            item {
+                SectionTitle("Appearance", "How wochat looks on this device")
+            }
+            item {
+                Card {
+                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Text("Theme", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ThemeMode.entries.forEach { mode ->
+                                FilterChip(
+                                    selected = state.themeMode == mode,
+                                    onClick = { actions.setThemeMode(mode) },
+                                    label = {
+                                        Text(
+                                            mode.name.lowercase()
+                                                .replaceFirstChar(Char::uppercase),
+                                        )
+                                    },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Wallpaper colours",
+                                    style = MaterialTheme.typography.titleSmall,
+                                )
+                                Text(
+                                    "Off by default: the neutral palette keeps private " +
+                                        "surfaces looking the same on every device.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = state.dynamicColor,
+                                onCheckedChange = actions::setDynamicColor,
+                            )
+                        }
+                    }
+                }
+            }
             item {
                 ContextProfileCard(
                     model = selectedModel,

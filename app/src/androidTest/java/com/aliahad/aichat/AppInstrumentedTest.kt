@@ -33,6 +33,14 @@ class AppInstrumentedTest {
         }
         composeRule.onNodeWithTag("settings-navigation").assertIsDisplayed()
         composeRule.onNodeWithText("Models").assertIsDisplayed()
+        // The model catalog is seeded asynchronously during startup
+        // (ensureOfficialRecords), so on a fresh install the row may not exist
+        // yet. Wait for it instead of scrolling to a node that is not there —
+        // performScrollToNode fails outright rather than retrying.
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onAllNodesWithText("Gemma 4 E4B IT Q4")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
         composeRule.onNodeWithTag("settings-list")
             .performScrollToNode(hasText("Gemma 4 E4B IT Q4"))
         composeRule.onNodeWithText("Gemma 4 E4B IT Q4").assertIsDisplayed()

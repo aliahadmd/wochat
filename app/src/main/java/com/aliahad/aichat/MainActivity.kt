@@ -9,32 +9,58 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aliahad.aichat.ui.AiChatApp
 import com.aliahad.aichat.ui.theme.AichatTheme
 import com.aliahad.aichat.residency.ModelResidencyService
 import com.aliahad.aichat.core.ActivitySource
+import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.settings.DeviceSettingsNavigator
 import androidx.health.connect.client.PermissionController
 import com.aliahad.aichat.ui.viewmodel.AiChatViewModelFactory
+import com.aliahad.aichat.ui.viewmodel.MAX_MESSAGE_ATTACHMENTS
 import com.aliahad.aichat.ui.viewmodel.AppShellViewModel
 import com.aliahad.aichat.ui.viewmodel.ChatViewModel
 import com.aliahad.aichat.ui.viewmodel.MemoryViewModel
 import com.aliahad.aichat.ui.viewmodel.ModelSetupViewModel
 import com.aliahad.aichat.ui.viewmodel.SkillsViewModel
+import androidx.compose.foundation.isSystemInDarkTheme
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 class MainActivity : ComponentActivity() {
-    private lateinit var viewModelFactory: AiChatViewModelFactory
+    // Lazy on purpose: building the factory touches container.modelRepository,
+    // which forces the encrypted database open. It must not resolve until the
+    // container has been warmed on a background thread.
+    private val viewModelFactory by lazy {
+        AiChatViewModelFactory(aiChatApplication.container)
+    }
+    private val aiChatApplication: AiChatApplication
+        get() = application as AiChatApplication
+    private var uiForeground = false
     private val appShellViewModel: AppShellViewModel by viewModels { viewModelFactory }
     private val chatViewModel: ChatViewModel by viewModels { viewModelFactory }
     private val modelSetupViewModel: ModelSetupViewModel by viewModels { viewModelFactory }
@@ -42,13 +68,48 @@ class MainActivity : ComponentActivity() {
     private val skillsViewModel: SkillsViewModel by viewModels { viewModelFactory }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        viewModelFactory = AiChatViewModelFactory((application as AiChatApplication).container)
-        appShellViewModel.initialize()
-        ModelResidencyService.start(this)
+        // Hold the launch theme until the container is warm. Composing earlier
+        // would touch container-backed ViewModels and drag the database open
+        // back onto the main thread, which is what plan 016 moved off it.
+        splashScreen.setKeepOnScreenCondition {
+            // Released once warm, and also when startup is parked on the keyguard
+            // so the explanation below can be shown instead of an endless splash.
+            !aiChatApplication.containerWarm.value &&
+                !aiChatApplication.startupBlockedByLock.value
+        }
         setContent {
-            AichatTheme(dynamicColor = false) {
+            // Theme preferences live in DataStore, so they are read here rather
+            // than hardcoded. Defaults preserve the previous behaviour exactly:
+            // follow the system, neutral palette.
+            val themeMode by aiChatApplication.container.settings.themeMode
+                .collectAsStateWithLifecycle(initialValue = ThemeMode.SYSTEM)
+            val dynamicColor by aiChatApplication.container.settings.dynamicColor
+                .collectAsStateWithLifecycle(initialValue = false)
+            AichatTheme(
+                darkTheme = when (themeMode) {
+                    ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                    ThemeMode.LIGHT -> false
+                    ThemeMode.DARK -> true
+                },
+                dynamicColor = dynamicColor,
+            ) {
+                val containerWarm by aiChatApplication.containerWarm
+                    .collectAsStateWithLifecycle()
+                val startupBlockedByLock by aiChatApplication.startupBlockedByLock
+                    .collectAsStateWithLifecycle()
+                if (!containerWarm) {
+                    if (startupBlockedByLock) LockedStartupMessage()
+                    return@AichatTheme
+                }
+                LaunchedEffect(Unit) {
+                    appShellViewModel.initialize()
+                    ModelResidencyService.start(this@MainActivity)
+                    applyUiForeground()
+                    memoryViewModel.refreshPhoneSourceAccess()
+                }
                 val shellState by appShellViewModel.uiState.collectAsStateWithLifecycle()
                 val chatState by chatViewModel.uiState.collectAsStateWithLifecycle()
                 val modelState by modelSetupViewModel.uiState.collectAsStateWithLifecycle()
@@ -97,12 +158,15 @@ class MainActivity : ComponentActivity() {
                 val fileLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenMultipleDocuments(),
                 ) { uris ->
-                    uris.take(20).forEach(chatViewModel::stageAttachment)
+                    // Pass the whole selection: the ViewModel decides how much
+                    // fits and reports anything it had to leave out. Truncating
+                    // here used to discard files silently.
+                    chatViewModel.stageAttachments(uris)
                 }
                 val photoLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.PickMultipleVisualMedia(20),
+                    ActivityResultContracts.PickMultipleVisualMedia(MAX_MESSAGE_ATTACHMENTS),
                 ) { uris ->
-                    uris.forEach(chatViewModel::stageAttachment)
+                    chatViewModel.stageAttachments(uris)
                 }
                 var pendingCameraUri by androidx.compose.runtime.remember {
                     androidx.compose.runtime.mutableStateOf<Uri?>(null)
@@ -113,7 +177,16 @@ class MainActivity : ComponentActivity() {
                     if (success) pendingCameraUri?.let(chatViewModel::stageAttachment)
                     pendingCameraUri = null
                 }
-                Surface(modifier = Modifier.fillMaxSize()) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // Publishes Compose testTags into the accessibility tree as
+                        // resource ids. UiAutomator (and therefore the macrobenchmarks
+                        // in :benchmark) cannot see testTag otherwise — it is not a
+                        // test-only hook, it changes no runtime behaviour, and it is
+                        // the documented way to make a Compose app measurable.
+                        .semantics { testTagsAsResourceId = true },
+                ) {
                     shellState.launchDestination?.let { launchDestination ->
                         AiChatApp(
                         launchDestination = launchDestination,
@@ -250,19 +323,64 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        (application as AiChatApplication).container.residencyController.setUiForeground(true)
+        uiForeground = true
+        applyUiForeground()
     }
 
     override fun onResume() {
         super.onResume()
-        memoryViewModel.refreshPhoneSourceAccess()
+        // Guarded: touching a ViewModel before the container is warm would force
+        // the database open on the main thread. The warm-up effect in onCreate
+        // performs the first refresh once the container is ready.
+        if (aiChatApplication.containerWarm.value) {
+            memoryViewModel.refreshPhoneSourceAccess()
+        }
     }
 
     override fun onStop() {
-        (application as AiChatApplication).container.residencyController.setUiForeground(false)
+        uiForeground = false
+        applyUiForeground()
         super.onStop()
+    }
+
+    private fun applyUiForeground() {
+        if (!aiChatApplication.containerWarm.value) return
+        aiChatApplication.container.residencyController.setUiForeground(uiForeground)
     }
 
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+}
+
+/**
+ * Shown when the app was started behind the keyguard. The chat database is
+ * encrypted with a key that Keystore will not release while the device is
+ * locked, so there is genuinely nothing to display until the user unlocks —
+ * but saying so beats a blank screen or a splash that never ends.
+ */
+@Composable
+private fun LockedStartupMessage() {
+    Surface(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = "Unlock your phone to open wochat",
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Your chats are encrypted with a key that stays locked " +
+                    "with the device. wochat opens as soon as you unlock.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
 }

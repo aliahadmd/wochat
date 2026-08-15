@@ -10,4 +10,10 @@
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
     </style>
+
+    <style name="Theme.Aichat.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/aichat_window_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/Theme.Aichat</item>
+    </style>
 </resources>

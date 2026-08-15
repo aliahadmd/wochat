@@ -7,6 +7,7 @@ import com.aliahad.aichat.core.ActivitySourceStats
 import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.BackendBenchmark
 import com.aliahad.aichat.core.BackendMode
+import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.core.BackupPreview
 import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.Conversation
@@ -36,6 +37,12 @@ data class ChatUiState(
     val selectedSkillIds: List<String> = emptyList(),
     val messageSkills: Map<String, List<SkillPromptBlock>> = emptyMap(),
     val draftKey: String = "",
+    /**
+     * The composer's text. Owned here rather than by the composable so it
+     * survives configuration changes and process death, and so it is cleared
+     * with the rest of the draft when the conversation changes.
+     */
+    val input: String = "",
     val selectedConversationId: String? = null,
     val inferenceState: InferenceState = InferenceState.Uninitialized,
     val inferenceMetrics: InferenceMetrics = InferenceMetrics(),
@@ -65,6 +72,8 @@ data class ModelSetupUiState(
     val benchmarks: List<BackendBenchmark> = emptyList(),
     val isOptimizingBackend: Boolean = false,
     val allowMeteredModelDownloads: Boolean = false,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val dynamicColor: Boolean = false,
 )
 
 data class MemoryUiState(
@@ -83,6 +92,6 @@ data class SkillsUiState(val skills: List<SkillRecord> = emptyList())
 
 data class AppShellUiState(
     val launchDestination: AppRoute? = null,
-    val error: String? = null,
+    val error: UiMessage? = null,
     val pendingNavigation: AppRoute? = null,
 )

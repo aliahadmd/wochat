@@ -40,6 +40,41 @@ import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.UUID
 
+/** The most attachments a single message may carry. */
+internal const val MAX_MESSAGE_ATTACHMENTS = 20
+
+/**
+ * Whether moving from [previous] to [next] should discard the current draft.
+ *
+ * True only for a genuine move between two different conversations. Restoring
+ * the same conversation after process death ([previous] == [next]) and the very
+ * first selection of the session ([previous] == null) both keep the draft —
+ * otherwise every cold start would silently throw away what the user typed.
+ */
+internal fun shouldClearDraftOnSwitch(previous: String?, next: String): Boolean =
+    previous != null && previous != next
+
+/** How much of a picker selection fits, and what to tell the user if some does not. */
+internal data class AttachmentIntake(
+    val accepted: Int,
+    val rejected: Int,
+    val message: String?,
+)
+
+internal fun planAttachmentIntake(staged: Int, selected: Int, limit: Int): AttachmentIntake {
+    val remaining = (limit - staged).coerceAtLeast(0)
+    val accepted = minOf(selected, remaining)
+    val rejected = selected - accepted
+    val message = when {
+        rejected <= 0 -> null
+        accepted == 0 ->
+            "Attachment limit reached \u2014 a message can include up to $limit."
+        else ->
+            "Added $accepted of $selected \u2014 a message can include up to $limit attachments."
+    }
+    return AttachmentIntake(accepted = accepted, rejected = rejected, message = message)
+}
+
 class ChatViewModel internal constructor(
     private val savedStateHandle: SavedStateHandle,
     private val application: Application,
@@ -74,6 +109,7 @@ class ChatViewModel internal constructor(
     private val _uiState = MutableStateFlow(
         ChatUiState(
             draftKey = initialDraftKey,
+            input = savedStateHandle[KEY_DRAFT_INPUT] ?: "",
             selectedConversationId = savedStateHandle[KEY_SELECTED_CONVERSATION_ID],
             models = initialModels,
         ),
@@ -181,10 +217,20 @@ class ChatViewModel internal constructor(
         }
     }
 
+    fun setInput(value: String) {
+        savedStateHandle[KEY_DRAFT_INPUT] = value
+        _uiState.update { it.copy(input = value) }
+    }
+
     fun selectConversation(id: String) {
         if (_uiState.value.selectedConversationId == id && observedConversationId == id) return
+        val previous = _uiState.value.selectedConversationId
         generationJob?.cancel()
         runner.stop()
+        // Moving to a different conversation starts a fresh draft. Without this
+        // the text, staged attachments and selected skills follow the user into
+        // the new conversation and can be sent there by mistake.
+        if (shouldClearDraftOnSwitch(previous, id)) clearDraft()
         observeConversation(id)
     }
 
@@ -210,8 +256,20 @@ class ChatViewModel internal constructor(
                 }
             }
         }
-        viewModelScope.launch {
-            runCatching { residencyController.ensureLoaded() }.onFailure(uiMessages::report)
+        viewModelScope.launch { loadModelForConversation() }
+    }
+
+    /**
+     * Loading the model is the clearest case where a retry is genuinely useful:
+     * it commonly fails for transient reasons (the runtime gate is busy, a
+     * backend fell back) and succeeds on a second attempt, so the failure gets
+     * a real Retry rather than a notice the user can only dismiss.
+     */
+    private suspend fun loadModelForConversation() {
+        runCatching { residencyController.ensureLoaded() }.onFailure { error ->
+            uiMessages.report(error, actionLabel = "Retry") {
+                viewModelScope.launch { loadModelForConversation() }
+            }
         }
     }
 
@@ -364,6 +422,25 @@ class ChatViewModel internal constructor(
         }
     }
 
+    /**
+     * Stages a whole picker selection, accepting only what fits under
+     * [MAX_MESSAGE_ATTACHMENTS] and telling the user when anything was left
+     * out. Callers must pass the full selection — silently truncating before
+     * this point is what made attachments disappear without a word.
+     */
+    fun stageAttachments(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            val intake = planAttachmentIntake(
+                staged = _uiState.value.draftAttachments.size,
+                selected = uris.size,
+                limit = MAX_MESSAGE_ATTACHMENTS,
+            )
+            uris.take(intake.accepted).forEach { stageAttachmentNow(it) }
+            intake.message?.let(uiMessages::report)
+        }
+    }
+
     fun removeAttachment(id: String) = launchCatching { attachmentRepository.remove(id) }
 
     fun retryAttachment(id: String) = launchCatching { attachmentRepository.retry(id) }
@@ -420,9 +497,11 @@ class ChatViewModel internal constructor(
     private fun clearDraft() {
         val key = UUID.randomUUID().toString()
         savedStateHandle[KEY_DRAFT_KEY] = key
+        savedStateHandle[KEY_DRAFT_INPUT] = ""
         _uiState.update {
             it.copy(
                 draftKey = key,
+                input = "",
                 draftAttachments = emptyList(),
                 selectedSkillIds = emptyList(),
             )
@@ -440,11 +519,12 @@ class ChatViewModel internal constructor(
     }
 
     private companion object {
-        const val MAX_ATTACHMENTS = 20
+        const val MAX_ATTACHMENTS = MAX_MESSAGE_ATTACHMENTS
         const val MAX_ATTACHMENT_BYTES = 500L * 1024 * 1024
         const val SEARCH_DEBOUNCE_MILLIS = 300L
         const val KEY_SELECTED_CONVERSATION_ID = "selected_conversation_id"
         const val KEY_DRAFT_KEY = "draft_key"
+        const val KEY_DRAFT_INPUT = "draft_input"
     }
 }
 

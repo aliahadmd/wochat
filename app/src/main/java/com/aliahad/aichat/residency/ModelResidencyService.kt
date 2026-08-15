@@ -17,6 +17,7 @@ import com.aliahad.aichat.MainActivity
 import com.aliahad.aichat.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import com.aliahad.aichat.data.isDeviceCurrentlyLocked
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -30,6 +31,15 @@ class ModelResidencyService : Service() {
     }
     private lateinit var notificationManager: NotificationManager
     private var preloadJob: Job? = null
+
+    /**
+     * Touching [controller] forces the container's lazy chain, which opens the
+     * encrypted database. That key is unavailable behind the keyguard, so while
+     * the device is locked this service must not reach for it at all — the
+     * throw would land on a background thread and kill the process. The app
+     * starts the service again after unlock.
+     */
+    private fun deviceLocked(): Boolean = isDeviceCurrentlyLocked()
 
     override fun onCreate() {
         super.onCreate()
@@ -48,6 +58,13 @@ class ModelResidencyService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        if (deviceLocked()) {
+            notificationManager.notify(
+                NOTIFICATION_ID,
+                notification("Waiting to unlock", "wochat opens when you unlock the device"),
+            )
+            return
+        }
         scope.launch {
             controller.state.collectLatest { state ->
                 notificationManager.notify(NOTIFICATION_ID, notificationFor(state))
@@ -56,6 +73,7 @@ class ModelResidencyService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (deviceLocked()) return START_STICKY
         when (intent?.action) {
             ACTION_UNLOAD -> {
                 preloadJob?.cancel()
