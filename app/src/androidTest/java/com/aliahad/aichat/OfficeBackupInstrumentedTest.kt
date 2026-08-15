@@ -239,7 +239,20 @@ class OfficeBackupInstrumentedTest {
                 "CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT, createdAt INTEGER NOT NULL)",
             )
             db.execSQL("CREATE TABLE messages (id TEXT PRIMARY KEY, content TEXT)")
-            db.execSQL("CREATE TABLE attachments (id TEXT PRIMARY KEY, displayName TEXT)")
+            // Must match the real v16 `attachments` schema, not a convenience stub.
+            // The import path legitimately reads `originalPath` (NOT NULL in the
+            // schema since v2), so a two-column stub makes the test fail on a
+            // table shape that has never shipped.
+            db.execSQL(
+                "CREATE TABLE attachments (" +
+                    "id TEXT NOT NULL, conversationId TEXT, draftKey TEXT, " +
+                    "displayName TEXT NOT NULL, mimeType TEXT NOT NULL, kind TEXT NOT NULL, " +
+                    "originalPath TEXT NOT NULL, previewPath TEXT, " +
+                    "derivedImagePaths TEXT NOT NULL, byteSize INTEGER NOT NULL, " +
+                    "pageCount INTEGER, selectedPages TEXT NOT NULL, imageTokenBudget INTEGER, " +
+                    "state TEXT NOT NULL, progress REAL NOT NULL, error TEXT, " +
+                    "createdAt INTEGER NOT NULL, durationMillis INTEGER, PRIMARY KEY(id))",
+            )
             db.execSQL("CREATE TABLE attachment_chunks (id TEXT PRIMARY KEY, attachmentId TEXT)")
             db.execSQL("CREATE TABLE message_attachments (messageId TEXT, attachmentId TEXT)")
             db.execSQL("CREATE TABLE conversation_summaries (id TEXT PRIMARY KEY, conversationId TEXT)")

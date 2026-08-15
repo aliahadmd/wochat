@@ -52,11 +52,18 @@ import com.aliahad.aichat.settings.AppSettingsRepository
 import com.aliahad.aichat.settings.TokenCipher
 import com.aliahad.aichat.skill.MAX_SELECTED_SKILLS
 import com.aliahad.aichat.skill.SkillRepository
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -65,6 +72,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -87,6 +95,13 @@ class ChatViewModelInstrumentedTest {
 
     @Before
     fun setUp() {
+        // ChatViewModel.init starts eight collectors on viewModelScope, which
+        // dispatches to Dispatchers.Main. Instrumented tests run on the
+        // instrumentation thread, so without a test main dispatcher those
+        // collectors have not run by the time the assertions below execute and
+        // the ViewModel looks empty. Unconfined runs them eagerly, which is what
+        // lets these tests assert synchronously.
+        Dispatchers.setMain(UnconfinedTestDispatcher())
         val context = ApplicationProvider.getApplicationContext<Context>()
         File(context.filesDir, "preferences/settings.preferences_pb").delete()
         settings = AppSettingsRepository(context, TokenCipher(context))
@@ -135,6 +150,11 @@ class ChatViewModelInstrumentedTest {
             projectorPrompts = projectorPrompts,
             uiMessages = uiMessages,
         )
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
     }
 
     @Test
@@ -288,14 +308,22 @@ class ChatViewModelInstrumentedTest {
     }
 
     @Test
-    fun newConversationCreatesAndSelects() = runTest {
+    fun newConversationCreatesAndSelects() = runBlocking {
         val created = Conversation(id = "new1", title = "New chat", createdAt = 0, updatedAt = 0)
         fakeChatRepo.nextCreatedConversation = created
 
         viewModel.newConversation()
-        kotlinx.coroutines.yield()
 
-        assertEquals("new1", viewModel.uiState.value.selectedConversationId)
+        // createConversation first reads lastQualityMode from DataStore. That is a
+        // real asynchronous disk read, so no test scheduler can fast-forward it and
+        // a single yield() is not enough. Wait for the state instead of sampling it
+        // once — this completes as soon as the value lands, and the timeout is only
+        // a failure bound, not a sleep.
+        val state = withTimeout(5_000) { // failure bound, not a sleep: returns as soon as the value lands
+            viewModel.uiState.first { it.selectedConversationId != null }
+        }
+
+        assertEquals("new1", state.selectedConversationId)
     }
 
     @Test
@@ -491,4 +519,5 @@ private class FakeContextProfileRepository : ContextProfileRepository {
     override suspend fun resetVerification(model: ModelRecord): ModelContextProfile = resolve(model)
     override suspend fun latestForModel(modelId: String): ModelContextProfile? = null
     override suspend fun deleteForModel(modelId: String) = Unit
+
 }
