@@ -1,6 +1,9 @@
 package com.aliahad.aichat.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -82,9 +85,18 @@ fun AichatTheme(
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    // The explicit neutral system is intentional: dynamic wallpaper color would make
-    // private-work surfaces visually inconsistent from one device to the next.
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    // The explicit neutral system remains the default, for the reason it always
+    // has been: dynamic wallpaper colour makes private-work surfaces look
+    // different from one device to the next. dynamicColor is now reachable as a
+    // user preference (default off) rather than a hardcoded constant, so the
+    // decision stays the default without being the only option.
+    val context = LocalContext.current
+    val colorScheme = when {
+        dynamicColor && darkTheme -> dynamicDarkColorScheme(context)
+        dynamicColor -> dynamicLightColorScheme(context)
+        darkTheme -> DarkColorScheme
+        else -> LightColorScheme
+    }
 
     MaterialTheme(
         colorScheme = colorScheme,

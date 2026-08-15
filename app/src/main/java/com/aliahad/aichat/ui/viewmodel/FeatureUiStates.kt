@@ -7,6 +7,7 @@ import com.aliahad.aichat.core.ActivitySourceStats
 import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.BackendBenchmark
 import com.aliahad.aichat.core.BackendMode
+import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.core.BackupPreview
 import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.Conversation
@@ -71,6 +72,8 @@ data class ModelSetupUiState(
     val benchmarks: List<BackendBenchmark> = emptyList(),
     val isOptimizingBackend: Boolean = false,
     val allowMeteredModelDownloads: Boolean = false,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val dynamicColor: Boolean = false,
 )
 
 data class MemoryUiState(

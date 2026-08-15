@@ -77,6 +77,13 @@ enum class BackendFailureStage {
     UNKNOWN,
 }
 
+/** How the app picks between the light and dark palettes. */
+enum class ThemeMode {
+    SYSTEM,
+    LIGHT,
+    DARK,
+}
+
 enum class ChatQualityMode {
     FAST,
     BEST,

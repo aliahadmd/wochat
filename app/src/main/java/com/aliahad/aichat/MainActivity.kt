@@ -38,6 +38,7 @@ import com.aliahad.aichat.ui.AiChatApp
 import com.aliahad.aichat.ui.theme.AichatTheme
 import com.aliahad.aichat.residency.ModelResidencyService
 import com.aliahad.aichat.core.ActivitySource
+import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.settings.DeviceSettingsNavigator
 import androidx.health.connect.client.PermissionController
 import com.aliahad.aichat.ui.viewmodel.AiChatViewModelFactory
@@ -47,6 +48,7 @@ import com.aliahad.aichat.ui.viewmodel.ChatViewModel
 import com.aliahad.aichat.ui.viewmodel.MemoryViewModel
 import com.aliahad.aichat.ui.viewmodel.ModelSetupViewModel
 import com.aliahad.aichat.ui.viewmodel.SkillsViewModel
+import androidx.compose.foundation.isSystemInDarkTheme
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 class MainActivity : ComponentActivity() {
@@ -79,7 +81,21 @@ class MainActivity : ComponentActivity() {
                 !aiChatApplication.startupBlockedByLock.value
         }
         setContent {
-            AichatTheme(dynamicColor = false) {
+            // Theme preferences live in DataStore, so they are read here rather
+            // than hardcoded. Defaults preserve the previous behaviour exactly:
+            // follow the system, neutral palette.
+            val themeMode by aiChatApplication.container.settings.themeMode
+                .collectAsStateWithLifecycle(initialValue = ThemeMode.SYSTEM)
+            val dynamicColor by aiChatApplication.container.settings.dynamicColor
+                .collectAsStateWithLifecycle(initialValue = false)
+            AichatTheme(
+                darkTheme = when (themeMode) {
+                    ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                    ThemeMode.LIGHT -> false
+                    ThemeMode.DARK -> true
+                },
+                dynamicColor = dynamicColor,
+            ) {
                 val containerWarm by aiChatApplication.containerWarm
                     .collectAsStateWithLifecycle()
                 val startupBlockedByLock by aiChatApplication.startupBlockedByLock

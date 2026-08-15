@@ -116,6 +116,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -156,6 +157,7 @@ import com.aliahad.aichat.core.ModelRecord
 import com.aliahad.aichat.core.ProjectorRecord
 import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.core.SkillRecord
+import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.core.PhoneSourceAccessState
 import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.model.ModelConstants
@@ -2348,9 +2350,21 @@ private fun BatteryOptimizationRow(exempt: Boolean) {
     }
 }
 
+/**
+ * Whether the *applied* theme is dark.
+ *
+ * Deliberately not `isSystemInDarkTheme()`: light/dark is now a user preference,
+ * so the system setting and the palette actually in use can disagree. Hand-picked
+ * colours below must follow the palette, or forcing Light on a dark-mode phone
+ * paints dark badges onto a light background.
+ */
+@Composable
+private fun isAppInDarkTheme(): Boolean =
+    MaterialTheme.colorScheme.background.luminance() < 0.5f
+
 @Composable
 private fun PhoneSourceStatusBadge(state: PhoneSourceAccessState) {
-    val dark = isSystemInDarkTheme()
+    val dark = isAppInDarkTheme()
     val background = when (state) {
         PhoneSourceAccessState.GRANTED ->
             if (dark) Color(0xFF173D2B) else Color(0xFFD8F8E6)
@@ -2395,7 +2409,7 @@ private fun PhoneSourceStatusBadge(state: PhoneSourceAccessState) {
 
 @Composable
 private fun sourceGrantedColor(): Color =
-    if (isSystemInDarkTheme()) EmeraldDark else EmeraldLight
+    if (isAppInDarkTheme()) EmeraldDark else EmeraldLight
 
 private fun formatSourceTimestamp(timestamp: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(timestamp))
@@ -2966,6 +2980,50 @@ private fun SettingsScreen(
             }
         }
         if (section == SettingsSection.RUNTIME) {
+            item {
+                SectionTitle("Appearance", "How wochat looks on this device")
+            }
+            item {
+                Card {
+                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Text("Theme", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ThemeMode.entries.forEach { mode ->
+                                FilterChip(
+                                    selected = state.themeMode == mode,
+                                    onClick = { actions.setThemeMode(mode) },
+                                    label = {
+                                        Text(
+                                            mode.name.lowercase()
+                                                .replaceFirstChar(Char::uppercase),
+                                        )
+                                    },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Wallpaper colours",
+                                    style = MaterialTheme.typography.titleSmall,
+                                )
+                                Text(
+                                    "Off by default: the neutral palette keeps private " +
+                                        "surfaces looking the same on every device.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = state.dynamicColor,
+                                onCheckedChange = actions::setDynamicColor,
+                            )
+                        }
+                    }
+                }
+            }
             item {
                 ContextProfileCard(
                     model = selectedModel,
