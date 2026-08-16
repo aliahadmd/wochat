@@ -51,8 +51,8 @@ android {
         applicationId = "com.aliahad.aichat"
         minSdk = 33
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.0.4"
+        versionCode = 6
+        versionName = "1.1.0"
         buildConfigField(
             "String",
             "LLAMA_RUNTIME_REVISION",
