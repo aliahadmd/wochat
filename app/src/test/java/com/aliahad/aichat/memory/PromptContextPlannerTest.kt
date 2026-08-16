@@ -60,6 +60,46 @@ class PromptContextPlannerTest {
     )
 
     @Test
+    fun promptTellsTheModelWhenMemoryIsOffSoItCannotPromiseToRemember() = runTest {
+        // Reported by the owner: "My name is Ali. Keep remembering that." was answered
+        // with "I will remember that your name is Ali", and the next conversation had
+        // no idea. The turn was being discarded — by the memory toggle or by a
+        // temporary conversation — while the model happily agreed to remember it.
+        val planner = PromptContextPlanner(
+            FakeInferenceEngine(),
+            FakeMemoryRepository(),
+            summariesDatabase(),
+        )
+
+        val off = planner.plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "My name is Ali. Keep remembering that.",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = false,
+        )
+        assertTrue(
+            "the model must be told memory is off",
+            off.systemPrompt.contains("Personal memory is turned off"),
+        )
+
+        val on = planner.plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "My name is Ali. Keep remembering that.",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+        )
+        assertEquals(
+            "the notice must not appear when memory is on, or it would cost cache reuse",
+            "systemprompt",
+            on.systemPrompt,
+        )
+    }
+
+    @Test
     fun everythingFitsKeepsAllHistoryInOriginalOrder() = runTest {
         val engine = FakeInferenceEngine()
         val planner = PromptContextPlanner(engine, FakeMemoryRepository(), summariesDatabase())
@@ -78,7 +118,10 @@ class PromptContextPlannerTest {
         )
 
         assertEquals(history, plan.history)
-        assertEquals("systemprompt", plan.systemPrompt)
+        // This case passes memoryEnabled = false only to keep memory out of the way,
+        // so it now also carries the memory-off notice. The subject here is history
+        // order; assert the base prompt is still the prefix rather than the whole.
+        assertTrue(plan.systemPrompt.startsWith("systemprompt"))
         assertNull(plan.summary)
         assertTrue(plan.memories.isEmpty())
     }

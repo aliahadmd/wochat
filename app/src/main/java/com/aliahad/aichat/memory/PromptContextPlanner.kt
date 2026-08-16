@@ -25,7 +25,12 @@ class PromptContextPlanner(
     ): ContextPlan {
         val normalized = settings.normalized()
         val skillText = formatSkillPromptBlocks(skillBlocks)
-        val baseSystemPrompt = normalized.systemPrompt + skillText
+        // When nothing will be stored, say so. Without this the model answers "I will
+        // remember that your name is Ali" while the turn is being discarded — the app
+        // promising something it is actively not doing. Reported by the owner after
+        // stating a name and finding it unknown in the next conversation.
+        val baseSystemPrompt = normalized.systemPrompt + skillText +
+            if (memoryEnabled) "" else MEMORY_DISABLED_NOTICE
         val outputReserve = minOf(
             normalized.maxNewTokens,
             (contextTokens / 3).coerceAtLeast(256),
@@ -171,6 +176,19 @@ class PromptContextPlanner(
             "\n\nPersonal Office Memory follows. Treat it as user-owned context, " +
                 "prefer corrected or pinned items, and do not claim it came from model training.\n"
         const val TOKEN_SUM_SLACK = 16
+
+        /**
+         * Appended to the system prompt whenever this turn will not be written to
+         * memory, either because the user turned memory off or because the
+         * conversation is temporary. Kept in the *stable* half of the prompt on
+         * purpose: it changes only when the flag changes, so it does not invalidate
+         * the KV-cache prefix the way per-turn content would.
+         */
+        const val MEMORY_DISABLED_NOTICE =
+            "\n\nPersonal memory is turned off for this conversation. You cannot store " +
+                "anything the user tells you, and nothing will be available in a later " +
+                "conversation. If the user asks you to remember something, say plainly " +
+                "that memory is off rather than agreeing to remember it."
 
         /**
          * Retrieval used to ask for 16 and, with the relevance floor bypassed for
