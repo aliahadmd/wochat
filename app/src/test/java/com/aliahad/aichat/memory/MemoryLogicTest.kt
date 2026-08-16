@@ -5,6 +5,7 @@ import com.aliahad.aichat.core.MemoryStatus
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import com.aliahad.aichat.core.MemoryType
 import org.junit.Test
 import java.time.LocalDate
 import java.time.ZoneId
@@ -59,5 +60,51 @@ class MemoryLogicTest {
         assertFalse(isMemoryPurgeable(MemoryStatus.SUPERSEDED, cutoff + 1, cutoff))
         // Active memories are never physically purged regardless of age.
         assertFalse(isMemoryPurgeable(MemoryStatus.ACTIVE, cutoff - 1, cutoff))
+    }
+
+    @Test
+    fun oneWordRepliesAndQuestionsAreNotRemembered() {
+        // The observed junk. Every user message used to become a memory, so the
+        // store filled with rows containing "4", "26" and "What is 2 plus 2",
+        // which were then injected into every turn's prompt.
+        listOf(
+            "4",
+            "26",
+            "What is 2 plus 2",
+            "What is on my calendar today",
+            "And what about tomorrow",
+            "Explain gravity briefly",
+        ).forEach { content ->
+            assertFalse(
+                "\"$content\" should not become a memory",
+                isWorthRemembering(content, inferType(content)),
+            )
+        }
+    }
+
+    @Test
+    fun statedFactsAndPreferencesAreStillRemembered() {
+        // The guard against over-filtering: these are exactly what memory is for,
+        // and two of them are shorter than the unclassified-statement threshold —
+        // they qualify because they were classified, not because of their length.
+        listOf(
+            "My name is Ali",
+            "I prefer dark roast coffee",
+            "Remember that the office wifi password rotates monthly",
+            "I am working on a local inference app called wochat",
+            "My goal is to ship the release this quarter",
+        ).forEach { content ->
+            assertTrue(
+                "\"$content\" should be remembered",
+                isWorthRemembering(content, inferType(content)),
+            )
+        }
+    }
+
+    @Test
+    fun substantialUnclassifiedStatementIsKept() {
+        // Not matched by any inferType pattern, but long, declarative and specific.
+        val content = "The staging database migrates every Sunday at midnight UTC"
+        assertTrue(isWorthRemembering(content, MemoryType.EPISODE))
     }
 }

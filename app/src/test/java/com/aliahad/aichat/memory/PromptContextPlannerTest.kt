@@ -189,7 +189,7 @@ class PromptContextPlannerTest {
 
         assertEquals(1, repository.queries.size)
         val query = repository.queries.single()
-        assertEquals(16, query.limit)
+        assertEquals(4, query.limit)
         assertEquals(
             "query text must be exactly the current message",
             "what about tea",

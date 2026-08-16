@@ -17,6 +17,45 @@ import org.junit.Test
 private const val NOW = 1_781_280_000_000L
 
 class MemorySearchTest {
+
+    @Test
+    fun statedPreferenceIsRecalledDespiteStopWordsInTheQuestion() = runTest {
+        // Regression caught on the device, not in review. "What coffee do I like"
+        // shares exactly one content word with the stored preference; counting the
+        // stop words what/do/like in the denominator dropped overlap to 0.25 and the
+        // memory — the whole point of the feature — was silently not retrieved.
+        val preference = memoryRow("coffee", "I prefer dark roast coffee from Ethiopia")
+        val source = FakeMemorySearchSource(listOf(preference))
+
+        val hits = searchMemoryRows(
+            source = source,
+            queryText = "What coffee do I like",
+            includePrivate = true,
+            limit = 4,
+            indexedIds = emptyList(),
+            now = NOW,
+        )
+
+        assertEquals(listOf("coffee"), hits.map { it.memory.id })
+    }
+
+    @Test
+    fun queryOfOnlyStopWordsDoesNotMatchEverything() = runTest {
+        val row = memoryRow("row", "I prefer dark roast coffee from Ethiopia")
+        val source = FakeMemorySearchSource(listOf(row))
+
+        val hits = searchMemoryRows(
+            source = source,
+            queryText = "what about the",
+            includePrivate = true,
+            limit = 4,
+            indexedIds = emptyList(),
+            now = NOW,
+        )
+
+        assertTrue("stop-word-only query matched an unrelated memory", hits.isEmpty())
+    }
+
     @Test
     fun pinnedMemoryReturnedEvenWhenAbsentFromIndexedIds() = runTest {
         val pinned = memoryRow("pinned-1", "weekend trip plans to kyoto", pinned = true)
@@ -148,15 +187,20 @@ class MemorySearchTest {
     }
 
     @Test
-    fun lexicalFloorAtPointZeroEightFiltersWeakRows() = runTest {
-        // The floor applies to scan-only (non-indexed, non-pinned) rows. With
-        // zero overlap, zero phrase, zero importance/confidence the only
-        // contribution is recency * 0.03. Rows whose lexical score is not
-        // strictly greater than 0.08 must be filtered out.
-        val aboveFloor = memoryRow("above", "unrelated content alpha", importance = 0.51f, confidence = 0f)
-        val atFloor = memoryRow("at-floor", "unrelated content gamma", importance = 0.5f, confidence = 0f)
-        val belowFloor = memoryRow("below", "unrelated content beta", importance = 0.49f, confidence = 0f)
-        val source = FakeMemorySearchSource(listOf(aboveFloor, atFloor, belowFloor))
+    fun highImportanceCannotBuyAdmissionWithoutRelevance() = runTest {
+        // Replaces a test that asserted the old floor's semantics directly: rows were
+        // admitted or rejected on importance alone, with zero overlap with the query.
+        // That was the defect, not the contract. Importance now only orders rows that
+        // already earned their place, so even a maximally important, freshly updated
+        // memory is excluded when it shares nothing with the question.
+        val important = memoryRow(
+            "important",
+            "unrelated content alpha",
+            importance = 1f,
+            confidence = 1f,
+            updatedAt = NOW,
+        )
+        val source = FakeMemorySearchSource(listOf(important))
 
         val hits = searchMemoryRows(
             source = source,
@@ -167,18 +211,17 @@ class MemorySearchTest {
             now = NOW,
         )
 
-        val ids = hits.map { it.memory.id }
-        assertTrue("row scoring ~0.081 must pass the 0.08 floor", "above" in ids)
-        assertTrue("row scoring exactly 0.08 is not strictly above the floor", "at-floor" !in ids)
-        assertTrue("row scoring ~0.079 must be filtered", "below" !in ids)
+        assertTrue("priors bought admission without relevance", hits.isEmpty())
     }
 
     @Test
-    fun indexedCandidateSurvivesLexicalFloor() = runTest {
-        // Eight ghost index ids push indexed-weak to the last rank, so its
-        // score is index boost 0.28 * (1 - 8/9) ~= 0.031 plus recency 0.03,
-        // i.e. ~0.061 — strictly below the 0.08 floor. Candidates vouched for
-        // by the AppSearch index are exempt from the floor and must survive.
+    fun indexedCandidateWithNoSharedTermIsRejected() = runTest {
+        // Inverted deliberately. This used to assert the opposite — that anything
+        // AppSearch returned was exempt from the relevance floor. That exemption is
+        // why 16 unrelated memories were injected into every single turn: AppSearch
+        // is asked for limit * 8 loose candidates, so "vouched for by the index" was
+        // never a relevance verdict. A hit sharing no term with the query and
+        // matching no phrase must now be dropped.
         val indexedWeak = memoryRow(
             "indexed-weak",
             "unrelated content omega",
@@ -186,18 +229,62 @@ class MemorySearchTest {
             confidence = 0f,
         )
         val source = FakeMemorySearchSource(listOf(indexedWeak))
-        val indexedIds = (1..8).map { index -> "ghost-$index" } + "indexed-weak"
 
         val hits = searchMemoryRows(
             source = source,
             queryText = "zebra quartz",
             includePrivate = true,
             limit = 8,
-            indexedIds = indexedIds,
+            indexedIds = listOf("indexed-weak"),
             now = NOW,
         )
 
-        assertEquals(listOf("indexed-weak"), hits.map { it.memory.id })
+        assertTrue("irrelevant indexed row was injected", hits.isEmpty())
+    }
+
+    @Test
+    fun indexedCandidateSharingATermIsStillReturned() = runTest {
+        // The guard against over-correcting: a retrieval system that returns nothing
+        // is fast and useless. One shared term out of two must still be admitted.
+        val relevant = memoryRow("relevant", "zebra migration notes")
+        val source = FakeMemorySearchSource(listOf(relevant))
+
+        val hits = searchMemoryRows(
+            source = source,
+            queryText = "zebra quartz",
+            includePrivate = true,
+            limit = 8,
+            indexedIds = listOf("relevant"),
+            now = NOW,
+        )
+
+        assertEquals(listOf("relevant"), hits.map { it.memory.id })
+    }
+
+    @Test
+    fun recentEpisodeWithNoOverlapNoLongerPassesOnPriorsAlone() = runTest {
+        // The concrete regression. A typical episode's priors — importance 0.45,
+        // confidence 0.72, full recency — summed to ~0.104, above the old 0.08
+        // floor, so every recent memory qualified regardless of the question.
+        val episode = memoryRow(
+            "recent-episode",
+            "26",
+            importance = 0.45f,
+            confidence = 0.72f,
+            updatedAt = NOW,
+        )
+        val source = FakeMemorySearchSource(listOf(episode))
+
+        val hits = searchMemoryRows(
+            source = source,
+            queryText = "explain gravity briefly",
+            includePrivate = true,
+            limit = 8,
+            indexedIds = emptyList(),
+            now = NOW,
+        )
+
+        assertTrue("recent-but-irrelevant episode still injected", hits.isEmpty())
     }
 
     @Test

@@ -53,7 +53,7 @@ class PromptContextPlanner(
             memoryRepository.search(
                 MemoryQuery(
                     text = currentText,
-                    limit = 16,
+                    limit = MAX_MEMORIES_PER_TURN,
                     expansion = memoryQueryExpansion(history),
                 ),
             )
@@ -76,6 +76,11 @@ class PromptContextPlanner(
             val block = if (memoryHeaderReserved) line else MEMORY_HEADER + line
             val tokens = inferenceEngine.countTokens(block).coerceAtLeast(1)
             if (tokens > remaining / 3 || tokens > remaining) continue
+            // Hard backstop independent of scoring: time to first token is roughly
+            // (preamble tokens) / 21 per second on this hardware, so an unbounded
+            // memory block is an unbounded wait. A calendar question once pulled
+            // 1578 tokens of memory, which was ~75 s of prefill before a word appeared.
+            if (memoryTokens + tokens > MAX_MEMORY_TOKENS) continue
             selectedMemories += hit
             memoryText.append(line)
             memoryHeaderReserved = true
@@ -166,6 +171,16 @@ class PromptContextPlanner(
             "\n\nPersonal Office Memory follows. Treat it as user-owned context, " +
                 "prefer corrected or pinned items, and do not claim it came from model training.\n"
         const val TOKEN_SUM_SLACK = 16
+
+        /**
+         * Retrieval used to ask for 16 and, with the relevance floor bypassed for
+         * every AppSearch hit, effectively always return 16 — regardless of whether
+         * any of them related to the question.
+         */
+        const val MAX_MEMORIES_PER_TURN = 4
+
+        /** Ceiling on the assembled memory block, in tokens. */
+        const val MAX_MEMORY_TOKENS = 192
     }
 }
 

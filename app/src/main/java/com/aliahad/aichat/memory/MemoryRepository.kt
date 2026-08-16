@@ -91,6 +91,7 @@ class RoomMemoryRepository(
         val redacted = SensitiveTextRedactor.redact(message.content).trim()
         if (redacted.isBlank()) return
         val type = inferType(redacted)
+        if (!isWorthRemembering(redacted, type)) return
         val title = titleFor(redacted)
         insertIfAbsent(
             type = type,
@@ -365,7 +366,7 @@ internal interface MemorySearchDataSource {
 private data class RankedMemoryRow(
     val row: MemoryItemEntity,
     val score: Float,
-    val lexicalScore: Float,
+    val relevance: Float,
 )
 
 internal suspend fun searchMemoryRows(
@@ -377,12 +378,9 @@ internal suspend fun searchMemoryRows(
     now: Long,
 ): List<MemoryHit> {
     val normalized = normalize(queryText)
-    val terms = normalized.split(' ').filter { it.length > 1 }.toSet()
+    val terms = contentTerms(normalized)
     val indexRanks = indexedIds.withIndex().associate { it.value to it.index }
-    val pinnedIds = source.pinnedIds()
-    // Candidates vouched for by the AppSearch index (or by pinning) earned their
-    // slot and are exempt from the lexical floor applied to scan-only rows.
-    val floorExemptIds = (indexedIds + pinnedIds).toSet()
+    val pinnedIds = source.pinnedIds().toSet()
     val candidates = if (indexedIds.isNotEmpty()) {
         source.candidatesIn(includePrivate, (indexedIds + pinnedIds).distinct())
     } else {
@@ -391,7 +389,7 @@ internal suspend fun searchMemoryRows(
     val ranked = candidates.asSequence()
         .filter { it.sensitivity != MemorySensitivity.SECRET }
         .map { row ->
-            val memoryTerms = row.normalizedContent.split(' ').filter { it.length > 1 }.toSet()
+            val memoryTerms = contentTerms(row.normalizedContent)
             val overlap = if (terms.isEmpty()) 0f else {
                 terms.intersect(memoryTerms).size.toFloat() / terms.size
             }
@@ -401,22 +399,30 @@ internal suspend fun searchMemoryRows(
             val indexBoost = indexRanks[row.id]?.let { rank ->
                 0.28f * (1f - rank.toFloat() / indexedIds.size.coerceAtLeast(1))
             } ?: 0f
-            val lexicalScore =
-                overlap * 0.48f +
-                    phrase +
-                    indexBoost +
-                    row.importance * 0.1f +
-                    row.confidence * 0.04f +
-                    recency * 0.03f +
-                    if (row.pinned) 0.25f else 0f
+            // Relevance is the query-dependent part only. The priors below (importance,
+            // confidence, recency, pinned) used to be inside the same number that was
+            // thresholded, and they sum to ~0.10 for a typical episode — above the old
+            // 0.08 floor on their own. Every recent memory therefore passed the filter
+            // with zero overlap with the question, which is how 16 unrelated rows were
+            // injected into every turn. Priors now only order rows that are already
+            // relevant; they can no longer buy admission.
+            val relevance = overlap * 0.48f + phrase + indexBoost * 0.5f
+            val priors = row.importance * 0.1f +
+                row.confidence * 0.04f +
+                recency * 0.03f +
+                if (row.pinned) 0.25f else 0f
             RankedMemoryRow(
                 row = row,
-                score = lexicalScore,
-                lexicalScore = lexicalScore,
+                score = relevance + priors,
+                relevance = relevance,
             )
         }
         .filter {
-            terms.isEmpty() || it.row.id in floorExemptIds || it.lexicalScore > 0.08f
+            // An AppSearch hit is a recall mechanism, not a relevance verdict: it is
+            // asked for limit * 8 candidates and returns loose matches. Require a real
+            // lexical anchor in the query. Pinning is the user's own explicit act and
+            // still overrides.
+            terms.isEmpty() || it.row.pinned || it.relevance >= MIN_MEMORY_RELEVANCE
         }
         .sortedByDescending(RankedMemoryRow::score)
         .take(limit.coerceIn(1, 24))
@@ -475,6 +481,44 @@ internal fun isStaleIndexStatus(status: MemoryStatus): Boolean =
 internal fun staleIndexDocIds(rows: List<MemoryStatusRow>): List<String> =
     rows.filter { isStaleIndexStatus(it.status) }.map(MemoryStatusRow::id)
 
+
+/**
+ * Content-bearing words of a normalized string, with stop words removed.
+ *
+ * Overlap is measured as a fraction of the query's terms, so stop words used to
+ * dilute it: "what coffee do I like" against a stored "I prefer dark roast coffee"
+ * shared only `coffee` out of four counted terms, scoring 0.12 and falling below
+ * the relevance floor — the memory existed, matched on the one word that mattered,
+ * and was still dropped. Measured on the device before this was added.
+ *
+ * Falls back to the raw terms when a query is nothing but stop words, so such a
+ * query is not silently treated as empty (which would match everything).
+ */
+internal fun contentTerms(normalized: String): Set<String> {
+    val words = normalized.split(' ').filter { it.length > 1 }.toSet()
+    val content = words - STOP_WORDS
+    return content.ifEmpty { words }
+}
+
+private val STOP_WORDS = setOf(
+    "the", "and", "for", "with", "that", "this", "was", "were", "are", "you",
+    "your", "our", "their", "his", "her", "its", "have", "has", "had", "not",
+    "but", "can", "could", "will", "would", "should", "shall", "may", "might",
+    "what", "who", "when", "where", "why", "how", "which", "whose", "does",
+    "did", "done", "get", "got", "let", "please", "tell", "show", "give",
+    "about", "from", "into", "onto", "than", "then", "there", "here", "some",
+    "any", "all", "each", "very", "just", "like", "want", "need", "know",
+)
+
+/**
+ * Minimum query-dependent score a memory needs before it may be injected.
+ *
+ * Calibrated so a row AppSearch merely surfaced, with no shared term and no phrase
+ * match, scores at most `0.28 * 0.5 = 0.14` and is rejected, while one shared term
+ * out of three (`0.33 * 0.48 = 0.16`) is admitted.
+ */
+internal const val MIN_MEMORY_RELEVANCE = 0.15f
+
 /** Physical deletion grace period for DELETED/SUPERSEDED memories, in days. */
 internal const val MEMORY_PURGE_RETENTION_DAYS = 30L
 
@@ -525,7 +569,7 @@ object SensitiveTextRedactor {
         .replace(card, "[redacted payment number]")
 }
 
-private fun inferType(content: String): MemoryType {
+internal fun inferType(content: String): MemoryType {
     val normalized = content.lowercase()
     return when {
         Regex("""\b(i prefer|i like|i love|i dislike|my favorite)\b""").containsMatchIn(normalized) ->
@@ -541,6 +585,51 @@ private fun inferType(content: String): MemoryType {
         else -> MemoryType.EPISODE
     }
 }
+
+/**
+ * Whether a user message asserts something worth recalling in a later conversation.
+ *
+ * Every user message used to become a memory, which is how rows containing `"4"`,
+ * `"26"` and `"What is 2 plus 2"` ended up being retrieved and injected into
+ * prompts — 16 of them on every single turn.
+ *
+ * [inferType] returns [MemoryType.EPISODE] as its *fallback*, so an EPISODE is by
+ * definition a message that did not look like a stated fact, preference, goal or
+ * project. Those are kept only when they read as a substantial statement: a
+ * question is a request for information, not a durable fact about the user, and
+ * short chatter carries nothing worth recalling.
+ */
+internal fun isWorthRemembering(content: String, type: MemoryType): Boolean {
+    val trimmed = content.trim()
+    if (trimmed.isEmpty()) return false
+    // Length is not a proxy for worth once the message has been classified:
+    // "My name is Ali" is 14 characters and is precisely what memory exists for.
+    if (type != MemoryType.EPISODE) return true
+    if (trimmed.length < MIN_MEMORY_CHARS) return false
+    if (isQuestion(trimmed)) return false
+    return trimmed.split(WHITESPACE).size >= MIN_MEMORY_WORDS
+}
+
+private fun isQuestion(content: String): Boolean {
+    if (content.endsWith("?")) return true
+    val firstWord = content.substringBefore(' ').lowercase().trim('"', '\'', '(')
+    return firstWord in INTERROGATIVES
+}
+
+private val WHITESPACE = Regex("\\s+")
+
+private val INTERROGATIVES = setOf(
+    "what", "who", "when", "where", "why", "how", "which", "whose",
+    "is", "are", "was", "were", "do", "does", "did", "can", "could",
+    "will", "would", "should", "shall", "may", "might", "am", "tell",
+    "explain", "show", "list", "give", "summarize", "write", "make",
+)
+
+/** Below this a message cannot carry a fact worth recalling. */
+private const val MIN_MEMORY_CHARS = 24
+
+/** An unclassified statement needs this much substance to earn a row. */
+private const val MIN_MEMORY_WORDS = 8
 
 private fun titleFor(content: String): String =
     content.replace(Regex("\\s+"), " ").trim().take(96).ifEmpty { "Memory" }
