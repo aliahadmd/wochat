@@ -114,8 +114,10 @@ class PromptContextPlanner(
             summaryTokens
         }
 
-        val systemPrompt = buildString {
-            append(baseSystemPrompt)
+        // Memories are retrieved against the current message, so they differ on every
+        // turn. Keeping them out of the system prompt is what lets the session reuse
+        // its KV cache instead of re-decoding the entire conversation each time.
+        val turnPreamble = buildString {
             if (selectedMemories.isNotEmpty()) {
                 append(MEMORY_HEADER)
                 append(memoryText)
@@ -123,6 +125,7 @@ class PromptContextPlanner(
             summary?.content?.takeIf(String::isNotBlank)?.let {
                 append("\nConversation summary:\n")
                 append(it)
+                append('\n')
             }
         }
         // Sum the per-block counts already measured above instead of re-tokenizing the
@@ -136,7 +139,8 @@ class PromptContextPlanner(
             "Prompt planning exceeded the loaded model context"
         }
         return ContextPlan(
-            systemPrompt = systemPrompt,
+            systemPrompt = baseSystemPrompt,
+            turnPreamble = turnPreamble,
             summary = summary,
             history = selectedReversed.map { it.first },
             memories = selectedMemories,

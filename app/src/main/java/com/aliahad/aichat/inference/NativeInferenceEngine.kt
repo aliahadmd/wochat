@@ -169,8 +169,11 @@ class NativeInferenceEngine(
         if (shouldSkipRestore(activeConversationId, activeRestoreFingerprint, conversationId, fingerprint)) {
             return@withContext
         }
-        // The native session is cleared below; a failed restore must not leave the
-        // previous conversation marked active against the new conversation's KV cache.
+        // The native session may be cleared below; a failed restore must not leave
+        // the previous conversation marked active against the new conversation's
+        // KV cache. Remember which conversation it held so the reuse check knows
+        // whether the cache belongs to this conversation at all.
+        val previousConversationId = activeConversationId
         activeConversationId = null
         activeRestoreFingerprint = null
         _state.value = InferenceState.PreparingHistory
@@ -181,12 +184,29 @@ class NativeInferenceEngine(
         } else {
             "${settings.systemPrompt}\nAnswer directly without displaying hidden reasoning."
         }
+        // A follow-up turn is almost always the previous turn's history plus the
+        // exchange just finished, which the live KV cache already holds. Ask the
+        // session how much of it is still valid and decode only the remainder;
+        // rebuilding instead cost 29.3 s for 764 tokens on every single turn.
+        val reusablePrefix = if (previousConversationId == conversationId) {
+            nativeSessionPrefixLength(
+                prompt,
+                settings.thinkingEnabled,
+                history.map { it.message.role.nativeRole }.toTypedArray(),
+                history.map { it.withAttachmentText() }.toTypedArray(),
+            )
+        } else {
+            REBUILD_SESSION
+        }
         try {
-            nativeRestore(prompt, emptyArray(), emptyArray(), settings.thinkingEnabled)?.let {
-                _state.value = InferenceState.Error(it)
-                throw BackendInferenceException(loadedBackend, BackendFailureStage.RESTORE, it)
+            if (reusablePrefix == REBUILD_SESSION) {
+                nativeRestore(prompt, emptyArray(), emptyArray(), settings.thinkingEnabled)?.let {
+                    _state.value = InferenceState.Error(it)
+                    throw BackendInferenceException(loadedBackend, BackendFailureStage.RESTORE, it)
+                }
             }
-            history.forEach { turn ->
+            val pending = if (reusablePrefix == REBUILD_SESSION) history else history.drop(reusablePrefix)
+            pending.forEach { turn ->
                 val mediaPaths = turn.attachments.flatMap { it.mediaPaths }
                 val content = turn.withAttachmentText()
                 val error = if (turn.message.role == MessageRole.USER && mediaPaths.isNotEmpty()) {
@@ -200,7 +220,12 @@ class NativeInferenceEngine(
                 }
             }
         } finally {
-            nativeReleaseModelPages()
+            // Deliberately does NOT release the model's file-backed pages here.
+            // Doing so used to MADV_DONTNEED the whole ~4.9 GB mapping after every
+            // restore, so the next turn had to fault all of it back from storage
+            // *while* prefilling — measured at 21.8 tok/s (730 prompt tokens in
+            // 33.4 s) with RssFile cycling 140 MB -> 2.4 GB -> 140 MB per turn.
+            // Pages are now surrendered only on real pressure, via onTrimMemory.
             releaseCpu()
         }
         activeConversationId = conversationId
@@ -231,7 +256,11 @@ class NativeInferenceEngine(
             val promptMark = TimeSource.Monotonic.markNow()
             val preparedPrompt = turn.withAttachmentText()
             val beginError = if (mediaPaths.isEmpty()) {
-                nativeBeginUserPrompt(preparedPrompt, settings.maxNewTokens)
+                nativeBeginUserPrompt(
+                    turn.preamble + preparedPrompt,
+                    preparedPrompt,
+                    settings.maxNewTokens,
+                )
             } else {
                 nativeBeginUserTurn(preparedPrompt, mediaPaths.toTypedArray(), settings.maxNewTokens)
             }
@@ -318,7 +347,7 @@ class NativeInferenceEngine(
                 throw error
             } finally {
                 nativeFinishGeneration()
-                nativeReleaseModelPages()
+                // Keep the weights resident between turns; see restoreSession().
                 if (_state.value !is InferenceState.Error) {
                     _state.value = InferenceState.Ready(requireNotNull(loadedModelName), loadedBackend)
                 }
@@ -330,6 +359,11 @@ class NativeInferenceEngine(
 
     override fun cancel() {
         cancelled = true
+    }
+
+    override fun releaseResidentPages() {
+        if (loadedModelPath == null) return
+        nativeReleaseModelPages()
     }
 
     override suspend fun unload() = withContext(dispatcher) {
@@ -371,7 +405,11 @@ class NativeInferenceEngine(
                         throw BackendInferenceException(backend, BackendFailureStage.BENCHMARK, it)
                     }
                     val promptMark = TimeSource.Monotonic.markNow()
-                    nativeBeginUserPrompt("Reply with exactly the word ready.", 8)?.let {
+                    nativeBeginUserPrompt(
+                        "Reply with exactly the word ready.",
+                        "Reply with exactly the word ready.",
+                        8,
+                    )?.let {
                         throw BackendInferenceException(backend, BackendFailureStage.BENCHMARK, it)
                     }
                     val promptMillis = promptMark.elapsedNow().inWholeMilliseconds.coerceAtLeast(1)
@@ -435,6 +473,7 @@ class NativeInferenceEngine(
             }
             nativeBeginUserPrompt(
                 "Reply with exactly the word verified.",
+                "Reply with exactly the word verified.",
                 VERIFICATION_TOKEN_LIMIT,
             )?.let {
                 throw BackendInferenceException(loadedBackend, BackendFailureStage.VERIFY, it)
@@ -490,7 +529,11 @@ class NativeInferenceEngine(
         content: String,
         paths: Array<String>,
     ): String?
-    private external fun nativeBeginUserPrompt(prompt: String, maxTokens: Int): String?
+    private external fun nativeBeginUserPrompt(
+        prompt: String,
+        recordedPrompt: String,
+        maxTokens: Int,
+    ): String?
     private external fun nativeBeginUserTurn(
         prompt: String,
         paths: Array<String>,
@@ -507,6 +550,12 @@ class NativeInferenceEngine(
     private external fun nativeFinishGeneration()
     private external fun nativeUnload()
     private external fun nativeReleaseModelPages()
+    private external fun nativeSessionPrefixLength(
+        systemPrompt: String,
+        enableThinking: Boolean,
+        roles: Array<String>,
+        contents: Array<String>,
+    ): Int
     private external fun nativeSystemInfo(): String
     private external fun nativeShutdown()
 
@@ -561,6 +610,9 @@ private fun Int.toStopReason(): GenerationStopReason = when (this) {
     4, 5 -> GenerationStopReason.DECODE_ERROR
     else -> GenerationStopReason.ERROR
 }
+
+/** `nativeSessionPrefixLength` sentinel: the KV cache cannot be reused. */
+private const val REBUILD_SESSION = -1
 
 private const val TOKEN_CHANNEL_THOUGHT = 1
 private const val TOKEN_CHANNEL_ANSWER = 2

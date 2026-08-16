@@ -432,6 +432,8 @@ private class ScriptedSummarizationEngine(
 
     override fun cancel(): Unit = error("unused")
 
+    override fun releaseResidentPages(): Unit = error("unused")
+
     override suspend fun unload(): Unit = error("unused")
 
     override suspend fun benchmark(

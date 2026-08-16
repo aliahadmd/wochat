@@ -301,6 +301,7 @@ class ChatTurnRunner(
                 UserTurn(
                     conversationId = request.conversationId,
                     text = user.content,
+                    preamble = contextPlan.turnPreamble,
                     attachments = adjustedContexts,
                 ),
                 plannedSettings,
@@ -521,7 +522,11 @@ class ChatTurnRunner(
             var lastSavedAt = 0L
             var lastThinkingFlushAt = 0L
             inferenceEngine.generate(
-                UserTurn(request.conversationId, hiddenPrompt),
+                UserTurn(
+                    request.conversationId,
+                    hiddenPrompt,
+                    preamble = contextPlan.turnPreamble,
+                ),
                 plannedSettings,
             ).collect { event ->
                 when (event) {

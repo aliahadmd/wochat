@@ -106,7 +106,7 @@ class PromptContextPlannerTest {
         assertEquals(listOf(newest), plan.history)
         assertNotNull(plan.summary)
         assertTrue(plan.summary!!.content.contains("User:"))
-        assertTrue(plan.systemPrompt.contains("Conversation summary:"))
+        assertTrue(plan.turnPreamble.contains("Conversation summary:"))
         assertEquals(1, dao.upserted.size)
     }
 
@@ -147,8 +147,8 @@ class PromptContextPlannerTest {
         )
 
         assertEquals(1, withMemory.memories.size)
-        assertTrue(withMemory.systemPrompt.contains("Personal Office Memory follows"))
-        assertTrue(withMemory.systemPrompt.contains("remembered fact"))
+        assertTrue(withMemory.turnPreamble.contains("Personal Office Memory follows"))
+        assertTrue(withMemory.turnPreamble.contains("remembered fact"))
         assertEquals(1, repository.searchCalls)
 
         val repository2 = FakeMemoryRepository(hits = listOf(memoryHit()))
@@ -166,7 +166,7 @@ class PromptContextPlannerTest {
         )
 
         assertTrue(withoutMemory.memories.isEmpty())
-        assertFalse(withoutMemory.systemPrompt.contains("Personal Office Memory follows"))
+        assertFalse(withoutMemory.turnPreamble.contains("Personal Office Memory follows"))
         assertEquals(0, repository2.searchCalls)
     }
 
@@ -248,7 +248,7 @@ class PromptContextPlannerTest {
         )
 
         assertNotNull(fittingPlan.summary)
-        assertTrue(fittingPlan.systemPrompt.contains("Conversation summary:\ntiny"))
+        assertTrue(fittingPlan.turnPreamble.contains("Conversation summary:\ntiny"))
 
         val oversized = summariesDatabase(seedContent = "s".repeat(40_000))
         val oversizedPlan = PromptContextPlanner(
@@ -265,7 +265,7 @@ class PromptContextPlannerTest {
         )
 
         assertNull(oversizedPlan.summary)
-        assertFalse(oversizedPlan.systemPrompt.contains("Conversation summary"))
+        assertFalse(oversizedPlan.turnPreamble.contains("Conversation summary"))
     }
 
     @Test
@@ -467,6 +467,8 @@ private class FakeInferenceEngine(
     override suspend fun verifyLoadedContext(): Int = error("unused")
 
     override fun cancel(): Unit = error("unused")
+
+    override fun releaseResidentPages(): Unit = error("unused")
 
     override suspend fun unload(): Unit = error("unused")
 

@@ -375,6 +375,8 @@ private class FakeInferenceEngine(
 
     override fun cancel() = Unit
 
+    override fun releaseResidentPages() = Unit
+
     override suspend fun unload() {
         loadedModelPath = null
         loadedProjectorPath = null

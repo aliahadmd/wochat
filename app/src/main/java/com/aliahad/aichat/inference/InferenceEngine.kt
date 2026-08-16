@@ -59,6 +59,15 @@ interface InferenceEngine {
     ): Flow<GenerationEvent>
     suspend fun countTokens(text: String): Int
     suspend fun verifyLoadedContext(): Int
+
+    /**
+     * Surrenders the model's file-backed pages back to the kernel.
+     *
+     * Only for genuine memory pressure (`onTrimMemory`). The pages fault back in on
+     * the next decode, which costs tens of seconds of prefill throughput, so this
+     * must never be called on the per-turn path.
+     */
+    fun releaseResidentPages()
     fun cancel()
     suspend fun unload()
     suspend fun benchmark(

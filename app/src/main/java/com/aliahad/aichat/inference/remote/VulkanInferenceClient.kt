@@ -295,6 +295,10 @@ class VulkanInferenceClient @OptIn(ExperimentalCoroutinesApi::class) constructor
         runCatching { service?.cancel() }
     }
 
+    // The weights live in the remote service's address space, so there is nothing
+    // this client can hand back to the kernel.
+    override fun releaseResidentPages() = Unit
+
     override suspend fun unload() = withContext(dispatcher) {
         runCatching { service?.unload() }
         clearLoadedState()

@@ -473,6 +473,7 @@ private class FakeInferenceEngine : InferenceEngine {
     override suspend fun countTokens(text: String): Int = text.length
     override suspend fun verifyLoadedContext(): Int = 1
     override fun cancel() = Unit
+    override fun releaseResidentPages() = Unit
     override suspend fun unload() = Unit
     override suspend fun benchmark(path: String, displayName: String, settings: GenerationSettings): Map<BackendMode, InferenceBenchmarkSample> = emptyMap()
     override fun systemInfo(): String = "fake"

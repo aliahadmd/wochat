@@ -251,6 +251,21 @@ class AiChatApplication : Application() {
         )
     }
 
+    /**
+     * The only place the model's ~4.9 GB of file-backed pages are given back.
+     *
+     * They used to be dropped after every restore and every generation, which meant
+     * each turn refaulted the whole mapping from storage while prefilling — 730
+     * prompt tokens took 33.4 s at 21.8 tok/s. Now the kernel has to actually ask.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level < TRIM_MEMORY_RUNNING_LOW) return
+        if (!containerWarm.value) return
+        runCatching { container.inferenceEngine.releaseResidentPages() }
+            .onFailure { Log.w("AiChatApplication", "Could not release model pages", it) }
+    }
+
     private suspend fun reconcileStartupStep(
         label: String,
         block: suspend () -> Unit,

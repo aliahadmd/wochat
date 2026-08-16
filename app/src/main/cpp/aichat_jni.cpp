@@ -684,6 +684,7 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeBeginUserPrompt(
     JNIEnv * env,
     jobject,
     jstring prompt,
+    jstring recorded_prompt,
     jint max_tokens
 ) {
     try {
@@ -707,6 +708,13 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeBeginUserPrompt(
             true,
             &chat_params
         );
+        // `prompt` carries this turn's retrieved memories; `recorded_prompt` is the
+        // message the user actually sent. Record the latter so the next turn's
+        // prefix check compares against durable history and not against scaffolding
+        // that only ever applied to this one turn.
+        if (error.empty() && recorded_prompt != nullptr && !chat_messages.empty()) {
+            chat_messages.back().content = from_jstring(env, recorded_prompt);
+        }
         if (error.empty()) error = configure_sampler(chat_params);
         return error.empty() ? nullptr : to_jstring(env, error);
     } catch (const std::exception & error) {
@@ -766,6 +774,73 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeAppendHistoryText(
         return error.empty() ? nullptr : to_jstring(env, error);
     } catch (const std::exception & error) {
         return to_jstring(env, error.what());
+    }
+}
+
+// Reports how many leading history messages the live session already holds, so a
+// follow-up turn can append its delta instead of re-prefilling from position 0.
+//
+// Returns -1 when the cache cannot be reused and the caller must rebuild: no
+// session, a different system prompt or thinking mode, a message that differs
+// from what was decoded, or a session holding MORE history than requested (an
+// edited or deleted turn). The session itself is the authority here — the JVM
+// keeps no mirror that could drift out of sync with the KV cache.
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeSessionPrefixLength(
+    JNIEnv * env,
+    jobject,
+    jstring system_prompt,
+    jboolean enable_thinking,
+    jobjectArray roles,
+    jobjectArray contents
+) {
+    try {
+        if (model == nullptr || context == nullptr) return -1;
+        if (chat_messages.empty() || current_position == 0) {
+            LOGI("Session reuse declined: no live session");
+            return -1;
+        }
+        if (static_cast<bool>(enable_thinking) != thinking_enabled) {
+            LOGI("Session reuse declined: thinking mode changed");
+            return -1;
+        }
+        if (chat_messages.front().role != "system") return -1;
+        if (chat_messages.front().content != from_jstring(env, system_prompt)) {
+            LOGI(
+                "Session reuse declined: system prompt changed (held %zu chars, requested %zu)",
+                chat_messages.front().content.size(),
+                from_jstring(env, system_prompt).size()
+            );
+            return -1;
+        }
+
+        const jsize requested = env->GetArrayLength(roles);
+        if (requested != env->GetArrayLength(contents)) return -1;
+        const size_t held = chat_messages.size() - 1;
+        if (held > static_cast<size_t>(requested)) {
+            LOGI("Session reuse declined: session holds %zu history messages, %d requested",
+                 held, requested);
+            return -1;
+        }
+
+        for (size_t index = 0; index < held; ++index) {
+            auto role_value = static_cast<jstring>(env->GetObjectArrayElement(roles, index));
+            auto content_value = static_cast<jstring>(env->GetObjectArrayElement(contents, index));
+            const bool same =
+                chat_messages[index + 1].role == from_jstring(env, role_value) &&
+                chat_messages[index + 1].content == from_jstring(env, content_value);
+            env->DeleteLocalRef(role_value);
+            env->DeleteLocalRef(content_value);
+            if (!same) {
+                // Never log the contents themselves — this is conversation text.
+                LOGI("Session reuse declined: history message %zu differs", index);
+                return -1;
+            }
+        }
+        LOGI("Session reuse accepted: %zu of %d history messages already decoded", held, requested);
+        return static_cast<jint>(held);
+    } catch (const std::exception &) {
+        return -1;
     }
 }
 

@@ -234,6 +234,12 @@ data class UserTurn(
     val conversationId: String,
     val text: String,
     val attachments: List<AttachmentContext> = emptyList(),
+    /**
+     * Retrieved memories for this turn only. Decoded ahead of [text] but never
+     * recorded as history, so the next turn's KV-cache prefix check compares
+     * durable messages instead of per-turn scaffolding.
+     */
+    val preamble: String = "",
 )
 
 data class ChatTurn(
@@ -417,7 +423,18 @@ data class MemoryHit(
 )
 
 data class ContextPlan(
+    /**
+     * The stable part of the prompt: user instructions plus skills. Held constant
+     * across a conversation's turns so the KV cache prefix stays reusable.
+     */
     val systemPrompt: String,
+    /**
+     * Retrieved memories and the rolling summary, which change from turn to turn
+     * with the query. Attached to the current user turn rather than the system
+     * prompt: anything volatile placed in the prefix invalidates the whole cache,
+     * which cost a full re-prefill (764 tokens / 29.3 s) on every message.
+     */
+    val turnPreamble: String = "",
     val summary: ConversationSummary?,
     val history: List<ChatTurn>,
     val memories: List<MemoryHit>,

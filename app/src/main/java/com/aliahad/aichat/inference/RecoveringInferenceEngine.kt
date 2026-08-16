@@ -345,6 +345,11 @@ class RecoveringInferenceEngine(
         vulkan.cancel()
     }
 
+    override fun releaseResidentPages() {
+        cpu.releaseResidentPages()
+        vulkan.releaseResidentPages()
+    }
+
     override suspend fun unload() = operationGate.runExclusive {
         cancel()
         runCatching { active.unload() }
