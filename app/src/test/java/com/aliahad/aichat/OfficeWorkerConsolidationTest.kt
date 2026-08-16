@@ -15,6 +15,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 
 class OfficeWorkerConsolidationTest {
@@ -146,12 +149,21 @@ class OfficeWorkerConsolidationTest {
 
     @Test
     fun healthMetricKeysCollapseSameDayWindowsIntoOneKeyPerDay() {
-        val windowStart = 1_781_200_000_000L
+        // Anchored to the start of a local day on purpose. A fixed epoch constant
+        // lands at a different local hour in every timezone, so +6/+12/+18h could
+        // cross midnight and split the key — this test passed in UTC+8 and failed
+        // on CI in UTC for exactly that reason. The production key is deliberately
+        // local-date based (a user's "day"), so the test must not assume the
+        // runner shares the author's zone.
+        val windowStart = LocalDate.of(2026, 6, 8)
+            .atStartOfDay(ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
         // The rolling 24-hour window is sampled every 6 hours; every run of the same
         // day shares one window-start date, so overlapping snapshots dedupe to one
         // row per day instead of double-counting steps/sleep.
-        val day = java.time.Instant.ofEpochMilli(windowStart)
-            .atZone(java.time.ZoneId.systemDefault())
+        val day = Instant.ofEpochMilli(windowStart)
+            .atZone(ZoneId.systemDefault())
             .toLocalDate()
             .toEpochDay()
         assertEquals("health:steps:$day", healthStepsStableKey(windowStart))
@@ -172,7 +184,10 @@ class OfficeWorkerConsolidationTest {
 
     @Test
     fun healthMetricKeysDifferAcrossDays() {
-        val windowStart = 1_781_200_000_000L
+        val windowStart = LocalDate.of(2026, 6, 8)
+            .atStartOfDay(ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
         assertNotEquals(
             healthStepsStableKey(windowStart),
             healthStepsStableKey(windowStart + TimeUnit.DAYS.toMillis(1)),
