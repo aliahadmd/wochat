@@ -71,13 +71,13 @@ data class ModelSetupUiState(
     val allowMeteredModelDownloads: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = false,
+    val semanticRecall: SemanticRecallUiState = SemanticRecallUiState(),
 )
 
 data class MemoryUiState(
     val memories: List<MemoryItem> = emptyList(),
     val memorySources: Map<String, List<MemorySource>> = emptyMap(),
     val memoryEnabled: Boolean = true,
-    val semanticRecall: SemanticRecallUiState = SemanticRecallUiState(),
     val pendingBackupImportUri: Uri? = null,
     val backupPreview: BackupPreview? = null,
     val backupBusy: Boolean = false,

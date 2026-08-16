@@ -371,9 +371,14 @@ class DefaultModelRepository(
     }
 
     private suspend fun retireUnsupportedArtifacts() = withContext(Dispatchers.IO) {
-        val supportedModel = ModelConstants.GEMMA_4_E4B
+        // Every spec the app still ships, not just the chat model. Embedding models
+        // live in the same table and directory, so leaving them out of these two sets
+        // meant this sweep deleted a freshly downloaded embedder — record and 318 MB
+        // file — on the very next app start, silently and after a successful verify.
+        val supportedSpecs = ModelConstants.OFFICIAL_MODELS + ModelConstants.EMBEDDING_MODELS
+        val supportedModelIds = supportedSpecs.map { it.id }.toSet()
         val supportedProjector = ModelConstants.GEMMA_4_E4B_PROJECTOR
-        dao.getAll().filter { it.id != supportedModel.id }.forEach { record ->
+        dao.getAll().filter { it.id !in supportedModelIds }.forEach { record ->
             workManager.cancelUniqueWork("official-model-download-${record.id}")
             val inUse = record.localPath?.let(isPathInUse) == true
             if (!inUse) {
@@ -391,12 +396,14 @@ class DefaultModelRepository(
                 projectorDao.delete(record.id)
             }
         }
-        val allowedNames = setOf(
-            supportedModel.fileName,
-            "${supportedModel.fileName}.part",
-            supportedProjector.fileName,
-            "${supportedProjector.fileName}.part",
-        )
+        val allowedNames = buildSet {
+            supportedSpecs.forEach { spec ->
+                add(spec.fileName)
+                add("${spec.fileName}.part")
+            }
+            add(supportedProjector.fileName)
+            add("${supportedProjector.fileName}.part")
+        }
         modelsDirectory().listFiles().orEmpty()
             .filter { it.isFile && it.name !in allowedNames && !isPathInUse(it.absolutePath) }
             .forEach(File::delete)

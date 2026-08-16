@@ -1806,13 +1806,6 @@ private fun MemoryCenter(
                             onCheckedChange = actions::setMemoryEnabled,
                         )
                     }
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
-                    SemanticRecallRow(
-                        state = state.semanticRecall,
-                        onDownload = actions::downloadSemanticRecall,
-                        onCancel = actions::cancelSemanticRecallDownload,
-                        onRemove = actions::removeSemanticRecall,
-                    )
                 }
             }
         }
@@ -2045,7 +2038,7 @@ private fun SemanticRecallRow(
     onRemove: () -> Unit,
 ) {
     Column {
-        Text("Semantic recall", style = MaterialTheme.typography.bodyMedium)
+        // No title here: the section header above already names this.
         Text(
             when (state.status) {
                 DownloadStatus.READY ->
@@ -2562,6 +2555,23 @@ private fun SettingsScreen(
                     onPause = { actions.pauseProjectorDownload(projector.id) },
                     onDelete = { actions.deleteProjector(projector.id) },
                 )
+            }
+            item {
+                SectionTitle(
+                    "Semantic recall",
+                    "Optional embedding model so memories match by meaning",
+                )
+                Spacer(Modifier.height(10.dp))
+                Card {
+                    Column(Modifier.padding(16.dp)) {
+                        SemanticRecallRow(
+                            state = state.semanticRecall,
+                            onDownload = actions::downloadEmbeddingModel,
+                            onCancel = actions::pauseEmbeddingModelDownload,
+                            onRemove = actions::deleteEmbeddingModel,
+                        )
+                    }
+                }
             }
             item {
                 SectionTitle("Hugging Face", "Optional token for gated downloads")

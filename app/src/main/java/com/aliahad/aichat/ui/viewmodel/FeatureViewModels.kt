@@ -10,6 +10,7 @@ import com.aliahad.aichat.context.ContextProfileRepository
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.core.DownloadStatus
+import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.diagnostics.DiagnosticsReportBuilder
@@ -98,6 +99,16 @@ class ModelSetupViewModel internal constructor(
     init {
         collect(modelRepository.models) { models -> copy(models = models) }
         collect(modelRepository.projectors) { projectors -> copy(projectors = projectors) }
+        collect(modelRepository.embeddingModel) { record ->
+            copy(
+                semanticRecall = SemanticRecallUiState(
+                    status = record?.status ?: DownloadStatus.NOT_DOWNLOADED,
+                    downloadedBytes = record?.downloadedBytes ?: 0,
+                    totalBytes = record?.expectedBytes ?: 0,
+                    error = record?.error,
+                ),
+            )
+        }
         collect(settings.backendMode) { backendMode -> copy(backendMode = backendMode) }
         collect(settings.generationSettings) { generationSettings ->
             copy(generationSettings = generationSettings)
@@ -135,6 +146,21 @@ class ModelSetupViewModel internal constructor(
 
     fun startDownload(id: String) = launchCatching {
         modelRepository.startOfficialDownload(id, _uiState.value.allowMeteredModelDownloads)
+    }
+
+    fun downloadEmbeddingModel() = launchCatching {
+        modelRepository.startOfficialDownload(
+            ModelConstants.EMBEDDING_GEMMA_300M.id,
+            _uiState.value.allowMeteredModelDownloads,
+        )
+    }
+
+    fun pauseEmbeddingModelDownload() = launchCatching {
+        modelRepository.pauseOfficialDownload(ModelConstants.EMBEDDING_GEMMA_300M.id)
+    }
+
+    fun deleteEmbeddingModel() = launchCatching {
+        modelRepository.deleteModel(ModelConstants.EMBEDDING_GEMMA_300M.id)
     }
 
     fun pauseDownload(id: String) = launchCatching { modelRepository.pauseOfficialDownload(id) }
@@ -294,7 +320,6 @@ class ModelSetupViewModel internal constructor(
 class MemoryViewModel internal constructor(
     private val memoryRepository: MemoryRepository,
     private val settings: AppSettingsRepository,
-    private val modelRepository: com.aliahad.aichat.model.ModelRepository,
     private val backupRepository: OfficeBackupRepository,
     private val memoryIndexer: MemoryIndexer,
     private val messages: UiMessageManager,
@@ -306,36 +331,10 @@ class MemoryViewModel internal constructor(
         collect(memoryRepository.memories) { memories -> copy(memories = memories) }
         collect(memoryRepository.memorySources) { sources -> copy(memorySources = sources) }
         collect(settings.memoryEnabled) { enabled -> copy(memoryEnabled = enabled) }
-        collect(modelRepository.embeddingModel) { record ->
-            copy(
-                semanticRecall = SemanticRecallUiState(
-                    status = record?.status
-                        ?: com.aliahad.aichat.core.DownloadStatus.NOT_DOWNLOADED,
-                    downloadedBytes = record?.downloadedBytes ?: 0,
-                    totalBytes = record?.expectedBytes ?: 0,
-                    error = record?.error,
-                ),
-            )
-        }
     }
 
     fun setMemoryEnabled(enabled: Boolean) = launchCatching { settings.setMemoryEnabled(enabled) }
 
-    fun downloadSemanticRecall() = launchCatching {
-        modelRepository.startOfficialDownload(
-            com.aliahad.aichat.model.ModelConstants.EMBEDDING_GEMMA_300M.id,
-        )
-    }
-
-    fun cancelSemanticRecallDownload() = launchCatching {
-        modelRepository.pauseOfficialDownload(
-            com.aliahad.aichat.model.ModelConstants.EMBEDDING_GEMMA_300M.id,
-        )
-    }
-
-    fun removeSemanticRecall() = launchCatching {
-        modelRepository.deleteModel(com.aliahad.aichat.model.ModelConstants.EMBEDDING_GEMMA_300M.id)
-    }
 
     fun addMemory(content: String) = launchCatching {
         memoryRepository.remember(MemoryType.FACT, content, content)

@@ -571,11 +571,20 @@ private val STOP_WORDS = setOf(
 /**
  * Cosine below which two texts are treated as unrelated.
  *
- * Sentence embedders do not put unrelated text near zero; EmbeddingGemma leaves
- * short unrelated strings around 0.3-0.5. Rebasing on this keeps a mediocre match
- * from clearing the relevance floor on similarity alone.
+ * Measured on the device with EmbeddingGemma 300M Q8 against the stored memory
+ * "I prefer green tea after lunch":
+ *
+ * | query | cosine |
+ * |---|---|
+ * | "How do I compile the Rust project" (unrelated) | 0.290 |
+ * | "What beverage do I enjoy after eating" (paraphrase) | 0.582 |
+ *
+ * 0.40 sits well clear of the unrelated end while leaving a real paraphrase enough
+ * headroom to clear [MIN_MEMORY_RELEVANCE]. This was first guessed at 0.55 — above
+ * where genuine paraphrases actually land — and the feature silently retrieved
+ * nothing until the two ends were measured rather than assumed.
  */
-internal const val SEMANTIC_BASELINE = 0.55f
+internal const val SEMANTIC_BASELINE = 0.40f
 
 /**
  * Ceiling on what a purely semantic match can score, chosen so a strong paraphrase

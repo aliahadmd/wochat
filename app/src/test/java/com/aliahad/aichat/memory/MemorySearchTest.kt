@@ -43,8 +43,8 @@ class MemorySearchTest {
 
     @Test
     fun weakSemanticSimilarityDoesNotClearTheFloor() = runTest {
-        // Sentence embedders leave unrelated short texts well above zero, so a
-        // mediocre cosine must not be enough on its own.
+        // Unrelated text measured at ~0.29 and a true paraphrase at ~0.58 on the real
+        // model, so 0.45 is the genuinely ambiguous middle: it must not be admitted.
         val stored = memoryRow("unrelated", "The staging database migrates on Sundays")
             .copy(embedding = MemoryVectors.encode(unitVector(0)))
         val source = FakeMemorySearchSource(listOf(stored))
@@ -56,7 +56,7 @@ class MemorySearchTest {
             limit = 4,
             indexedIds = emptyList(),
             now = NOW,
-            queryEmbedding = unitVector(0, similarity = 0.6f),
+            queryEmbedding = unitVector(0, similarity = 0.45f),
         )
 
         assertTrue("weak semantic match was injected", hits.isEmpty())

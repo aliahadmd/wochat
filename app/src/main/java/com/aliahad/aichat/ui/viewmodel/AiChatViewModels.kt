@@ -36,8 +36,8 @@ class AiChatViewModelFactory(
             ChatViewModel::class.java -> ChatViewModel(
                 savedStateHandle = savedStateHandle,
                 application = container.application,
-                chatRepository = container.chatRepository,
                 modelRepository = container.modelRepository,
+                chatRepository = container.chatRepository,
                 skillRepository = container.skillRepository,
                 attachmentRepository = container.attachmentRepository,
                 settings = container.settings,
@@ -63,8 +63,7 @@ class AiChatViewModelFactory(
             MemoryViewModel::class.java -> MemoryViewModel(
                 memoryRepository = container.memoryRepository,
                 settings = container.settings,
-                modelRepository = container.modelRepository,
-                    backupRepository = container.officeBackupRepository,
+                backupRepository = container.officeBackupRepository,
                 memoryIndexer = container.memoryIndexer,
                 messages = messages,
             )

@@ -241,17 +241,31 @@ class ModelResidencyController(
 
 
     /**
-     * Loads the sentence embedder if it has been downloaded, once per chat-model load.
+     * Loads the sentence embedder if it has been downloaded.
      *
      * Best-effort by design: semantic recall is an enhancement, and a missing or
      * broken embedder must leave retrieval on its lexical path rather than stop the
-     * user chatting. Loaded after the chat model so it never delays first token.
+     * user chatting. Attempted on every residency check rather than only after a
+     * chat-model load: the 318 MB download usually finishes while the chat model is
+     * already resident, and tying it to a load meant it sat unused until the next
+     * app restart. Cheap to repeat — it returns immediately once loaded.
      */
     private suspend fun ensureEmbedderLoaded() {
         if (inferenceEngine.embeddingDimensions > 0) return
-        val record = runCatching { modelRepository.embeddingModel.first() }.getOrNull() ?: return
-        val path = record.localPath?.takeIf { java.io.File(it).exists() } ?: return
+        val record = runCatching { modelRepository.embeddingModel.first() }
+            .onFailure { Log.w(TAG, "Could not read the embedding model record", it) }
+            .getOrNull()
+        if (record == null) {
+            Log.i(TAG, "Semantic recall off: no embedding model record")
+            return
+        }
+        val path = record.localPath
+        if (path == null || !java.io.File(path).exists()) {
+            Log.i(TAG, "Semantic recall off: not downloaded (status=${record.status}, path=$path)")
+            return
+        }
         runCatching { inferenceEngine.loadEmbedder(path) }
+            .onSuccess { Log.i(TAG, "Semantic recall on: embedder loaded from $path") }
             .onFailure { Log.w(TAG, "Embedder unavailable; memory stays lexical", it) }
     }
 
@@ -334,7 +348,6 @@ class ModelResidencyController(
                 ),
             )
             loadedSignature = signature.copy(projectorPath = null, imageTokenBudget = null)
-            ensureEmbedderLoaded()
             val actualBackend = (inferenceEngine.state.value as? InferenceState.Ready)?.backend
                 ?: profile.backend
             if (actualBackend != signature.backend) {
@@ -405,6 +418,7 @@ class ModelResidencyController(
             }
         }
         loadedSignature = signature
+        ensureEmbedderLoaded()
         val configuration = ModelLoadConfiguration(
             contextTokens = signature.contextSize,
             declaredContextTokens = profile.declaredContextTokens,
