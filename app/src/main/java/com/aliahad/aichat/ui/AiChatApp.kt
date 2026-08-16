@@ -86,8 +86,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.NavigationRail
-import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -97,6 +95,8 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Switch
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -2537,14 +2537,21 @@ private fun SettingsHub(
     onImportOffice: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(modifier = modifier.fillMaxSize()) {
-        NavigationRail(
-            modifier = Modifier
-                .fillMaxHeight()
-                .testTag("settings-navigation"),
+    // Tabs across the top rather than a vertical rail down the side.
+    //
+    // NavigationRail is specified for medium and expanded widths; on a compact phone
+    // it took ~90dp of a ~360dp screen — a quarter of the width — and the settings
+    // content visibly wrapped because of it. Tabs are also the correct component
+    // semantically: these four are peer content groups *inside* one screen, whereas
+    // a NavigationBar at the bottom is for top-level app destinations and would
+    // compete with the app's own navigation on a screen reached from the drawer.
+    Column(modifier = modifier.fillMaxSize()) {
+        PrimaryTabRow(
+            selectedTabIndex = SettingsSection.entries.indexOf(section),
+            modifier = Modifier.testTag("settings-navigation"),
         ) {
             SettingsSection.entries.forEach { destination ->
-                NavigationRailItem(
+                Tab(
                     selected = section == destination,
                     onClick = { onSectionChange(destination) },
                     icon = {
@@ -2558,8 +2565,7 @@ private fun SettingsHub(
                             contentDescription = null,
                         )
                     },
-                    label = { Text(destination.label) },
-                    alwaysShowLabel = true,
+                    text = { Text(destination.label, maxLines = 1) },
                 )
             }
         }
