@@ -294,6 +294,7 @@ class ModelSetupViewModel internal constructor(
 class MemoryViewModel internal constructor(
     private val memoryRepository: MemoryRepository,
     private val settings: AppSettingsRepository,
+    private val modelRepository: com.aliahad.aichat.model.ModelRepository,
     private val backupRepository: OfficeBackupRepository,
     private val memoryIndexer: MemoryIndexer,
     private val messages: UiMessageManager,
@@ -305,9 +306,36 @@ class MemoryViewModel internal constructor(
         collect(memoryRepository.memories) { memories -> copy(memories = memories) }
         collect(memoryRepository.memorySources) { sources -> copy(memorySources = sources) }
         collect(settings.memoryEnabled) { enabled -> copy(memoryEnabled = enabled) }
+        collect(modelRepository.embeddingModel) { record ->
+            copy(
+                semanticRecall = SemanticRecallUiState(
+                    status = record?.status
+                        ?: com.aliahad.aichat.core.DownloadStatus.NOT_DOWNLOADED,
+                    downloadedBytes = record?.downloadedBytes ?: 0,
+                    totalBytes = record?.expectedBytes ?: 0,
+                    error = record?.error,
+                ),
+            )
+        }
     }
 
     fun setMemoryEnabled(enabled: Boolean) = launchCatching { settings.setMemoryEnabled(enabled) }
+
+    fun downloadSemanticRecall() = launchCatching {
+        modelRepository.startOfficialDownload(
+            com.aliahad.aichat.model.ModelConstants.EMBEDDING_GEMMA_300M.id,
+        )
+    }
+
+    fun cancelSemanticRecallDownload() = launchCatching {
+        modelRepository.pauseOfficialDownload(
+            com.aliahad.aichat.model.ModelConstants.EMBEDDING_GEMMA_300M.id,
+        )
+    }
+
+    fun removeSemanticRecall() = launchCatching {
+        modelRepository.deleteModel(com.aliahad.aichat.model.ModelConstants.EMBEDDING_GEMMA_300M.id)
+    }
 
     fun addMemory(content: String) = launchCatching {
         memoryRepository.remember(MemoryType.FACT, content, content)

@@ -467,6 +467,10 @@ private class FakeInferenceEngine(
     override fun cancel(): Unit = error("unused")
 
     override fun releaseResidentPages(): Unit = error("unused")
+    override suspend fun loadEmbedder(path: String): Unit = error("unused")
+    override suspend fun unloadEmbedder(): Unit = error("unused")
+    override val embeddingDimensions: Int = 0
+    override suspend fun embed(text: String): FloatArray? = null
 
     override suspend fun unload(): Unit = error("unused")
 
@@ -528,6 +532,7 @@ private class FakeMemoryRepository(
     override suspend fun purgeStaleIndexDocs(): Unit = error("unused")
 
     override suspend fun purgeExpiredMemories(now: Long): Int = error("unused")
+    override suspend fun backfillEmbeddings(limit: Int): Int = 0
 }
 
 private class FakeConversationSummaryDao : ConversationSummaryDao {

@@ -107,4 +107,22 @@ class MemoryLogicTest {
         val content = "The staging database migrates every Sunday at midnight UTC"
         assertTrue(isWorthRemembering(content, MemoryType.EPISODE))
     }
+
+    @Test
+    fun questionsAreNotRememberedEvenWhenTheyClassify() {
+        // Found on the device: "What do I like?" was stored as a Preference, because
+        // inferType matches substrings and "do I like" contains "i like". Being
+        // classifiable does not make a question an assertion.
+        listOf(
+            "What do I like?",
+            "Do I prefer tea or coffee?",
+            "What is my name",
+            "What am I working on right now",
+        ).forEach { content ->
+            assertFalse(
+                "\"$content\" should not become a memory",
+                isWorthRemembering(content, inferType(content)),
+            )
+        }
+    }
 }

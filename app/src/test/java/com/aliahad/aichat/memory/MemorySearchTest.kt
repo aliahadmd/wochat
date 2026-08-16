@@ -19,6 +19,71 @@ private const val NOW = 1_781_280_000_000L
 class MemorySearchTest {
 
     @Test
+    fun semanticMatchIsRetrievedWhenNoWordsAreShared() = runTest {
+        // The reason embeddings exist here: "what do I drink in the mornings" shares
+        // no content word with the stored preference, so the lexical half scores 0
+        // and the memory would be missed entirely.
+        val stored = memoryRow("coffee", "I prefer dark roast coffee from Ethiopia")
+            .copy(embedding = MemoryVectors.encode(unitVector(0)))
+        val source = FakeMemorySearchSource(listOf(stored))
+
+        val hits = searchMemoryRows(
+            source = source,
+            queryText = "what do I drink in the mornings",
+            includePrivate = true,
+            limit = 4,
+            indexedIds = emptyList(),
+            now = NOW,
+            // Near-identical direction: a strong paraphrase.
+            queryEmbedding = unitVector(0, similarity = 0.95f),
+        )
+
+        assertEquals(listOf("coffee"), hits.map { it.memory.id })
+    }
+
+    @Test
+    fun weakSemanticSimilarityDoesNotClearTheFloor() = runTest {
+        // Sentence embedders leave unrelated short texts well above zero, so a
+        // mediocre cosine must not be enough on its own.
+        val stored = memoryRow("unrelated", "The staging database migrates on Sundays")
+            .copy(embedding = MemoryVectors.encode(unitVector(0)))
+        val source = FakeMemorySearchSource(listOf(stored))
+
+        val hits = searchMemoryRows(
+            source = source,
+            queryText = "what do I drink in the mornings",
+            includePrivate = true,
+            limit = 4,
+            indexedIds = emptyList(),
+            now = NOW,
+            queryEmbedding = unitVector(0, similarity = 0.6f),
+        )
+
+        assertTrue("weak semantic match was injected", hits.isEmpty())
+    }
+
+    @Test
+    fun rowsWithoutEmbeddingsStillRankLexically() = runTest {
+        // Backfill is incremental, so un-embedded rows are normal and must keep
+        // working exactly as they did before embeddings existed.
+        val stored = memoryRow("coffee", "I prefer dark roast coffee from Ethiopia")
+        val source = FakeMemorySearchSource(listOf(stored))
+
+        val hits = searchMemoryRows(
+            source = source,
+            queryText = "What coffee do I like",
+            includePrivate = true,
+            limit = 4,
+            indexedIds = emptyList(),
+            now = NOW,
+            queryEmbedding = unitVector(0),
+        )
+
+        assertEquals(listOf("coffee"), hits.map { it.memory.id })
+    }
+
+
+    @Test
     fun statedPreferenceIsRecalledDespiteStopWordsInTheQuestion() = runTest {
         // Regression caught on the device, not in review. "What coffee do I like"
         // shares exactly one content word with the stored preference; counting the
@@ -480,4 +545,14 @@ private fun memoryRow(
     updatedAt = updatedAt,
 )
 
-
+/**
+ * A unit vector along [axis], optionally rotated so its cosine against the pure
+ * axis vector equals [similarity].
+ */
+private fun unitVector(axis: Int, similarity: Float = 1f, dimensions: Int = 8): FloatArray {
+    val values = FloatArray(dimensions)
+    values[axis] = similarity
+    val remainder = kotlin.math.sqrt((1f - similarity * similarity).coerceAtLeast(0f))
+    values[(axis + 1) % dimensions] = remainder
+    return values
+}

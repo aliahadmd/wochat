@@ -77,6 +77,7 @@ data class MemoryUiState(
     val memories: List<MemoryItem> = emptyList(),
     val memorySources: Map<String, List<MemorySource>> = emptyMap(),
     val memoryEnabled: Boolean = true,
+    val semanticRecall: SemanticRecallUiState = SemanticRecallUiState(),
     val pendingBackupImportUri: Uri? = null,
     val backupPreview: BackupPreview? = null,
     val backupBusy: Boolean = false,
@@ -88,4 +89,13 @@ data class AppShellUiState(
     val launchDestination: AppRoute? = null,
     val error: UiMessage? = null,
     val pendingNavigation: AppRoute? = null,
+)
+
+/** Download/readiness of the optional sentence embedder behind semantic recall. */
+data class SemanticRecallUiState(
+    val status: com.aliahad.aichat.core.DownloadStatus =
+        com.aliahad.aichat.core.DownloadStatus.NOT_DOWNLOADED,
+    val downloadedBytes: Long = 0,
+    val totalBytes: Long = 0,
+    val error: String? = null,
 )

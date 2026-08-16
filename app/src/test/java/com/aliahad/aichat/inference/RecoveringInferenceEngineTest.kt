@@ -376,6 +376,10 @@ private class FakeInferenceEngine(
     override fun cancel() = Unit
 
     override fun releaseResidentPages() = Unit
+    override suspend fun loadEmbedder(path: String) = Unit
+    override suspend fun unloadEmbedder() = Unit
+    override val embeddingDimensions: Int = 0
+    override suspend fun embed(text: String): FloatArray? = null
 
     override suspend fun unload() {
         loadedModelPath = null

@@ -145,6 +145,7 @@ import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.ContextVerificationState
 import com.aliahad.aichat.core.DownloadStatus
+import com.aliahad.aichat.ui.viewmodel.SemanticRecallUiState
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.MessageRole
@@ -1805,6 +1806,13 @@ private fun MemoryCenter(
                             onCheckedChange = actions::setMemoryEnabled,
                         )
                     }
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                    SemanticRecallRow(
+                        state = state.semanticRecall,
+                        onDownload = actions::downloadSemanticRecall,
+                        onCancel = actions::cancelSemanticRecallDownload,
+                        onRemove = actions::removeSemanticRecall,
+                    )
                 }
             }
         }
@@ -2021,6 +2029,72 @@ private fun MemoryCenter(
 
 
 
+
+
+/**
+ * Opt-in control for the sentence embedder behind semantic recall.
+ *
+ * Deliberately a manual download rather than something the app fetches on its own:
+ * it is 318 MB, and without it memory retrieval still works on exact words.
+ */
+@Composable
+private fun SemanticRecallRow(
+    state: SemanticRecallUiState,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Column {
+        Text("Semantic recall", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            when (state.status) {
+                DownloadStatus.READY ->
+                    "On. Memories are matched by meaning, not only by shared words."
+                DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED ->
+                    "Downloading the embedding model"
+                else ->
+                    "Off. Add a 318 MB embedding model to match memories by meaning, " +
+                        "so \"what do I drink in the mornings\" finds a note about coffee."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        state.error?.takeIf(String::isNotBlank)?.let { error ->
+            Text(
+                error,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        when (state.status) {
+            DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED -> {
+                if (state.totalBytes > 0) {
+                    LinearProgressIndicator(
+                        progress = {
+                            (state.downloadedBytes.toFloat() / state.totalBytes).coerceIn(0f, 1f)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
+                    Text("Pause download")
+                }
+            }
+            DownloadStatus.READY -> {
+                OutlinedButton(onClick = onRemove, modifier = Modifier.fillMaxWidth()) {
+                    Text("Remove embedding model")
+                }
+            }
+            else -> {
+                Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
+                    Text("Download embedding model")
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun MemoryEditorDialog(

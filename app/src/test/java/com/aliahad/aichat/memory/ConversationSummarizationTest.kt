@@ -432,6 +432,10 @@ private class ScriptedSummarizationEngine(
     override fun cancel(): Unit = error("unused")
 
     override fun releaseResidentPages(): Unit = error("unused")
+    override suspend fun loadEmbedder(path: String): Unit = error("unused")
+    override suspend fun unloadEmbedder(): Unit = error("unused")
+    override val embeddingDimensions: Int = 0
+    override suspend fun embed(text: String): FloatArray? = null
 
     override suspend fun unload(): Unit = error("unused")
 

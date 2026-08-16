@@ -68,6 +68,22 @@ interface InferenceEngine {
      * must never be called on the per-turn path.
      */
     fun releaseResidentPages()
+
+    /**
+     * Loads the sentence-embedding model used for semantic memory recall.
+     *
+     * A separate, much smaller model with its own context — never the chat model,
+     * whose KV cache must survive between turns.
+     */
+    suspend fun loadEmbedder(path: String)
+
+    suspend fun unloadEmbedder()
+
+    /** Dimensions of the loaded embedder, or 0 when none is loaded. */
+    val embeddingDimensions: Int
+
+    /** L2-normalized embedding, or null when no embedder is loaded or the text is empty. */
+    suspend fun embed(text: String): FloatArray?
     fun cancel()
     suspend fun unload()
     suspend fun benchmark(

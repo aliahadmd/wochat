@@ -2,6 +2,7 @@
 #include <jni.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <deque>
 #include <fstream>
@@ -27,6 +28,16 @@ namespace {
 llama_model * model = nullptr;
 llama_context * context = nullptr;
 llama_batch batch{};
+// The embedder is a second, much smaller model with its own context and batch.
+// It is deliberately NOT the chat model and NOT the chat context: setting
+// embeddings mode or clearing memory on the chat context would destroy the KV
+// cache that multi-turn prefill reuse depends on.
+llama_model * embed_model = nullptr;
+llama_context * embed_context = nullptr;
+llama_batch embed_batch{};
+bool embed_batch_initialized = false;
+int embed_dimensions = 0;
+std::string embed_file_name;
 common_chat_templates_ptr chat_templates;
 common_sampler * sampler = nullptr;
 mtmd_context * vision_context = nullptr;
@@ -588,6 +599,138 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeInit(
     LOGI("%s", llama_print_system_info());
 }
 
+
+constexpr int embed_context_size = 512;
+
+void unload_embedder() {
+    if (embed_batch_initialized) {
+        llama_batch_free(embed_batch);
+        embed_batch_initialized = false;
+    }
+    if (embed_context != nullptr) {
+        llama_free(embed_context);
+        embed_context = nullptr;
+    }
+    if (embed_model != nullptr) {
+        llama_model_free(embed_model);
+        embed_model = nullptr;
+    }
+    embed_dimensions = 0;
+    embed_file_name.clear();
+}
+
+std::string load_embedder(const std::string & path) {
+    unload_embedder();
+    const auto start = std::chrono::steady_clock::now();
+    llama_model_params model_params = llama_model_default_params();
+    // CPU only: the Adreno driver is already carrying the chat model, and an
+    // embedding pass is short enough that GPU dispatch would not pay for itself.
+    model_params.n_gpu_layers = 0;
+    model_params.use_mmap = true;
+    embed_model = llama_model_load_from_file(path.c_str(), model_params);
+    if (embed_model == nullptr) return "Unable to load the embedding model";
+
+    llama_context_params context_params = llama_context_default_params();
+    context_params.n_ctx = embed_context_size;
+    context_params.n_batch = embed_context_size;
+    context_params.n_ubatch = embed_context_size;
+    context_params.embeddings = true;
+    // Mean pooling over the sequence: this is an encoder-style use, so there is no
+    // "last token" whose hidden state stands for the whole text.
+    context_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+    context_params.n_threads = std::clamp(
+        static_cast<int>(std::thread::hardware_concurrency()) - 2, 2, 4
+    );
+    context_params.n_threads_batch = context_params.n_threads;
+    embed_context = llama_init_from_model(embed_model, context_params);
+    if (embed_context == nullptr) {
+        unload_embedder();
+        return "Unable to allocate the embedding context";
+    }
+    embed_batch = llama_batch_init(embed_context_size, 0, 1);
+    embed_batch_initialized = true;
+    embed_dimensions = llama_model_n_embd(embed_model);
+    if (embed_dimensions <= 0) {
+        unload_embedder();
+        return "Embedding model reports no embedding dimensions";
+    }
+    const size_t separator = path.find_last_of('/');
+    embed_file_name = separator == std::string::npos ? path : path.substr(separator + 1);
+    LOGI(
+        "Embedder ready: %d dimensions, %d threads in %lld ms",
+        embed_dimensions,
+        context_params.n_threads,
+        elapsed_ms(start)
+    );
+    return {};
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeLoadEmbedder(
+    JNIEnv * env,
+    jobject,
+    jstring path
+) {
+    try {
+        const std::string error = load_embedder(from_jstring(env, path));
+        return error.empty() ? nullptr : to_jstring(env, error);
+    } catch (const std::exception & error) {
+        return to_jstring(env, error.what());
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeUnloadEmbedder(JNIEnv *, jobject) {
+    unload_embedder();
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeEmbeddingDimensions(JNIEnv *, jobject) {
+    return embed_dimensions;
+}
+
+/** Returns an L2-normalized embedding, or null when no embedder is loaded. */
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeEmbed(
+    JNIEnv * env,
+    jobject,
+    jstring text
+) {
+    try {
+        if (embed_model == nullptr || embed_context == nullptr) return nullptr;
+        auto tokens = common_tokenize(embed_context, from_jstring(env, text), true, true);
+        if (tokens.empty()) return nullptr;
+        // Long memories are truncated rather than chunked: the embedding stands for
+        // the gist, and the lexical half of the ranking still sees the full text.
+        if (static_cast<int>(tokens.size()) > embed_context_size) {
+            tokens.resize(embed_context_size);
+        }
+        llama_memory_clear(llama_get_memory(embed_context), true);
+        common_batch_clear(embed_batch);
+        for (size_t index = 0; index < tokens.size(); ++index) {
+            common_batch_add(embed_batch, tokens[index], static_cast<llama_pos>(index), {0}, true);
+        }
+        if (llama_decode(embed_context, embed_batch) != 0) return nullptr;
+        const float * values = llama_get_embeddings_seq(embed_context, 0);
+        if (values == nullptr) return nullptr;
+
+        // Normalize here so cosine similarity is a plain dot product on the JVM side.
+        double sum = 0.0;
+        for (int i = 0; i < embed_dimensions; ++i) sum += static_cast<double>(values[i]) * values[i];
+        const float norm = sum > 0.0 ? static_cast<float>(1.0 / std::sqrt(sum)) : 0.0f;
+        std::vector<float> normalized(embed_dimensions);
+        for (int i = 0; i < embed_dimensions; ++i) normalized[i] = values[i] * norm;
+
+        jfloatArray result = env->NewFloatArray(embed_dimensions);
+        if (result == nullptr) return nullptr;
+        env->SetFloatArrayRegion(result, 0, embed_dimensions, normalized.data());
+        return result;
+    } catch (const std::exception & error) {
+        LOGE("Embedding failed: %s", error.what());
+        return nullptr;
+    }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeLoad(
     JNIEnv * env,
@@ -1045,5 +1188,6 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeSystemInfo(JNIEnv 
 extern "C" JNIEXPORT void JNICALL
 Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeShutdown(JNIEnv *, jobject) {
     unload_model();
+    unload_embedder();
     llama_backend_free();
 }

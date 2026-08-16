@@ -239,6 +239,22 @@ class ModelResidencyController(
             inferenceEngine.loadedModelPath == path ||
             inferenceEngine.loadedProjectorPath == path
 
+
+    /**
+     * Loads the sentence embedder if it has been downloaded, once per chat-model load.
+     *
+     * Best-effort by design: semantic recall is an enhancement, and a missing or
+     * broken embedder must leave retrieval on its lexical path rather than stop the
+     * user chatting. Loaded after the chat model so it never delays first token.
+     */
+    private suspend fun ensureEmbedderLoaded() {
+        if (inferenceEngine.embeddingDimensions > 0) return
+        val record = runCatching { modelRepository.embeddingModel.first() }.getOrNull() ?: return
+        val path = record.localPath?.takeIf { java.io.File(it).exists() } ?: return
+        runCatching { inferenceEngine.loadEmbedder(path) }
+            .onFailure { Log.w(TAG, "Embedder unavailable; memory stays lexical", it) }
+    }
+
     private suspend fun ensureLoadedLocked(
         requirement: MultimodalRequirement,
         imageTokenBudget: Int,
@@ -318,6 +334,7 @@ class ModelResidencyController(
                 ),
             )
             loadedSignature = signature.copy(projectorPath = null, imageTokenBudget = null)
+            ensureEmbedderLoaded()
             val actualBackend = (inferenceEngine.state.value as? InferenceState.Ready)?.backend
                 ?: profile.backend
             if (actualBackend != signature.backend) {

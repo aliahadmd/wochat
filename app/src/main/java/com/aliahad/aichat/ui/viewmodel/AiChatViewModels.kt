@@ -63,6 +63,7 @@ class AiChatViewModelFactory(
             MemoryViewModel::class.java -> MemoryViewModel(
                 memoryRepository = container.memoryRepository,
                 settings = container.settings,
+                modelRepository = container.modelRepository,
                     backupRepository = container.officeBackupRepository,
                 memoryIndexer = container.memoryIndexer,
                 messages = messages,

@@ -350,6 +350,17 @@ class RecoveringInferenceEngine(
         vulkan.releaseResidentPages()
     }
 
+    // Embedding always runs on the CPU engine: it is a small model, it must not
+    // contend with the chat backend, and it has no fallback semantics to recover.
+    override suspend fun loadEmbedder(path: String) = cpu.loadEmbedder(path)
+
+    override suspend fun unloadEmbedder() = cpu.unloadEmbedder()
+
+    override val embeddingDimensions: Int
+        get() = cpu.embeddingDimensions
+
+    override suspend fun embed(text: String): FloatArray? = cpu.embed(text)
+
     override suspend fun unload() = operationGate.runExclusive {
         cancel()
         runCatching { active.unload() }

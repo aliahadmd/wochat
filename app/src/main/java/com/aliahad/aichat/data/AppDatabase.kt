@@ -74,7 +74,7 @@ class DatabaseConverters {
         MemoryCorrectionEntity::class,
         ModelBenchmarkEntity::class,
     ],
-    version = 18,
+    version = 19,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -521,6 +521,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Nullable on purpose: existing rows are backfilled in the background
+                // rather than blocking the upgrade on a forward pass per memory.
+                db.execSQL("ALTER TABLE memory_items ADD COLUMN embedding BLOB")
+            }
+        }
+
         fun create(context: Context): AppDatabase {
             System.loadLibrary("sqlcipher")
             val passphrase = DatabaseKeyManager(context).passphrase()
@@ -550,6 +558,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_15_16,
                     MIGRATION_16_17,
                     MIGRATION_17_18,
+                    MIGRATION_18_19,
                 )
                 .build()
             migrator.sweepResidueFromFailedMigration()

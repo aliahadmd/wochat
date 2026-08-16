@@ -28,6 +28,14 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlin.time.TimeSource
 
+/**
+ * TooManyFunctions is suppressed deliberately. Most members here are `external fun`
+ * declarations that mirror the JNI surface one-for-one, so the count tracks the
+ * native API rather than the class's responsibilities. Splitting them across types
+ * would scatter a binding that has to stay in lockstep with `aichat_jni.cpp`, and
+ * `System.loadLibrary` plus the native handles are process-global anyway.
+ */
+@Suppress("TooManyFunctions")
 class NativeInferenceEngine(
     context: Context,
     private val nativeBackend: BackendMode = BackendMode.CPU,
@@ -366,6 +374,26 @@ class NativeInferenceEngine(
         nativeReleaseModelPages()
     }
 
+    override suspend fun loadEmbedder(path: String) = withContext(dispatcher) {
+        nativeLoadEmbedder(path)?.let { error ->
+            throw BackendInferenceException(loadedBackend, BackendFailureStage.LOAD, error)
+        }
+        embeddingDimensions = nativeEmbeddingDimensions()
+    }
+
+    override suspend fun unloadEmbedder() = withContext(dispatcher) {
+        nativeUnloadEmbedder()
+        embeddingDimensions = 0
+    }
+
+    override var embeddingDimensions: Int = 0
+        private set
+
+    override suspend fun embed(text: String): FloatArray? = withContext(dispatcher) {
+        if (embeddingDimensions == 0 || text.isBlank()) return@withContext null
+        nativeEmbed(text)
+    }
+
     override suspend fun unload() = withContext(dispatcher) {
         cancelled = true
         nativeUnload()
@@ -550,6 +578,10 @@ class NativeInferenceEngine(
     private external fun nativeFinishGeneration()
     private external fun nativeUnload()
     private external fun nativeReleaseModelPages()
+    private external fun nativeLoadEmbedder(path: String): String?
+    private external fun nativeUnloadEmbedder()
+    private external fun nativeEmbeddingDimensions(): Int
+    private external fun nativeEmbed(text: String): FloatArray?
     private external fun nativeSessionPrefixLength(
         systemPrompt: String,
         enableThinking: Boolean,

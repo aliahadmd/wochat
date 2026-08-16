@@ -397,6 +397,7 @@ private class FakeChatRepository : ChatRepository {
 
 private class FakeModelRepository : ModelRepository {
     override val models: Flow<List<ModelRecord>> = flowOf(emptyList())
+    override val embeddingModel: Flow<ModelRecord?> = flowOf(null)
     override val projectors: Flow<List<ProjectorRecord>> = flowOf(emptyList())
     override fun modelsDirectory(): File = File("/tmp/models")
     override suspend fun ensureOfficialRecords() = Unit
@@ -474,6 +475,10 @@ private class FakeInferenceEngine : InferenceEngine {
     override suspend fun verifyLoadedContext(): Int = 1
     override fun cancel() = Unit
     override fun releaseResidentPages() = Unit
+    override suspend fun loadEmbedder(path: String) = Unit
+    override suspend fun unloadEmbedder() = Unit
+    override val embeddingDimensions: Int = 0
+    override suspend fun embed(text: String): FloatArray? = null
     override suspend fun unload() = Unit
     override suspend fun benchmark(path: String, displayName: String, settings: GenerationSettings): Map<BackendMode, InferenceBenchmarkSample> = emptyMap()
     override fun systemInfo(): String = "fake"
@@ -495,6 +500,7 @@ private class FakeMemoryRepository : MemoryRepository {
     override suspend fun forget(id: String) = Unit
     override suspend fun purgeStaleIndexDocs() = Unit
     override suspend fun purgeExpiredMemories(now: Long): Int = 0
+    override suspend fun backfillEmbeddings(limit: Int): Int = 0
 }
 
 private class FakeContextProfileRepository : ContextProfileRepository {

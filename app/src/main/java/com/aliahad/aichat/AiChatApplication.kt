@@ -33,6 +33,7 @@ import com.aliahad.aichat.model.ModelRepository
 import com.aliahad.aichat.memory.AppSearchMemoryIndexer
 import com.aliahad.aichat.memory.BackgroundConversationSummarizer
 import com.aliahad.aichat.memory.ConversationSummaryRepository
+import com.aliahad.aichat.memory.MemoryEmbedder
 import com.aliahad.aichat.memory.MemoryIndexer
 import com.aliahad.aichat.memory.MemoryRepository
 import com.aliahad.aichat.memory.PromptContextPlanner
@@ -298,6 +299,9 @@ class AppContainer(val application: Application) {
         RoomMemoryRepository(
             database,
             memoryIndexer,
+            // Lambda, not a captured reference: the embedder may not be downloaded or
+            // loaded yet, and every caller already treats null as "lexical only".
+            MemoryEmbedder { text -> inferenceEngine.embed(text) },
         )
     }
     val skillRepository: SkillRepository by lazy { RoomSkillRepository(database) }

@@ -313,6 +313,14 @@ data class MemoryItemEntity(
     val supersedesId: String?,
     val createdAt: Long,
     val updatedAt: Long,
+    /**
+     * L2-normalized sentence embedding as little-endian float32, or null when the
+     * row predates the embedder or has not been backfilled yet. Stored as a BLOB
+     * and scanned in full rather than indexed: at this app's scale a brute-force
+     * pass over a few thousand vectors is milliseconds, and a SQLite vector
+     * extension would have to be loaded alongside SQLCipher for no benefit.
+     */
+    val embedding: ByteArray? = null,
 )
 
 @Entity(

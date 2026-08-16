@@ -81,6 +81,19 @@ interface MemoryDao {
     suspend fun idStatusRows(): List<MemoryStatusRow>
 
     @Query(
+        "SELECT * FROM memory_items " +
+            "WHERE status = 'ACTIVE' AND embedding IS NULL " +
+            "ORDER BY updatedAt DESC LIMIT :limit",
+    )
+    suspend fun withoutEmbedding(limit: Int): List<MemoryItemEntity>
+
+    @Query("UPDATE memory_items SET embedding = :embedding WHERE id = :id")
+    suspend fun setEmbedding(id: String, embedding: ByteArray)
+
+    @Query("SELECT count(*) FROM memory_items WHERE status = 'ACTIVE' AND embedding IS NULL")
+    suspend fun countWithoutEmbedding(): Int
+
+    @Query(
         "SELECT id FROM memory_items " +
             "WHERE status IN ('DELETED', 'SUPERSEDED') AND updatedAt < :cutoff " +
             "ORDER BY updatedAt LIMIT :limit",

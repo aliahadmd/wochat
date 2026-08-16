@@ -32,6 +32,7 @@ class MemoryMaintenanceWorker(
         try {
             container.memoryRepository.purgeExpiredMemories(now)
             container.memoryRepository.purgeStaleIndexDocs()
+            backfillEmbeddings(container)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -41,8 +42,30 @@ class MemoryMaintenanceWorker(
         return Result.success()
     }
 
+
+    /**
+     * Embeds memories written before the embedder existed, in bounded batches.
+     *
+     * Deliberately capped per run rather than looping to completion: this is a
+     * background worker sharing the CPU with on-device inference, and an unbounded
+     * pass over a large store would compete with an interactive chat turn. What it
+     * does not finish, the next daily run picks up — retrieval degrades to lexical
+     * for those rows in the meantime, which is exactly the pre-embedding behaviour.
+     */
+    private suspend fun backfillEmbeddings(container: com.aliahad.aichat.AppContainer) {
+        var remaining = MAX_BACKFILL_PER_RUN
+        while (remaining > 0) {
+            val batch = minOf(BACKFILL_BATCH, remaining)
+            val written = container.memoryRepository.backfillEmbeddings(batch)
+            if (written == 0) return
+            remaining -= written
+        }
+    }
+
     private companion object {
         const val TAG = "MemoryMaintenance"
+        const val BACKFILL_BATCH = 32
+        const val MAX_BACKFILL_PER_RUN = 256
     }
 }
 

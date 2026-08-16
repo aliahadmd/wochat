@@ -299,6 +299,12 @@ class VulkanInferenceClient @OptIn(ExperimentalCoroutinesApi::class) constructor
     // this client can hand back to the kernel.
     override fun releaseResidentPages() = Unit
 
+    // Embeddings never cross the IPC boundary; the CPU engine owns the embedder.
+    override suspend fun loadEmbedder(path: String) = Unit
+    override suspend fun unloadEmbedder() = Unit
+    override val embeddingDimensions: Int = 0
+    override suspend fun embed(text: String): FloatArray? = null
+
     override suspend fun unload() = withContext(dispatcher) {
         runCatching { service?.unload() }
         clearLoadedState()

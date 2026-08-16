@@ -44,7 +44,26 @@ object ModelConstants {
         sha256 = "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee",
     )
 
+
+    /**
+     * Sentence embedder for semantic memory recall, published by the llama.cpp
+     * organisation so it tracks the vendored runtime. Small and CPU-only: it runs
+     * once per stored memory and once per query, alongside the chat model.
+     */
+    val EMBEDDING_GEMMA_300M = OfficialModelSpec(
+        id = "ggml-org-embeddinggemma-300m-q8",
+        displayName = "EmbeddingGemma 300M Q8",
+        repository = "ggml-org/embeddinggemma-300M-GGUF",
+        revision = EMBEDDING_GEMMA_REVISION,
+        fileName = "embeddinggemma-300M-Q8_0.gguf",
+        sizeBytes = 333_590_944L,
+        sha256 = "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63",
+    )
+
     val OFFICIAL_MODELS = listOf(GEMMA_4_E4B)
+
+    /** Downloadable but never selectable as a chat model. */
+    val EMBEDDING_MODELS = listOf(EMBEDDING_GEMMA_300M)
 
     val GEMMA_4_E4B_PROJECTOR = OfficialProjectorSpec(
         id = "google-gemma-4-e4b-mmproj",
@@ -64,9 +83,10 @@ object ModelConstants {
     const val WORK_INPUT_PROJECTOR_ID = "projector_id"
 
     private const val GEMMA_4_E4B_REVISION = "4b4a2c1d584be7264f87aac328a1bc739ce81b6c"
+    private const val EMBEDDING_GEMMA_REVISION = "0f741b5a6585bd53aeb15cd1372c56f2a0f65e12"
 
     fun officialModel(id: String): OfficialModelSpec? =
-        OFFICIAL_MODELS.firstOrNull { it.id == id }
+        (OFFICIAL_MODELS + EMBEDDING_MODELS).firstOrNull { it.id == id }
 
     fun officialProjector(id: String): OfficialProjectorSpec? =
         OFFICIAL_PROJECTORS.firstOrNull { it.id == id }

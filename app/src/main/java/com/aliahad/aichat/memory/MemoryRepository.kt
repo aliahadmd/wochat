@@ -48,11 +48,29 @@ interface MemoryRepository {
     suspend fun forget(id: String)
     suspend fun purgeStaleIndexDocs()
     suspend fun purgeExpiredMemories(now: Long): Int
+
+    /**
+     * Embeds up to [limit] memories that have no vector yet. Returns how many were
+     * written, so a caller can loop until it returns 0.
+     */
+    suspend fun backfillEmbeddings(limit: Int): Int
+}
+
+/**
+ * Produces sentence embeddings for memory rows and queries.
+ *
+ * A narrow seam rather than a direct dependency on the inference engine, so the
+ * repository stays testable and so a missing or still-downloading embedder simply
+ * means null — retrieval falls back to lexical matching rather than failing.
+ */
+fun interface MemoryEmbedder {
+    suspend fun embed(text: String): FloatArray?
 }
 
 class RoomMemoryRepository(
     private val database: AppDatabase,
     private val indexer: MemoryIndexer,
+    private val embedder: MemoryEmbedder? = null,
 ) : MemoryRepository {
     private val dao = database.memoryDao()
 
@@ -163,6 +181,9 @@ class RoomMemoryRepository(
             )
         }.getOrDefault(emptyList())
         val now = System.currentTimeMillis()
+        // Best-effort: a failed or absent embedder must degrade to lexical-only
+        // retrieval, never break the turn.
+        val queryEmbedding = embedder?.let { runCatching { it.embed(query.text) }.getOrNull() }
         val memoryHits = searchMemoryRows(
             source = searchDataSource,
             queryText = query.text,
@@ -170,6 +191,7 @@ class RoomMemoryRepository(
             limit = query.limit,
             indexedIds = indexedIds,
             now = now,
+            queryEmbedding = queryEmbedding,
         )
         return memoryHits.take(query.limit)
     }
@@ -235,6 +257,20 @@ class RoomMemoryRepository(
         runCatching { indexer.upsert(item) }
     }
 
+    override suspend fun backfillEmbeddings(limit: Int): Int {
+        val embed = embedder ?: return 0
+        val pending = dao.withoutEmbedding(limit)
+        var written = 0
+        pending.forEach { row ->
+            // One row at a time, committed as it goes: the pass is resumable, and a
+            // failure part-way leaves the rows it already did embedded.
+            val vector = runCatching { embed.embed(row.content) }.getOrNull() ?: return@forEach
+            dao.setEmbedding(row.id, MemoryVectors.encode(vector))
+            written++
+        }
+        return written
+    }
+
     override suspend fun purgeStaleIndexDocs() {
         staleIndexDocIds(dao.idStatusRows()).forEach { id ->
             runCatching { indexer.remove(id) }
@@ -295,6 +331,7 @@ class RoomMemoryRepository(
             }
         }
         val now = System.currentTimeMillis()
+        val embedding = embedder?.let { runCatching { it.embed(content) }.getOrNull() }
         val row = entity(
             id = stableId ?: UUID.randomUUID().toString(),
             type = type,
@@ -304,6 +341,7 @@ class RoomMemoryRepository(
             importance = importance,
             sensitivity = sensitivity,
             now = now,
+            embedding = embedding,
         )
         database.withTransaction {
             dao.insert(row)
@@ -333,6 +371,7 @@ class RoomMemoryRepository(
         sensitivity: MemorySensitivity,
         supersedesId: String? = null,
         now: Long,
+        embedding: FloatArray? = null,
     ): MemoryItemEntity {
         val normalized = normalize(content)
         return MemoryItemEntity(
@@ -352,6 +391,7 @@ class RoomMemoryRepository(
             supersedesId = supersedesId,
             createdAt = now,
             updatedAt = now,
+            embedding = embedding?.let(MemoryVectors::encode),
         )
     }
 }
@@ -376,6 +416,7 @@ internal suspend fun searchMemoryRows(
     limit: Int,
     indexedIds: List<String>,
     now: Long,
+    queryEmbedding: FloatArray? = null,
 ): List<MemoryHit> {
     val normalized = normalize(queryText)
     val terms = contentTerms(normalized)
@@ -406,7 +447,24 @@ internal suspend fun searchMemoryRows(
             // with zero overlap with the question, which is how 16 unrelated rows were
             // injected into every turn. Priors now only order rows that are already
             // relevant; they can no longer buy admission.
-            val relevance = overlap * 0.48f + phrase + indexBoost * 0.5f
+            // Semantic similarity is folded into relevance, not added on top of the
+            // score, so a paraphrase clears the same floor a keyword match does.
+            // Lexical is kept because embeddings are weak on exact tokens — names,
+            // identifiers, error codes — which is precisely what memories carry.
+            val semantic = queryEmbedding?.let { query ->
+                MemoryVectors.decode(row.embedding)
+                    ?.let { MemoryVectors.cosine(query, it) }
+                    ?.let { similarity ->
+                        // EmbeddingGemma puts unrelated short texts around 0.3-0.5, so
+                        // the raw cosine is rebased before it can contribute anything.
+                        ((similarity - SEMANTIC_BASELINE) / (1f - SEMANTIC_BASELINE))
+                            .coerceIn(0f, 1f)
+                    }
+            } ?: 0f
+            val relevance = maxOf(
+                overlap * 0.48f + phrase + indexBoost * 0.5f,
+                semantic * SEMANTIC_WEIGHT,
+            )
             val priors = row.importance * 0.1f +
                 row.confidence * 0.04f +
                 recency * 0.03f +
@@ -511,6 +569,21 @@ private val STOP_WORDS = setOf(
 )
 
 /**
+ * Cosine below which two texts are treated as unrelated.
+ *
+ * Sentence embedders do not put unrelated text near zero; EmbeddingGemma leaves
+ * short unrelated strings around 0.3-0.5. Rebasing on this keeps a mediocre match
+ * from clearing the relevance floor on similarity alone.
+ */
+internal const val SEMANTIC_BASELINE = 0.55f
+
+/**
+ * Ceiling on what a purely semantic match can score, chosen so a strong paraphrase
+ * comfortably clears [MIN_MEMORY_RELEVANCE] while a mediocre one does not.
+ */
+internal const val SEMANTIC_WEIGHT = 0.6f
+
+/**
  * Minimum query-dependent score a memory needs before it may be injected.
  *
  * Calibrated so a row AppSearch merely surfaced, with no shared term and no phrase
@@ -602,11 +675,15 @@ internal fun inferType(content: String): MemoryType {
 internal fun isWorthRemembering(content: String, type: MemoryType): Boolean {
     val trimmed = content.trim()
     if (trimmed.isEmpty()) return false
+    // Questions are checked before classification, not after. inferType matches on
+    // substrings, so "What do I like?" contains "i like" and classifies as a
+    // PREFERENCE — it was observed stored as one on the device. A question is a
+    // request for information in every case, never an assertion worth recalling.
+    if (isQuestion(trimmed)) return false
     // Length is not a proxy for worth once the message has been classified:
     // "My name is Ali" is 14 characters and is precisely what memory exists for.
     if (type != MemoryType.EPISODE) return true
     if (trimmed.length < MIN_MEMORY_CHARS) return false
-    if (isQuestion(trimmed)) return false
     return trimmed.split(WHITESPACE).size >= MIN_MEMORY_WORDS
 }
 

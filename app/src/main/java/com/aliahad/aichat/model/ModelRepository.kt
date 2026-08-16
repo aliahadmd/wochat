@@ -29,6 +29,9 @@ import java.util.concurrent.TimeUnit
 
 interface ModelRepository {
     val models: Flow<List<ModelRecord>>
+
+    /** The sentence embedder, which is downloadable but never a chat model. */
+    val embeddingModel: Flow<ModelRecord?>
     val projectors: Flow<List<ProjectorRecord>>
     fun modelsDirectory(): File
     suspend fun ensureOfficialRecords()
@@ -60,6 +63,11 @@ class DefaultModelRepository(
             rows.filter { it.id == ModelConstants.GEMMA_4_E4B.id }
                 .map(ModelRecordEntity::toDomain)
         }
+    override val embeddingModel: Flow<ModelRecord?> =
+        dao.observeAll().map { rows ->
+            rows.firstOrNull { it.id == ModelConstants.EMBEDDING_GEMMA_300M.id }
+                ?.toDomain()
+        }
     override val projectors: Flow<List<ProjectorRecord>> =
         projectorDao.observeAll().map { rows ->
             rows.filter { it.id == ModelConstants.GEMMA_4_E4B_PROJECTOR.id }
@@ -72,7 +80,10 @@ class DefaultModelRepository(
     override suspend fun ensureOfficialRecords() {
         recoverInterruptedInstalls()
         retireUnsupportedArtifacts()
-        ModelConstants.OFFICIAL_MODELS.forEach { spec ->
+        // Embedding models get the same download/verify/resume machinery as the
+        // chat model. They are filtered out of the `models` flow above, so they can
+        // never be picked as a chat model.
+        (ModelConstants.OFFICIAL_MODELS + ModelConstants.EMBEDDING_MODELS).forEach { spec ->
             val existing = dao.get(spec.id)
             val finalFile = File(modelsDirectory(), spec.fileName)
             val part = File(modelsDirectory(), "${spec.fileName}.part")
