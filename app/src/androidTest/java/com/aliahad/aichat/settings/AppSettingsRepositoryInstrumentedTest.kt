@@ -92,17 +92,6 @@ class AppSettingsRepositoryInstrumentedTest {
     }
 
     @Test
-    fun defaultCollectionPausedIsFalse() = runBlocking {
-        assertFalse(settings.collectionPaused.first())
-    }
-
-    @Test
-    fun setCollectionPausedRoundTrip() = runBlocking {
-        settings.setCollectionPaused(true)
-        assertTrue(settings.collectionPaused.first())
-    }
-
-    @Test
     fun defaultGenerationSettingsAreNormalized() = runBlocking {
         val defaults = settings.generationSettings.first()
         assertEquals(1024, defaults.maxNewTokens)

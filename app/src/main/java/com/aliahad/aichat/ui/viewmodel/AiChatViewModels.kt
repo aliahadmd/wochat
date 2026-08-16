@@ -12,13 +12,6 @@ class AiChatViewModelFactory(
 ) : ViewModelProvider.Factory {
     private val messages = UiMessageManager()
     private val projectorPrompts = ProjectorPromptCoordinator(container.modelRepository)
-    private val phoneSources = PhoneSourceCoordinator(
-        application = container.application,
-        accessManager = container.phoneSourceAccessManager,
-        settings = container.settings,
-        activityRepository = container.activityRepository,
-        memoryRepository = container.memoryRepository,
-    )
     private val chatTurnRunner = ChatTurnRunner(
         chatRepository = container.chatRepository,
         attachmentRepository = container.attachmentRepository,
@@ -70,8 +63,7 @@ class AiChatViewModelFactory(
             MemoryViewModel::class.java -> MemoryViewModel(
                 memoryRepository = container.memoryRepository,
                 settings = container.settings,
-                phoneSources = phoneSources,
-                backupRepository = container.officeBackupRepository,
+                    backupRepository = container.officeBackupRepository,
                 memoryIndexer = container.memoryIndexer,
                 messages = messages,
             )

@@ -3,13 +3,7 @@ package com.aliahad.aichat.ui.viewmodel
 import android.app.Application
 import android.database.sqlite.SQLiteException
 import android.util.Log
-import com.aliahad.aichat.activity.ActivityRepository
-import com.aliahad.aichat.activity.OfficeWorkScheduler
-import com.aliahad.aichat.activity.PhoneSourceAccessManager
-import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.data.DatabaseLockedException
-import com.aliahad.aichat.core.PhoneSourceAccessState
-import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.memory.MemoryRepository
 import com.aliahad.aichat.model.ModelRepository
 import com.aliahad.aichat.settings.AppSettingsRepository
@@ -158,43 +152,3 @@ class ProjectorPromptCoordinator(
     }
 }
 
-/** Keeps permission/source snapshots consistent between Memory and Setup. */
-class PhoneSourceCoordinator(
-    private val application: Application,
-    private val accessManager: PhoneSourceAccessManager,
-    private val settings: AppSettingsRepository,
-    private val activityRepository: ActivityRepository,
-    private val memoryRepository: MemoryRepository,
-) {
-    private val _statuses = MutableStateFlow<Map<ActivitySource, PhoneSourceStatus>>(emptyMap())
-    val statuses: StateFlow<Map<ActivitySource, PhoneSourceStatus>> = _statuses.asStateFlow()
-    val stats = activityRepository.sourceStats
-
-    val healthConnectAvailable: Boolean
-        get() = accessManager.healthConnectAvailable
-
-    suspend fun refresh() {
-        val previous = _statuses.value
-        val current = accessManager.snapshot()
-        _statuses.value = current
-        if (!settings.collectionPaused.first()) {
-            current.values
-                .filter { status ->
-                    status.state == PhoneSourceAccessState.GRANTED &&
-                        previous[status.source]?.state != PhoneSourceAccessState.GRANTED
-                }
-                .forEach { OfficeWorkScheduler.collectNow(application, it.source) }
-        }
-    }
-
-    fun collectGrantedSources() {
-        _statuses.value.values
-            .filter { it.state == PhoneSourceAccessState.GRANTED }
-            .forEach { OfficeWorkScheduler.collectNow(application, it.source) }
-    }
-
-    suspend fun clear(source: ActivitySource) {
-        memoryRepository.forgetActivitySource(source)
-        activityRepository.deleteSource(source)
-    }
-}

@@ -11,7 +11,6 @@ import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.core.ChatQualityMode
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
-import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.MemorySensitivity
 import com.aliahad.aichat.core.MemorySourceKind
@@ -358,59 +357,8 @@ data class MemoryCorrectionEntity(
     val createdAt: Long,
 )
 
-@Entity(
-    tableName = "activity_events",
-    indices = [
-        Index("source"),
-        Index("startedAt"),
-        Index("packageName"),
-        Index("compactedIntoId"),
-    ],
-)
-data class ActivityEventEntity(
-    @PrimaryKey val id: String,
-    val source: ActivitySource,
-    val eventType: String,
-    val startedAt: Long,
-    val endedAt: Long?,
-    val packageName: String?,
-    val title: String?,
-    val redactedText: String?,
-    val metadataJson: String,
-    val sensitivity: MemorySensitivity,
-    val pinned: Boolean = false,
-    val compactedIntoId: String?,
-    val createdAt: Long,
-)
-
-data class ActivitySourceStatsRow(
-    val source: ActivitySource,
-    val eventCount: Long,
-    val lastEventAt: Long?,
-)
-
 data class MemoryStatusRow(
     val id: String,
     val status: MemoryStatus,
 )
 
-@Entity(tableName = "memory_summaries", indices = [Index("periodStart"), Index("source")])
-data class MemorySummaryEntity(
-    @PrimaryKey val id: String,
-    val source: ActivitySource?,
-    val periodStart: Long,
-    val periodEnd: Long,
-    val content: String,
-    val eventCount: Int,
-    val createdAt: Long,
-    val updatedAt: Long,
-)
-
-@Entity(tableName = "collector_checkpoints")
-data class CollectorCheckpointEntity(
-    @PrimaryKey val collector: String,
-    val cursor: String?,
-    val lastCollectedAt: Long,
-    val lastCompactedAt: Long?,
-    val error: String?,
-)

@@ -37,10 +37,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aliahad.aichat.ui.AiChatApp
 import com.aliahad.aichat.ui.theme.AichatTheme
 import com.aliahad.aichat.residency.ModelResidencyService
-import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.settings.DeviceSettingsNavigator
-import androidx.health.connect.client.PermissionController
 import com.aliahad.aichat.ui.viewmodel.AiChatViewModelFactory
 import com.aliahad.aichat.ui.viewmodel.MAX_MESSAGE_ATTACHMENTS
 import com.aliahad.aichat.ui.viewmodel.AppShellViewModel
@@ -108,7 +106,6 @@ class MainActivity : ComponentActivity() {
                     appShellViewModel.initialize()
                     ModelResidencyService.start(this@MainActivity)
                     applyUiForeground()
-                    memoryViewModel.refreshPhoneSourceAccess()
                 }
                 val shellState by appShellViewModel.uiState.collectAsStateWithLifecycle()
                 val chatState by chatViewModel.uiState.collectAsStateWithLifecycle()
@@ -144,16 +141,6 @@ class MainActivity : ComponentActivity() {
                     if (uri != null && conversationId != null) {
                         chatViewModel.exportConversationMarkdown(uri, conversationId)
                     }
-                }
-                val phonePermissionLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestMultiplePermissions(),
-                ) {
-                    memoryViewModel.refreshPhoneSourceAccess()
-                }
-                val healthPermissionLauncher = rememberLauncherForActivityResult(
-                    PermissionController.createRequestPermissionResultContract(),
-                ) {
-                    memoryViewModel.refreshPhoneSourceAccess()
                 }
                 val fileLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenMultipleDocuments(),
@@ -259,58 +246,6 @@ class MainActivity : ComponentActivity() {
                                 ),
                             )
                         },
-                        onRequestPhoneSourceAccess = { source ->
-                            when (source) {
-                                ActivitySource.APP_USAGE ->
-                                    DeviceSettingsNavigator.openUsageAccess(this)
-                                ActivitySource.NOTIFICATION ->
-                                    DeviceSettingsNavigator.openNotificationAccess(this)
-                                ActivitySource.ACCESSIBILITY ->
-                                    DeviceSettingsNavigator.openAccessibility(this)
-                                ActivitySource.LOCATION,
-                                ActivitySource.SENSOR,
-                                ActivitySource.CONTACT,
-                                ActivitySource.CALENDAR -> {
-                                    // The user opts into phone-source collection as a whole, so
-                                    // every missing standard runtime permission is requested in
-                                    // one batch instead of one dialog per source.
-                                    val missing = buildList {
-                                        val foregroundLocation =
-                                            hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) ||
-                                                hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
-                                        if (!foregroundLocation) {
-                                            add(Manifest.permission.ACCESS_COARSE_LOCATION)
-                                            add(Manifest.permission.ACCESS_FINE_LOCATION)
-                                        }
-                                        if (!hasPermission(Manifest.permission.READ_CONTACTS)) {
-                                            add(Manifest.permission.READ_CONTACTS)
-                                        }
-                                        if (!hasPermission(Manifest.permission.READ_CALENDAR)) {
-                                            add(Manifest.permission.READ_CALENDAR)
-                                        }
-                                        if (!hasPermission(Manifest.permission.ACTIVITY_RECOGNITION)) {
-                                            add(Manifest.permission.ACTIVITY_RECOGNITION)
-                                        }
-                                    }
-                                    if (missing.isEmpty()) {
-                                        // Everything requestable is granted; background location
-                                        // and other elevations live in system settings only.
-                                        DeviceSettingsNavigator.openAppPermissions(this)
-                                    } else {
-                                        phonePermissionLauncher.launch(missing.toTypedArray())
-                                    }
-                                }
-                                ActivitySource.HEALTH -> {
-                                    val container = (application as AiChatApplication).container
-                                    if (container.phoneSourceAccessManager.healthConnectAvailable) {
-                                        healthPermissionLauncher.launch(
-                                            container.healthDataSource.readPermissions,
-                                        )
-                                    }
-                                }
-                                else -> Unit
-                            }
-                        },
                         onExportDiagnostics = {
                             diagnosticsLauncher.launch("wochat-diagnostics-${System.currentTimeMillis()}.json")
                         },
@@ -327,16 +262,6 @@ class MainActivity : ComponentActivity() {
         applyUiForeground()
     }
 
-    override fun onResume() {
-        super.onResume()
-        // Guarded: touching a ViewModel before the container is warm would force
-        // the database open on the main thread. The warm-up effect in onCreate
-        // performs the first refresh once the container is ready.
-        if (aiChatApplication.containerWarm.value) {
-            memoryViewModel.refreshPhoneSourceAccess()
-        }
-    }
-
     override fun onStop() {
         uiForeground = false
         applyUiForeground()
@@ -347,9 +272,6 @@ class MainActivity : ComponentActivity() {
         if (!aiChatApplication.containerWarm.value) return
         aiChatApplication.container.residencyController.setUiForeground(uiForeground)
     }
-
-    private fun hasPermission(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 }
 
 /**

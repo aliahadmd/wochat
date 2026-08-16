@@ -119,7 +119,6 @@ class EncryptedOfficeBackupRepository(
                 conversations = counts["conversations"] ?: 0,
                 messages = counts["messages"] ?: 0,
                 memories = counts["memory_items"] ?: 0,
-                activities = counts["activity_events"] ?: 0,
                 attachments = counts["attachments"] ?: 0,
             )
         } catch (error: Throwable) {
@@ -247,7 +246,6 @@ class EncryptedOfficeBackupRepository(
             .put("thinking", generation.thinkingEnabled)
             .put("systemPrompt", generation.systemPrompt)
             .put("memoryEnabled", settings.memoryEnabled.first())
-            .put("collectionPaused", settings.collectionPaused.first())
             .put("allowMeteredModelDownloads", settings.allowMeteredModelDownloads.first())
     }
 
@@ -518,7 +516,6 @@ class EncryptedOfficeBackupRepository(
             ),
         )
         settings.setMemoryEnabled(json.optBoolean("memoryEnabled", true))
-        settings.setCollectionPaused(json.optBoolean("collectionPaused", false))
         settings.setAllowMeteredModelDownloads(
             json.optBoolean("allowMeteredModelDownloads", false),
         )
@@ -645,7 +642,6 @@ class EncryptedOfficeBackupRepository(
             "conversations",
             "messages",
             "memory_items",
-            "activity_events",
             "attachments",
         )
         val PRE_MEMORY_TABLES = listOf(
@@ -660,10 +656,6 @@ class EncryptedOfficeBackupRepository(
             "skills",
             "message_skill_invocations",
         )
-        val POST_MEMORY_TABLES = listOf(
-            "memory_summaries",
-            "activity_events",
-            "collector_checkpoints",
-        )
+        val POST_MEMORY_TABLES = emptyList<String>()
     }
 }

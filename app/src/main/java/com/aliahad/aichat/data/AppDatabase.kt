@@ -10,7 +10,6 @@ import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.core.ChatQualityMode
-import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.MemorySensitivity
 import com.aliahad.aichat.core.MemorySourceKind
@@ -49,8 +48,6 @@ class DatabaseConverters {
     @TypeConverter fun toMemoryStatus(value: String): MemoryStatus = MemoryStatus.valueOf(value)
     @TypeConverter fun fromMemorySourceKind(value: MemorySourceKind): String = value.name
     @TypeConverter fun toMemorySourceKind(value: String): MemorySourceKind = MemorySourceKind.valueOf(value)
-    @TypeConverter fun fromActivitySource(value: ActivitySource?): String? = value?.name
-    @TypeConverter fun toActivitySource(value: String?): ActivitySource? = value?.let(ActivitySource::valueOf)
     @TypeConverter fun fromContextVerificationState(value: ContextVerificationState): String = value.name
     @TypeConverter fun toContextVerificationState(value: String): ContextVerificationState =
         ContextVerificationState.valueOf(value)
@@ -75,12 +72,9 @@ class DatabaseConverters {
         MemoryItemEntity::class,
         MemorySourceEntity::class,
         MemoryCorrectionEntity::class,
-        ActivityEventEntity::class,
-        MemorySummaryEntity::class,
-        CollectorCheckpointEntity::class,
         ModelBenchmarkEntity::class,
     ],
-    version = 17,
+    version = 18,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -94,7 +88,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun attachmentDao(): AttachmentDao
     abstract fun conversationSummaryDao(): ConversationSummaryDao
     abstract fun memoryDao(): MemoryDao
-    abstract fun activityDao(): ActivityDao
     abstract fun modelBenchmarkDao(): ModelBenchmarkDao
     abstract fun backupImportInvalidationDao(): BackupImportInvalidationDao
 
@@ -497,6 +490,37 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Phone-source collection is gone (plan 033). Dropping the event
+                // tables is not enough on its own: the collectors' output had
+                // already been compacted into ordinary memory_items rows, which
+                // would keep being retrieved and injected into prompts. Those rows
+                // are what made a calendar question cost 1578 prompt tokens, so
+                // they go too.
+                //
+                // Only rows whose *every* source is ACTIVITY are removed. A memory
+                // that also has a chat or manual source was not purely collected
+                // and is the user's own content.
+                db.execSQL(
+                    """
+                    DELETE FROM memory_items WHERE id IN (
+                        SELECT ms.memoryId FROM memory_sources ms
+                        WHERE ms.kind = 'ACTIVITY'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM memory_sources other
+                            WHERE other.memoryId = ms.memoryId AND other.kind != 'ACTIVITY'
+                        )
+                    )
+                    """.trimIndent(),
+                )
+                // memory_sources/-corrections cascade from memory_items.
+                db.execSQL("DROP TABLE IF EXISTS activity_events")
+                db.execSQL("DROP TABLE IF EXISTS memory_summaries")
+                db.execSQL("DROP TABLE IF EXISTS collector_checkpoints")
+            }
+        }
+
         fun create(context: Context): AppDatabase {
             System.loadLibrary("sqlcipher")
             val passphrase = DatabaseKeyManager(context).passphrase()
@@ -525,6 +549,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_14_15,
                     MIGRATION_15_16,
                     MIGRATION_16_17,
+                    MIGRATION_17_18,
                 )
                 .build()
             migrator.sweepResidueFromFailedMigration()

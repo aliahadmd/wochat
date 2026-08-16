@@ -7,7 +7,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aliahad.aichat.backup.OfficeBackupRepository
 import com.aliahad.aichat.context.ContextProfileRepository
-import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.core.DownloadStatus
@@ -295,7 +294,6 @@ class ModelSetupViewModel internal constructor(
 class MemoryViewModel internal constructor(
     private val memoryRepository: MemoryRepository,
     private val settings: AppSettingsRepository,
-    private val phoneSources: PhoneSourceCoordinator,
     private val backupRepository: OfficeBackupRepository,
     private val memoryIndexer: MemoryIndexer,
     private val messages: UiMessageManager,
@@ -307,28 +305,9 @@ class MemoryViewModel internal constructor(
         collect(memoryRepository.memories) { memories -> copy(memories = memories) }
         collect(memoryRepository.memorySources) { sources -> copy(memorySources = sources) }
         collect(settings.memoryEnabled) { enabled -> copy(memoryEnabled = enabled) }
-        collect(settings.collectionPaused) { paused -> copy(collectionPaused = paused) }
-        collect(phoneSources.statuses) { statuses -> copy(phoneSourceStatuses = statuses) }
-        collect(phoneSources.stats) { stats ->
-            copy(phoneSourceStats = stats.associateBy { it.source })
-        }
-        viewModelScope.launch {
-            runCatching {
-                phoneSources.refresh()
-            }.onFailure(messages::report)
-        }
     }
 
     fun setMemoryEnabled(enabled: Boolean) = launchCatching { settings.setMemoryEnabled(enabled) }
-
-    fun setCollectionPaused(paused: Boolean) = launchCatching {
-        settings.setCollectionPaused(paused)
-        if (!paused) phoneSources.collectGrantedSources()
-    }
-
-    fun refreshPhoneSourceAccess() = launchCatching { phoneSources.refresh() }
-
-    fun clearCollectedSource(source: ActivitySource) = launchCatching { phoneSources.clear(source) }
 
     fun addMemory(content: String) = launchCatching {
         memoryRepository.remember(MemoryType.FACT, content, content)

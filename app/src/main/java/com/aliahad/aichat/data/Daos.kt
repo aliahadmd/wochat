@@ -343,24 +343,6 @@ interface BackupImportInvalidationDao {
     suspend fun touchMemoryCorrections()
 
     @Query(
-        "UPDATE memory_summaries SET updatedAt = updatedAt " +
-            "WHERE rowid = (SELECT rowid FROM memory_summaries LIMIT 1)",
-    )
-    suspend fun touchMemorySummaries()
-
-    @Query(
-        "UPDATE activity_events SET createdAt = createdAt " +
-            "WHERE rowid = (SELECT rowid FROM activity_events LIMIT 1)",
-    )
-    suspend fun touchActivityEvents()
-
-    @Query(
-        "UPDATE collector_checkpoints SET lastCollectedAt = lastCollectedAt " +
-            "WHERE rowid = (SELECT rowid FROM collector_checkpoints LIMIT 1)",
-    )
-    suspend fun touchCollectorCheckpoints()
-
-    @Query(
         "UPDATE skills SET updatedAt = updatedAt " +
             "WHERE rowid = (SELECT rowid FROM skills LIMIT 1)",
     )
@@ -383,9 +365,6 @@ interface BackupImportInvalidationDao {
         touchMemoryItems()
         touchMemorySources()
         touchMemoryCorrections()
-        touchMemorySummaries()
-        touchActivityEvents()
-        touchCollectorCheckpoints()
         touchSkills()
         touchMessageSkillInvocations()
     }

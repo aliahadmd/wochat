@@ -15,10 +15,7 @@ import com.aliahad.aichat.data.ChatRepository
 import com.aliahad.aichat.data.RoomChatRepository
 import com.aliahad.aichat.attachment.AttachmentRepository
 import com.aliahad.aichat.attachment.DefaultAttachmentRepository
-import com.aliahad.aichat.activity.ActivityRepository
-import com.aliahad.aichat.activity.RoomActivityRepository
-import com.aliahad.aichat.activity.OfficeWorkScheduler
-import com.aliahad.aichat.activity.PhoneSourceAccessManager
+import com.aliahad.aichat.memory.MemoryWorkScheduler
 import com.aliahad.aichat.backup.EncryptedOfficeBackupRepository
 import com.aliahad.aichat.backup.OfficeBackupRepository
 import com.aliahad.aichat.inference.InferenceEngine
@@ -47,8 +44,6 @@ import com.aliahad.aichat.settings.AppSettingsRepository
 import com.aliahad.aichat.settings.TokenCipher
 import com.aliahad.aichat.skill.RoomSkillRepository
 import com.aliahad.aichat.skill.SkillRepository
-import com.aliahad.aichat.brief.HealthConnectDataSource
-import com.aliahad.aichat.brief.HealthDataSource
 import com.aliahad.aichat.diagnostics.DiagnosticsReportBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
@@ -183,10 +178,10 @@ class AiChatApplication : Application() {
 
         // WorkManager scheduling touches disk, so it stays off the main thread too.
         reconcileStartupStep("work scheduling") {
-            OfficeWorkScheduler.schedule(this@AiChatApplication)
+            MemoryWorkScheduler.schedule(this@AiChatApplication)
         }
         try {
-            OfficeWorkScheduler.verifyAndRepair(this@AiChatApplication)
+            MemoryWorkScheduler.verifyAndRepair(this@AiChatApplication)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -309,11 +304,6 @@ class AppContainer(val application: Application) {
     val contextProfileRepository: ContextProfileRepository by lazy {
         RoomContextProfileRepository(application, database.modelContextProfileDao(), settings)
     }
-    val healthDataSource: HealthDataSource by lazy { HealthConnectDataSource(application) }
-    val phoneSourceAccessManager by lazy {
-        PhoneSourceAccessManager(application, healthDataSource)
-    }
-    val activityRepository: ActivityRepository by lazy { RoomActivityRepository(database) }
     val conversationSummaryRepository by lazy { ConversationSummaryRepository(database) }
     val attachmentRepository: AttachmentRepository by lazy {
         DefaultAttachmentRepository(application, database)
@@ -456,9 +446,6 @@ class AppContainer(val application: Application) {
         memoryRepository
         skillRepository
         contextProfileRepository
-        healthDataSource
-        phoneSourceAccessManager
-        activityRepository
         conversationSummaryRepository
         attachmentRepository
         modelBenchmarkRepository

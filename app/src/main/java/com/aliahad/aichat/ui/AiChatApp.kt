@@ -142,8 +142,6 @@ import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
-import com.aliahad.aichat.core.ActivitySource
-import com.aliahad.aichat.core.ActivitySourceStats
 import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.ContextVerificationState
 import com.aliahad.aichat.core.DownloadStatus
@@ -159,8 +157,6 @@ import com.aliahad.aichat.core.ProjectorRecord
 import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.core.SkillRecord
 import com.aliahad.aichat.core.ThemeMode
-import com.aliahad.aichat.core.PhoneSourceAccessState
-import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.model.formatBytes
 import com.aliahad.aichat.residency.ModelResidencyState
@@ -216,7 +212,6 @@ fun AiChatApp(
     onExportOffice: (CharArray) -> Unit,
     onExportConversation: (String) -> Unit,
     onImportOffice: () -> Unit,
-    onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
     onExportDiagnostics: () -> Unit,
 ) {
     val chat = chatState
@@ -386,7 +381,6 @@ fun AiChatApp(
                     onExportDiagnostics = onExportDiagnostics,
                     onExportOffice = onExportOffice,
                     onImportOffice = onImportOffice,
-                    onRequestPhoneSourceAccess = onRequestPhoneSourceAccess,
                     modifier = Modifier.padding(padding),
                 ) }
             }
@@ -727,25 +721,6 @@ private fun ModelRequiredBanner(onOpenSettings: () -> Unit) {
     }
 }
 
-@Composable
-private fun CollectionPausedBanner(onResume: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.errorContainer)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            "Collection is paused — phone activity is not being memorized",
-            color = MaterialTheme.colorScheme.onErrorContainer,
-            modifier = Modifier.weight(1f),
-        )
-        TextButton(onClick = onResume) {
-            Text("Resume", color = MaterialTheme.colorScheme.onErrorContainer)
-        }
-    }
-}
 
 @Composable
 private fun StartupChatPlaceholder(modifier: Modifier = Modifier) {
@@ -1788,15 +1763,12 @@ private fun MemoryCenter(
     actions: MemoryViewModel,
     onExportOffice: (CharArray) -> Unit,
     onImportOffice: () -> Unit,
-    onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var query by remember { mutableStateOf("") }
     var editing by remember { mutableStateOf<MemoryItem?>(null) }
     var creating by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
-    var managingSourceData by remember { mutableStateOf(false) }
-    var clearingSource by remember { mutableStateOf<ActivitySource?>(null) }
     var typeFilter by remember { mutableStateOf<MemoryType?>(null) }
     val visible = remember(state.memories, query, typeFilter) {
         val value = query.trim()
@@ -1833,29 +1805,7 @@ private fun MemoryCenter(
                             onCheckedChange = actions::setMemoryEnabled,
                         )
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "Automatic phone collection",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text(
-                                "One privacy control for every granted source",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = !state.collectionPaused,
-                            onCheckedChange = { actions.setCollectionPaused(!it) },
-                        )
-                    }
                 }
-            }
-        }
-        if (state.collectionPaused) {
-            item {
-                CollectionPausedBanner(onResume = { actions.setCollectionPaused(false) })
             }
         }
         item {
@@ -1863,7 +1813,7 @@ private fun MemoryCenter(
                 Column(Modifier.padding(16.dp)) {
                     Text("Portable Office", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Encrypted export includes chats, memories, retained activity, settings, " +
+                        "Encrypted export includes chats, memories, settings, " +
                             "and original attachments. Models, tokens, indexes, and keys stay out.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1887,50 +1837,6 @@ private fun MemoryCenter(
                         }
                         if (state.backupBusy) {
                             CircularProgressIndicator(Modifier.size(32.dp))
-                        }
-                    }
-                }
-            }
-        }
-        item {
-            Card {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Phone sources", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "Granted sources collect automatically while Phone collection is active. " +
-                            "Revoke access in Android Settings to stop an individual source. " +
-                            "Password fields and keyboards are excluded; OTPs and payment numbers " +
-                            "are redacted before storage.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    phoneSourceSpecs.forEachIndexed { index, spec ->
-                        val status = state.phoneSourceStatuses[spec.source] ?: PhoneSourceStatus(
-                            source = spec.source,
-                            state = PhoneSourceAccessState.NOT_GRANTED,
-                            detail = "Checking Android access",
-                        )
-                        PhoneSourceRow(
-                            spec = spec,
-                            status = status,
-                            stats = state.phoneSourceStats[spec.source],
-                            collectionPaused = state.collectionPaused,
-                            onAccess = { onRequestPhoneSourceAccess(spec.source) },
-                        )
-                        if (index != phoneSourceSpecs.lastIndex) {
-                            HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                        }
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                    BatteryOptimizationRow(exempt = rememberBatteryOptimizationExempt())
-                    if (state.phoneSourceStats.values.any { it.eventCount > 0 }) {
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = { managingSourceData = true },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Manage stored phone data")
                         }
                     }
                 }
@@ -2077,7 +1983,6 @@ private fun MemoryCenter(
                     Text("${preview.conversations} conversations")
                     Text("${preview.messages} messages")
                     Text("${preview.memories} memories")
-                    Text("${preview.activities} retained activities")
                     Text("${preview.attachments} attachments")
                     Spacer(Modifier.height(8.dp))
                     Text(
@@ -2112,396 +2017,10 @@ private fun MemoryCenter(
             },
         )
     }
-    if (managingSourceData) {
-        val storedSources = state.phoneSourceStats.values
-            .filter { it.eventCount > 0 }
-            .sortedBy { phoneSourceLabel(it.source) }
-        AlertDialog(
-            onDismissRequest = { managingSourceData = false },
-            title = { Text("Stored phone data") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        "Removing stored records does not revoke Android access. New records may " +
-                            "be collected while Automatic phone collection is active.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    storedSources.forEach { stats ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(phoneSourceLabel(stats.source))
-                                Text(
-                                    "${stats.eventCount} stored records",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            TextButton(
-                                onClick = {
-                                    managingSourceData = false
-                                    clearingSource = stats.source
-                                },
-                            ) {
-                                Text("Delete", color = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { managingSourceData = false }) { Text("Done") }
-            },
-        )
-    }
-    clearingSource?.let { source ->
-        AlertDialog(
-            onDismissRequest = { clearingSource = null },
-            title = { Text("Clear collected data?") },
-            text = {
-                Text(
-                    "This permanently removes retained ${source.name.lowercase().replace('_', ' ')} " +
-                        "activity from Office Memory. It does not revoke Android access.",
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        actions.clearCollectedSource(source)
-                        clearingSource = null
-                    },
-                ) {
-                    Text("Clear", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { clearingSource = null }) { Text("Cancel") }
-            },
-        )
-    }
 }
 
-private data class PhoneSourceSpec(
-    val source: ActivitySource,
-    val label: String,
-    val description: String,
-)
 
-private val phoneSourceSpecs = listOf(
-    PhoneSourceSpec(
-        ActivitySource.APP_USAGE,
-        "App usage",
-        "Foreground app sessions and duration",
-    ),
-    PhoneSourceSpec(
-        ActivitySource.APP_INSTALL,
-        "Installed apps",
-        "App inventory and package changes",
-    ),
-    PhoneSourceSpec(
-        ActivitySource.NOTIFICATION,
-        "Notifications",
-        "Redacted title and visible notification text",
-    ),
-    PhoneSourceSpec(
-        ActivitySource.ACCESSIBILITY,
-        "Screen context",
-        "Visible non-password UI text and optional device actions",
-    ),
-    PhoneSourceSpec(
-        ActivitySource.LOCATION,
-        "Location",
-        "Periodic passive location snapshots",
-    ),
-    PhoneSourceSpec(
-        ActivitySource.SENSOR,
-        "Sensors",
-        "Low-frequency environment and step snapshots",
-    ),
-    PhoneSourceSpec(
-        ActivitySource.CONTACT,
-        "Contacts",
-        "Contact names and update timestamps",
-    ),
-    PhoneSourceSpec(
-        ActivitySource.CALENDAR,
-        "Calendar",
-        "Past month and upcoming year of events",
-    ),
-    PhoneSourceSpec(
-        ActivitySource.HEALTH,
-        "Health Connect",
-        "Local health and fitness records",
-    ),
-)
 
-@Composable
-private fun PhoneSourceRow(
-    spec: PhoneSourceSpec,
-    status: PhoneSourceStatus,
-    stats: ActivitySourceStats?,
-    collectionPaused: Boolean,
-    onAccess: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                spec.label,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            PhoneSourceStatusBadge(status.state)
-        }
-        Text(
-            spec.description,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                buildString {
-                    append(status.detail)
-                    if (status.state == PhoneSourceAccessState.GRANTED && collectionPaused) {
-                        append(" · Collection paused")
-                    }
-                    stats?.takeIf { it.eventCount > 0 }?.let {
-                        append(" · ${it.eventCount} stored")
-                        it.lastEventAt?.let { timestamp ->
-                            append(" · ${formatSourceTimestamp(timestamp)}")
-                        }
-                    }
-                },
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodySmall,
-                color = when (status.state) {
-                    PhoneSourceAccessState.GRANTED -> sourceGrantedColor()
-                    PhoneSourceAccessState.NOT_GRANTED -> MaterialTheme.colorScheme.error
-                    PhoneSourceAccessState.UNAVAILABLE ->
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-            status.actionLabel?.let { label ->
-                TextButton(onClick = onAccess) { Text(label) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun rememberBatteryOptimizationExempt(): Boolean {
-    val context = LocalContext.current
-    var exempt by remember {
-        mutableStateOf(
-            context.getSystemService(PowerManager::class.java)
-                .isIgnoringBatteryOptimizations(context.packageName),
-        )
-    }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                exempt = context.getSystemService(PowerManager::class.java)
-                    .isIgnoringBatteryOptimizations(context.packageName)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-    return exempt
-}
-
-@Composable
-private fun BatteryOptimizationRow(exempt: Boolean) {
-    val context = LocalContext.current
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Text(
-            "Battery optimization",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            "HyperOS may stop background collection while the app is closed",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (exempt) {
-                    "Exempt · background collection can run"
-                } else {
-                    "Restricted · collection may stop when the app is closed"
-                },
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodySmall,
-                color = if (exempt) {
-                    sourceGrantedColor()
-                } else {
-                    MaterialTheme.colorScheme.error
-                },
-            )
-            if (!exempt) {
-                TextButton(onClick = { DeviceSettingsNavigator.openBatteryOptimization(context) }) {
-                    Text("Disable")
-                }
-            }
-        }
-    }
-}
-
-/**
- * Whether the *applied* theme is dark.
- *
- * Deliberately not `isSystemInDarkTheme()`: light/dark is now a user preference,
- * so the system setting and the palette actually in use can disagree. Hand-picked
- * colours below must follow the palette, or forcing Light on a dark-mode phone
- * paints dark badges onto a light background.
- */
-@Composable
-private fun isAppInDarkTheme(): Boolean =
-    MaterialTheme.colorScheme.background.luminance() < 0.5f
-
-@Composable
-private fun PhoneSourceStatusBadge(state: PhoneSourceAccessState) {
-    val dark = isAppInDarkTheme()
-    val background = when (state) {
-        PhoneSourceAccessState.GRANTED ->
-            if (dark) Color(0xFF173D2B) else Color(0xFFD8F8E6)
-        PhoneSourceAccessState.NOT_GRANTED ->
-            if (dark) Color(0xFF4A1D22) else Color(0xFFFFDAD6)
-        PhoneSourceAccessState.UNAVAILABLE -> MaterialTheme.colorScheme.surfaceContainerHighest
-    }
-    val foreground = when (state) {
-        PhoneSourceAccessState.GRANTED -> sourceGrantedColor()
-        PhoneSourceAccessState.NOT_GRANTED -> MaterialTheme.colorScheme.error
-        PhoneSourceAccessState.UNAVAILABLE -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(background)
-            .padding(horizontal = 9.dp, vertical = 5.dp),
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = when (state) {
-                PhoneSourceAccessState.GRANTED -> Icons.Default.CheckCircle
-                PhoneSourceAccessState.NOT_GRANTED -> Icons.Default.ErrorOutline
-                PhoneSourceAccessState.UNAVAILABLE -> Icons.Default.Info
-            },
-            contentDescription = null,
-            modifier = Modifier.size(15.dp),
-            tint = foreground,
-        )
-        Text(
-            when (state) {
-                PhoneSourceAccessState.GRANTED -> "Accessed"
-                PhoneSourceAccessState.NOT_GRANTED -> "No access"
-                PhoneSourceAccessState.UNAVAILABLE -> "Unavailable"
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = foreground,
-        )
-    }
-}
-
-@Composable
-private fun sourceGrantedColor(): Color =
-    if (isAppInDarkTheme()) EmeraldDark else EmeraldLight
-
-private fun formatSourceTimestamp(timestamp: Long): String =
-    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(timestamp))
-
-private fun phoneSourceLabel(source: ActivitySource): String =
-    phoneSourceSpecs.firstOrNull { it.source == source }?.label
-        ?: source.name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
-
-@Composable
-private fun BackupPassphraseDialog(
-    title: String,
-    confirmationLabel: String,
-    busy: Boolean,
-    minPassphraseLength: Int = 8,
-    onDismiss: () -> Unit,
-    onConfirm: (CharArray) -> Unit,
-) {
-    var passphrase by remember { mutableStateOf("") }
-    val weakPassphrase = passphrase.isNotEmpty() &&
-        passphrase.length < 12 &&
-        passphrase.none(Char::isDigit) &&
-        passphrase.none { !it.isLetterOrDigit() }
-    AlertDialog(
-        onDismissRequest = {
-            if (!busy) {
-                passphrase = ""
-                onDismiss()
-            }
-        },
-        title = { Text(title) },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = passphrase,
-                    onValueChange = { passphrase = it },
-                    label = { Text("Passphrase") },
-                    supportingText = {
-                        Text(
-                            if (weakPassphrase) {
-                                "At least $minPassphraseLength characters. It cannot be " +
-                                    "recovered. Backups are encrypted with the passphrase " +
-                                    "alone, so a long one is the only brute-force defense. " +
-                                    "Weak passphrase — a stronger one better protects your data."
-                            } else {
-                                "At least $minPassphraseLength characters. It cannot be " +
-                                    "recovered. Backups are encrypted with the passphrase " +
-                                    "alone, so a long one is the only brute-force defense."
-                            },
-                        )
-                    },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (busy) {
-                    Spacer(Modifier.height(12.dp))
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onConfirm(passphrase.toCharArray()) },
-                enabled = passphrase.length >= minPassphraseLength && !busy,
-            ) {
-                Text(confirmationLabel)
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = {
-                    passphrase = ""
-                    onDismiss()
-                },
-                enabled = !busy,
-            ) { Text("Cancel") }
-        },
-    )
-}
 
 @Composable
 private fun MemoryEditorDialog(
@@ -2836,7 +2355,6 @@ private fun SettingsHub(
     onExportDiagnostics: () -> Unit,
     onExportOffice: (CharArray) -> Unit,
     onImportOffice: () -> Unit,
-    onRequestPhoneSourceAccess: (ActivitySource) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(modifier = modifier.fillMaxSize()) {
@@ -2880,7 +2398,6 @@ private fun SettingsHub(
                     actions = memoryActions,
                     onExportOffice = onExportOffice,
                     onImportOffice = onImportOffice,
-                    onRequestPhoneSourceAccess = onRequestPhoneSourceAccess,
                 )
                 SettingsSection.SKILLS -> SkillsScreen(
                     state = skillsState,
@@ -3679,5 +3196,78 @@ private fun TokenDialog(
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun BackupPassphraseDialog(
+    title: String,
+    confirmationLabel: String,
+    busy: Boolean,
+    minPassphraseLength: Int = 8,
+    onDismiss: () -> Unit,
+    onConfirm: (CharArray) -> Unit,
+) {
+    var passphrase by remember { mutableStateOf("") }
+    val weakPassphrase = passphrase.isNotEmpty() &&
+        passphrase.length < 12 &&
+        passphrase.none(Char::isDigit) &&
+        passphrase.none { !it.isLetterOrDigit() }
+    AlertDialog(
+        onDismissRequest = {
+            if (!busy) {
+                passphrase = ""
+                onDismiss()
+            }
+        },
+        title = { Text(title) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = passphrase,
+                    onValueChange = { passphrase = it },
+                    label = { Text("Passphrase") },
+                    supportingText = {
+                        Text(
+                            if (weakPassphrase) {
+                                "At least $minPassphraseLength characters. It cannot be " +
+                                    "recovered. Backups are encrypted with the passphrase " +
+                                    "alone, so a long one is the only brute-force defense. " +
+                                    "Weak passphrase — a stronger one better protects your data."
+                            } else {
+                                "At least $minPassphraseLength characters. It cannot be " +
+                                    "recovered. Backups are encrypted with the passphrase " +
+                                    "alone, so a long one is the only brute-force defense."
+                            },
+                        )
+                    },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (busy) {
+                    Spacer(Modifier.height(12.dp))
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(passphrase.toCharArray()) },
+                enabled = passphrase.length >= minPassphraseLength && !busy,
+            ) {
+                Text(confirmationLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    passphrase = ""
+                    onDismiss()
+                },
+                enabled = !busy,
+            ) { Text("Cancel") }
+        },
     )
 }

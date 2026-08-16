@@ -81,20 +81,6 @@ interface MemoryDao {
     suspend fun idStatusRows(): List<MemoryStatusRow>
 
     @Query(
-        "SELECT DISTINCT memoryId FROM memory_sources " +
-            "WHERE kind = 'ACTIVITY' AND label = :sourceLabel",
-    )
-    suspend fun activityMemoryIds(sourceLabel: String): List<String>
-
-    @Query(
-        "UPDATE memory_items SET status = 'DELETED', updatedAt = :updatedAt " +
-            "WHERE id IN (" +
-            "SELECT memoryId FROM memory_sources WHERE kind = 'ACTIVITY' AND label = :sourceLabel" +
-            ")",
-    )
-    suspend fun markActivitySourceDeleted(sourceLabel: String, updatedAt: Long)
-
-    @Query(
         "SELECT id FROM memory_items " +
             "WHERE status IN ('DELETED', 'SUPERSEDED') AND updatedAt < :cutoff " +
             "ORDER BY updatedAt LIMIT :limit",
@@ -109,75 +95,4 @@ interface MemoryDao {
 
     @Query("DELETE FROM memory_items WHERE id IN (:memoryIds)")
     suspend fun deleteByIds(memoryIds: List<String>)
-}
-
-@Dao
-interface ActivityDao {
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(event: ActivityEventEntity): Long
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertSummary(summary: MemorySummaryEntity)
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertCheckpoint(checkpoint: CollectorCheckpointEntity)
-
-    @Query("SELECT * FROM collector_checkpoints WHERE collector = :collector")
-    suspend fun checkpoint(collector: String): CollectorCheckpointEntity?
-
-    @Query("SELECT * FROM collector_checkpoints ORDER BY collector")
-    suspend fun checkpoints(): List<CollectorCheckpointEntity>
-
-    @Query("SELECT * FROM activity_events ORDER BY startedAt DESC LIMIT :limit")
-    fun observeRecent(limit: Int): Flow<List<ActivityEventEntity>>
-
-    @Query(
-        "SELECT source, COUNT(*) AS eventCount, MAX(startedAt) AS lastEventAt " +
-            "FROM activity_events GROUP BY source",
-    )
-    fun observeSourceStats(): Flow<List<ActivitySourceStatsRow>>
-
-    @Query(
-        "SELECT * FROM activity_events " +
-            "WHERE (:includePrivate = 1 OR sensitivity = 'NORMAL') " +
-            "ORDER BY pinned DESC, startedAt DESC LIMIT :limit",
-    )
-    suspend fun retrievalCandidates(
-        includePrivate: Boolean,
-        limit: Int,
-    ): List<ActivityEventEntity>
-
-    @Query(
-        "SELECT * FROM activity_events WHERE source IN (:sources) " +
-            "AND startedAt >= :fromInclusive AND startedAt < :toExclusive " +
-            "ORDER BY startedAt DESC LIMIT :limit",
-    )
-    suspend fun between(
-        sources: List<com.aliahad.aichat.core.ActivitySource>,
-        fromInclusive: Long,
-        toExclusive: Long,
-        limit: Int,
-    ): List<ActivityEventEntity>
-
-    @Query(
-        "SELECT * FROM activity_events WHERE source = :source AND startedAt < :before " +
-            "AND compactedIntoId IS NULL AND pinned = 0 ORDER BY startedAt LIMIT :limit",
-    )
-    suspend fun uncompactedBefore(
-        source: com.aliahad.aichat.core.ActivitySource,
-        before: Long,
-        limit: Int,
-    ): List<ActivityEventEntity>
-
-    @Query("UPDATE activity_events SET compactedIntoId = :summaryId WHERE id IN (:ids)")
-    suspend fun markCompacted(ids: List<String>, summaryId: String)
-
-    @Query("DELETE FROM activity_events WHERE id IN (:ids)")
-    suspend fun deleteByIds(ids: List<String>)
-
-    @Query("DELETE FROM activity_events WHERE source = :source")
-    suspend fun deleteSource(source: com.aliahad.aichat.core.ActivitySource)
-
-    @Query("DELETE FROM memory_summaries WHERE source = :source")
-    suspend fun deleteSummaries(source: com.aliahad.aichat.core.ActivitySource)
 }

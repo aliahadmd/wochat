@@ -4,7 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.UserManager
-import com.aliahad.aichat.activity.OfficeWorkScheduler
+import com.aliahad.aichat.memory.MemoryWorkScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,11 +17,11 @@ class BootCompletedReceiver : BroadcastReceiver() {
         ) {
             return
         }
-        OfficeWorkScheduler.schedule(context)
+        MemoryWorkScheduler.schedule(context)
         val pending = goAsync()
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
-                runCatching { OfficeWorkScheduler.verifyAndRepair(context) }
+                runCatching { MemoryWorkScheduler.verifyAndRepair(context) }
             } finally {
                 pending.finish()
             }

@@ -2,8 +2,6 @@ package com.aliahad.aichat.ui.viewmodel
 
 import android.net.Uri
 import com.aliahad.aichat.ThinkingUiState
-import com.aliahad.aichat.core.ActivitySource
-import com.aliahad.aichat.core.ActivitySourceStats
 import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.BackendBenchmark
 import com.aliahad.aichat.core.BackendMode
@@ -18,7 +16,6 @@ import com.aliahad.aichat.core.MemoryItem
 import com.aliahad.aichat.core.MemorySource
 import com.aliahad.aichat.core.ModelContextProfile
 import com.aliahad.aichat.core.ModelRecord
-import com.aliahad.aichat.core.PhoneSourceStatus
 import com.aliahad.aichat.core.ProjectorRecord
 import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.core.SkillRecord
@@ -80,9 +77,6 @@ data class MemoryUiState(
     val memories: List<MemoryItem> = emptyList(),
     val memorySources: Map<String, List<MemorySource>> = emptyMap(),
     val memoryEnabled: Boolean = true,
-    val collectionPaused: Boolean = false,
-    val phoneSourceStatuses: Map<ActivitySource, PhoneSourceStatus> = emptyMap(),
-    val phoneSourceStats: Map<ActivitySource, ActivitySourceStats> = emptyMap(),
     val pendingBackupImportUri: Uri? = null,
     val backupPreview: BackupPreview? = null,
     val backupBusy: Boolean = false,

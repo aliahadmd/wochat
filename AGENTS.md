@@ -14,10 +14,8 @@ Single Gradle module (`:app`). Root project name is `Aichat`.
 
 ```
 app/src/main/java/com/aliahad/aichat/
-├── activity/          # Phone activity collection (notifications, usage stats, sensors, contacts, calendar)
 ├── attachment/        # File/image/audio attachment inspection and processing
 ├── backup/            # Encrypted database export/import
-├── brief/             # Health Connect data source (name leftover from removed Daily Brief)
 ├── context/           # Prompt context assembly (history, summaries, memories → token-bounded prompt)
 ├── core/              # Application-level DI and shared utilities
 ├── data/              # Room database, DAOs, entities, migrations, SQLCipher encryption
@@ -89,9 +87,9 @@ Note: `device/`, `overlay/`, and `speech/` were removed features and no longer e
 ## Database
 
 - **Engine:** Room 2.8.4 with SQLCipher encryption (`sqlcipher-android-4.16.0.aar`)
-- **Current version:** 17
+- **Current version:** 18
 - **Migrations:** 16 hand-written migrations (1→2 through 16→17) in `AppDatabase.kt`
-- **Schema exports:** `app/schemas/com.aliahad.aichat.data.AppDatabase/` (versions 1–9 and 11–17, note: version 10 schema file is absent)
+- **Schema exports:** `app/schemas/com.aliahad.aichat.data.AppDatabase/` (versions 1–9 and 11–18, note: version 10 schema file is absent)
 - **KSP schema location:** configured via `ksp { arg("room.schemaLocation", ...) }`
 
 ## Key Architecture Constraints

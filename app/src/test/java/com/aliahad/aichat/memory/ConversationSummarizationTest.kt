@@ -16,7 +16,6 @@ import com.aliahad.aichat.core.MessageStatus
 import com.aliahad.aichat.core.ModelCapabilities
 import com.aliahad.aichat.core.ModelLoadConfiguration
 import com.aliahad.aichat.core.UserTurn
-import com.aliahad.aichat.data.ActivityDao
 import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.data.AttachmentDao
 import com.aliahad.aichat.data.BackupImportInvalidationDao
@@ -473,7 +472,6 @@ private class SummaryTestDatabase(
     override fun attachmentDao(): AttachmentDao = error("unused")
     override fun conversationSummaryDao(): ConversationSummaryDao = summaryDao
     override fun memoryDao(): MemoryDao = error("unused")
-    override fun activityDao(): ActivityDao = error("unused")
     override fun modelBenchmarkDao(): ModelBenchmarkDao = error("unused")
     override fun backupImportInvalidationDao(): BackupImportInvalidationDao = error("unused")
 

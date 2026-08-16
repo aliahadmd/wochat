@@ -493,9 +493,6 @@ private class FakeMemoryRepository : MemoryRepository {
         throw UnsupportedOperationException()
     override suspend fun setPinned(id: String, pinned: Boolean) = Unit
     override suspend fun forget(id: String) = Unit
-    override suspend fun rememberActivitySummary(source: com.aliahad.aichat.core.ActivitySource, summaryId: String, title: String, content: String, importance: Float): MemoryItem =
-        throw UnsupportedOperationException()
-    override suspend fun forgetActivitySource(source: com.aliahad.aichat.core.ActivitySource) = Unit
     override suspend fun purgeStaleIndexDocs() = Unit
     override suspend fun purgeExpiredMemories(now: Long): Int = 0
 }

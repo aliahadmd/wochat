@@ -39,7 +39,6 @@ class AppSettingsRepository(
         val systemPrompt = stringPreferencesKey("system_prompt")
         val lastQualityMode = stringPreferencesKey("last_quality_mode")
         val memoryEnabled = booleanPreferencesKey("memory_enabled")
-        val collectionPaused = booleanPreferencesKey("collection_paused")
         val allowMeteredModelDownloads = booleanPreferencesKey("allow_metered_model_downloads")
         val themeMode = stringPreferencesKey("theme_mode")
         val dynamicColor = booleanPreferencesKey("dynamic_color")
@@ -102,9 +101,6 @@ class AppSettingsRepository(
         it[Keys.memoryEnabled] ?: true
     }
 
-    val collectionPaused: Flow<Boolean> = store.data.map {
-        it[Keys.collectionPaused] ?: false
-    }
 
     val allowMeteredModelDownloads: Flow<Boolean> = store.data.map {
         it[Keys.allowMeteredModelDownloads] ?: false
@@ -221,9 +217,6 @@ class AppSettingsRepository(
         store.edit { it[Keys.memoryEnabled] = enabled }
     }
 
-    suspend fun setCollectionPaused(paused: Boolean) {
-        store.edit { it[Keys.collectionPaused] = paused }
-    }
 
     fun hasToken(): Boolean = tokenCipher.hasToken()
     fun maskedToken(): String? = tokenCipher.maskedToken()

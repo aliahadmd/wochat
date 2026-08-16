@@ -11,14 +11,12 @@ import com.aliahad.aichat.core.MemorySourceKind
 import com.aliahad.aichat.core.MemoryStatus
 import com.aliahad.aichat.core.MemoryType
 import com.aliahad.aichat.core.MessageRole
-import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.sha256
 import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.data.MemoryCorrectionEntity
 import com.aliahad.aichat.data.MemoryItemEntity
 import com.aliahad.aichat.data.MemorySourceEntity
 import com.aliahad.aichat.data.MemoryStatusRow
-import com.aliahad.aichat.data.ActivityEventEntity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
@@ -48,14 +46,6 @@ interface MemoryRepository {
     suspend fun correct(id: String, content: String, reason: String? = null): MemoryItem
     suspend fun setPinned(id: String, pinned: Boolean)
     suspend fun forget(id: String)
-    suspend fun rememberActivitySummary(
-        source: ActivitySource,
-        summaryId: String,
-        title: String,
-        content: String,
-        importance: Float,
-    ): MemoryItem
-    suspend fun forgetActivitySource(source: ActivitySource)
     suspend fun purgeStaleIndexDocs()
     suspend fun purgeExpiredMemories(now: Long): Int
 }
@@ -180,22 +170,7 @@ class RoomMemoryRepository(
             indexedIds = indexedIds,
             now = now,
         )
-        val activityIntent = activityRetrievalIntent(query.text, now)
-        val rankedActivityHits = database.activityDao()
-            .retrievalCandidates(query.includePrivate, 1_000)
-            .asSequence()
-            .filter { it.sensitivity != MemorySensitivity.SECRET }
-            .mapNotNull { event ->
-                event.toMemoryHit(normalized, terms, now, activityIntent)
-                    ?.let { event.source to it }
-            }
-            .sortedByDescending { it.second.score }
-            .toList()
-        val activityHits = applyPerSourceActivityQuota(
-            rankedActivityHits,
-            perSourceActivityLimit(activityIntent.sources.size),
-        )
-        return mergeSearchHits(memoryHits, activityHits, query.limit)
+        return memoryHits.take(query.limit)
     }
 
     override suspend fun correct(id: String, content: String, reason: String?): MemoryItem {
@@ -254,73 +229,9 @@ class RoomMemoryRepository(
         runCatching { indexer.remove(id) }
     }
 
-    override suspend fun rememberActivitySummary(
-        source: ActivitySource,
-        summaryId: String,
-        title: String,
-        content: String,
-        importance: Float,
-    ): MemoryItem = rememberActivitySummaryRow(
-        source = source,
-        summaryId = summaryId,
-        title = title,
-        content = content,
-        importance = importance,
-        upsertIndex = true,
-    )
-
-    /**
-     * Same semantics as [rememberActivitySummary] but skips the AppSearch index
-     * upsert, for use inside an enclosing Room transaction (archive compaction).
-     * The caller indexes the returned item via [indexMemory] after the commit.
-     */
-    suspend fun rememberActivitySummaryInTransaction(
-        source: ActivitySource,
-        summaryId: String,
-        title: String,
-        content: String,
-        importance: Float,
-    ): MemoryItem = rememberActivitySummaryRow(
-        source = source,
-        summaryId = summaryId,
-        title = title,
-        content = content,
-        importance = importance,
-        upsertIndex = false,
-    )
-
     /** Best-effort AppSearch upsert for a memory written outside the index path. */
     suspend fun indexMemory(item: MemoryItem) {
         runCatching { indexer.upsert(item) }
-    }
-
-    private suspend fun rememberActivitySummaryRow(
-        source: ActivitySource,
-        summaryId: String,
-        title: String,
-        content: String,
-        importance: Float,
-        upsertIndex: Boolean,
-    ): MemoryItem = insertIfAbsent(
-        type = MemoryType.EPISODE,
-        title = title,
-        content = content,
-        confidence = 0.95f,
-        importance = importance.coerceIn(0f, 1f),
-        sensitivity = MemorySensitivity.PRIVATE,
-        sourceKind = MemorySourceKind.ACTIVITY,
-        sourceId = summaryId,
-        sourceLabel = source.name,
-        stableId = "activity-summary:$summaryId",
-        upsertIndex = upsertIndex,
-    )
-
-    override suspend fun forgetActivitySource(source: ActivitySource) {
-        val ids = dao.activityMemoryIds(source.name)
-        dao.markActivitySourceDeleted(source.name, System.currentTimeMillis())
-        ids.forEach { id ->
-            runCatching { indexer.remove(id) }
-        }
     }
 
     override suspend fun purgeStaleIndexDocs() {
@@ -531,9 +442,6 @@ internal suspend fun searchMemoryRows(
     }
 }
 
-internal fun perSourceActivityLimit(intentSourceCount: Int): Int =
-    if (intentSourceCount == 1) 8 else 3
-
 /**
  * Normalized AppSearch query text: the current message plus the recall-only
  * expansion. Used exclusively for [MemoryIndexer.searchIds] candidate lookup.
@@ -587,29 +495,6 @@ internal fun isMemoryPurgeable(
     cutoff: Long,
 ): Boolean = isStaleIndexStatus(status) && updatedAt < cutoff
 
-internal fun applyPerSourceActivityQuota(
-    rankedHits: List<Pair<ActivitySource, MemoryHit>>,
-    limitPerSource: Int,
-): List<MemoryHit> {
-    val perSourceCount = mutableMapOf<ActivitySource, Int>()
-    return rankedHits.mapNotNull { (source, hit) ->
-        val count = perSourceCount.getOrDefault(source, 0)
-        if (count >= limitPerSource) {
-            null
-        } else {
-            perSourceCount[source] = count + 1
-            hit
-        }
-    }
-}
-
-internal data class ActivityRetrievalIntent(
-    val sources: Set<ActivitySource>,
-    val periodStart: Long?,
-    val periodEnd: Long?,
-    val broadPhoneActivity: Boolean,
-)
-
 // Compiled once: retrieval intent runs on every memory-enabled chat turn.
 private val APP_USAGE_INTENT = Regex("""\b(app|apps|application|screen time|used|opened)\b""")
 private val APP_INSTALL_INTENT = Regex("""\b(install|installed|uninstall|package|app inventory)\b""")
@@ -624,242 +509,6 @@ private val CALENDAR_INTENT =
     Regex("""\b(calendar|meeting|meetings|appointment|appointments|schedule|event|events)\b""")
 private val BROAD_PHONE_ACTIVITY_INTENT =
     Regex("""\b(what did i do|my day|my week|recent phone activity|phone activity|activity today)\b""")
-
-internal fun activityRetrievalIntent(
-    query: String,
-    now: Long,
-    zoneId: ZoneId = ZoneId.systemDefault(),
-): ActivityRetrievalIntent {
-    val normalized = normalize(query)
-    val sources = buildSet {
-        if (APP_USAGE_INTENT.containsMatchIn(normalized)) {
-            add(ActivitySource.APP_USAGE)
-        }
-        if (APP_INSTALL_INTENT.containsMatchIn(normalized)) {
-            add(ActivitySource.APP_INSTALL)
-        }
-        if (NOTIFICATION_INTENT.containsMatchIn(normalized)) {
-            add(ActivitySource.NOTIFICATION)
-        }
-        if (ACCESSIBILITY_INTENT.containsMatchIn(normalized)) {
-            add(ActivitySource.ACCESSIBILITY)
-        }
-        if (LOCATION_INTENT.containsMatchIn(normalized)) {
-            add(ActivitySource.LOCATION)
-        }
-        if (SENSOR_INTENT.containsMatchIn(normalized)) {
-            add(ActivitySource.SENSOR)
-        }
-        if (CONTACT_INTENT.containsMatchIn(normalized)) {
-            add(ActivitySource.CONTACT)
-        }
-        if (CALENDAR_INTENT.containsMatchIn(normalized)) {
-            add(ActivitySource.CALENDAR)
-        }
-    }
-    val broad = BROAD_PHONE_ACTIVITY_INTENT.containsMatchIn(normalized)
-    val today = Instant.ofEpochMilli(now).atZone(zoneId).toLocalDate()
-    val (periodStart, periodEnd) = when {
-        "yesterday" in normalized -> {
-            val day = today.minusDays(1)
-            day.atStartOfDay(zoneId).toInstant().toEpochMilli() to
-                today.atStartOfDay(zoneId).toInstant().toEpochMilli()
-        }
-        "today" in normalized || "this morning" in normalized ||
-            "this afternoon" in normalized || "tonight" in normalized -> {
-            today.atStartOfDay(zoneId).toInstant().toEpochMilli() to now
-        }
-        "this week" in normalized -> {
-            today.minusDays(today.dayOfWeek.value.toLong() - 1)
-                .atStartOfDay(zoneId).toInstant().toEpochMilli() to now
-        }
-        "last week" in normalized -> {
-            val thisWeek = today.minusDays(today.dayOfWeek.value.toLong() - 1)
-            thisWeek.minusWeeks(1).atStartOfDay(zoneId).toInstant().toEpochMilli() to
-                thisWeek.atStartOfDay(zoneId).toInstant().toEpochMilli()
-        }
-        "recent" in normalized || "recently" in normalized -> {
-            now - java.util.concurrent.TimeUnit.DAYS.toMillis(7) to now
-        }
-        else -> null to null
-    }
-    return ActivityRetrievalIntent(
-        sources = sources,
-        periodStart = periodStart,
-        periodEnd = periodEnd,
-        broadPhoneActivity = broad,
-    )
-}
-
-internal fun ActivityEventEntity.toMemoryHit(
-    normalizedQuery: String,
-    terms: Set<String>,
-    now: Long,
-    intent: ActivityRetrievalIntent,
-): MemoryHit? {
-    if (intent.periodStart != null && startedAt < intent.periodStart) return null
-    if (intent.periodEnd != null && startedAt >= intent.periodEnd) return null
-    val searchable = normalize(
-        listOfNotNull(
-            source.name,
-            source.retrievalTerms(),
-            eventType,
-            packageName,
-            title,
-            redactedText,
-            metadataJson,
-        ).joinToString(" "),
-    )
-    val searchableTerms = searchable.split(' ').filter { it.length > 1 }.toSet()
-    val overlap = if (terms.isEmpty()) 0f else {
-        terms.intersect(searchableTerms).size.toFloat() / terms.size
-    }
-    val phrase = if (normalizedQuery.isNotBlank() && normalizedQuery in searchable) 0.35f else 0f
-    val requestedSource = source in intent.sources
-    val activityIntent = requestedSource || intent.broadPhoneActivity
-    if (!activityIntent && terms.isNotEmpty() && overlap == 0f && phrase == 0f) return null
-    if (intent.sources.isNotEmpty() && !requestedSource && overlap == 0f && phrase == 0f) return null
-    val ageDays = ((now - startedAt).coerceAtLeast(0L) / 86_400_000f)
-    val recency = 1f / (1f + ageDays / 14f)
-    val score =
-        overlap * 0.52f +
-            phrase +
-            recency * 0.12f +
-            (if (requestedSource) 0.38f else 0f) +
-            (if (intent.periodStart != null) 0.28f else 0f) +
-            (if (intent.broadPhoneActivity) 0.18f else 0f) +
-            (if (pinned) 0.25f else 0f)
-    val sourceLabel = source.name.lowercase().replace('_', ' ')
-    val content = formatActivityForPrompt()
-    val memory = MemoryItem(
-        id = "activity:$id",
-        type = MemoryType.EPISODE,
-        title = title ?: sourceLabel,
-        content = content,
-        confidence = 0.95f,
-        importance = if (pinned) 0.9f else 0.5f,
-        sensitivity = sensitivity,
-        status = MemoryStatus.ACTIVE,
-        pinned = pinned,
-        validFrom = startedAt,
-        validTo = endedAt,
-        supersedesId = null,
-        createdAt = createdAt,
-        updatedAt = createdAt,
-    )
-    return MemoryHit(
-        memory = memory,
-        // Cap at the memory score ceiling so fully-bonused activity events
-        // (raw scores can exceed 2.0) never outrank genuine memories.
-        score = score.coerceAtMost(1.5f),
-        sources = listOf(
-            MemorySource(
-                id = "activity-source:$id",
-                memoryId = memory.id,
-                kind = MemorySourceKind.ACTIVITY,
-                sourceId = id,
-                label = sourceLabel,
-                createdAt = createdAt,
-            ),
-        ),
-        reason = "Relevant phone activity",
-    )
-}
-
-internal fun ActivityEventEntity.formatActivityForPrompt(
-    zoneId: ZoneId = ZoneId.systemDefault(),
-): String {
-    val time = Instant.ofEpochMilli(startedAt)
-        .atZone(zoneId)
-        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm z"))
-    val end = endedAt?.let {
-        Instant.ofEpochMilli(it).atZone(zoneId).format(DateTimeFormatter.ofPattern("HH:mm z"))
-    }
-    val metadata = runCatching { Json.parseToJsonElement(metadataJson).jsonObject }.getOrNull()
-    return when (source) {
-        ActivitySource.APP_USAGE -> buildString {
-            append("Used ${title ?: packageName ?: "an app"} at $time")
-            end?.let { append(" until $it") }
-            metadata?.get("foregroundMillis")
-                ?.jsonPrimitive
-                ?.longOrNull
-                ?.takeIf { it > 0 }
-                ?.let { duration ->
-                    append(" for ${formatDuration(duration)}")
-                }
-            packageName?.let { append(" ($it)") }
-            append('.')
-        }
-        ActivitySource.APP_INSTALL -> buildString {
-            append("Installed-app record at $time: ${title ?: packageName ?: "unknown app"}")
-            packageName?.let { append(" ($it)") }
-            append(", event $eventType.")
-        }
-        ActivitySource.NOTIFICATION -> buildString {
-            append("Notification at $time")
-            packageName?.let { append(" from $it") }
-            title?.takeIf(String::isNotBlank)?.let { append(": $it") }
-            redactedText?.takeIf(String::isNotBlank)?.let { append(". $it") }
-        }
-        ActivitySource.ACCESSIBILITY -> buildString {
-            append("Visible screen context at $time")
-            packageName?.let { append(" in $it") }
-            title?.takeIf(String::isNotBlank)?.let { append(" ($it)") }
-            redactedText?.takeIf(String::isNotBlank)?.let { append(": $it") }
-        }
-        ActivitySource.LOCATION -> "Location snapshot at $time: $metadataJson"
-        ActivitySource.SENSOR -> "Sensor snapshot at $time: ${title.orEmpty()} $metadataJson"
-        ActivitySource.CONTACT -> "Contact available in the address book: ${title.orEmpty()}."
-        ActivitySource.CALENDAR -> buildString {
-            append("Calendar event ${title ?: "Untitled"} starts $time")
-            end?.let { append(" and ends $it") }
-            redactedText?.takeIf(String::isNotBlank)?.let { append(" at $it") }
-            append('.')
-        }
-        ActivitySource.HEALTH -> "Health record at $time: ${title.orEmpty()} $metadataJson"
-        ActivitySource.DOCUMENT -> "Document activity at $time: ${title.orEmpty()}."
-        ActivitySource.SMS -> "SMS activity at $time: ${title.orEmpty()}. ${redactedText.orEmpty()}"
-        ActivitySource.CALL -> "Call activity at $time: ${title.orEmpty()}."
-    }
-}
-
-private fun formatDuration(milliseconds: Long): String {
-    val totalMinutes = (milliseconds / 60_000).coerceAtLeast(1)
-    val hours = totalMinutes / 60
-    val minutes = totalMinutes % 60
-    return when {
-        hours > 0 && minutes > 0 -> "${hours}h ${minutes}m"
-        hours > 0 -> "${hours}h"
-        else -> "${minutes}m"
-    }
-}
-
-private fun com.aliahad.aichat.core.ActivitySource.retrievalTerms(): String = when (this) {
-    com.aliahad.aichat.core.ActivitySource.APP_USAGE ->
-        "app apps application applications usage session screen time"
-    com.aliahad.aichat.core.ActivitySource.APP_INSTALL ->
-        "app apps application applications installed package inventory"
-    com.aliahad.aichat.core.ActivitySource.NOTIFICATION ->
-        "notification notifications alert alerts message messages"
-    com.aliahad.aichat.core.ActivitySource.ACCESSIBILITY ->
-        "screen screens visible interface activity"
-    com.aliahad.aichat.core.ActivitySource.LOCATION ->
-        "location locations place places position gps"
-    com.aliahad.aichat.core.ActivitySource.SENSOR ->
-        "sensor sensors temperature light pressure humidity steps"
-    com.aliahad.aichat.core.ActivitySource.HEALTH ->
-        "health fitness heart sleep exercise steps"
-    com.aliahad.aichat.core.ActivitySource.CONTACT ->
-        "contact contacts people person address book"
-    com.aliahad.aichat.core.ActivitySource.CALENDAR ->
-        "calendar calendars event events meeting meetings appointment appointments schedule"
-    com.aliahad.aichat.core.ActivitySource.DOCUMENT ->
-        "document documents file files folder folders"
-    com.aliahad.aichat.core.ActivitySource.SMS ->
-        "sms text texts message messages"
-    com.aliahad.aichat.core.ActivitySource.CALL ->
-        "call calls phone dialer"
-}
 
 object SensitiveTextRedactor {
     private val otp = Regex(

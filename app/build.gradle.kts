@@ -183,7 +183,6 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.sqlite)
     implementation(libs.androidx.work.runtime.ktx)
-    implementation(libs.androidx.health.connect.client)
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
     implementation(libs.commons.compress)

@@ -1,13 +1,11 @@
 package com.aliahad.aichat.memory
 
-import com.aliahad.aichat.core.ActivitySource
 import com.aliahad.aichat.core.MemoryHit
 import com.aliahad.aichat.core.MemoryItem
 import com.aliahad.aichat.core.MemorySensitivity
 import com.aliahad.aichat.core.MemorySourceKind
 import com.aliahad.aichat.core.MemoryStatus
 import com.aliahad.aichat.core.MemoryType
-import com.aliahad.aichat.data.ActivityEventEntity
 import com.aliahad.aichat.data.MemoryItemEntity
 import com.aliahad.aichat.data.MemorySourceEntity
 import com.aliahad.aichat.data.MemoryStatusRow
@@ -102,29 +100,6 @@ class MemorySearchTest {
         )
 
         assertEquals(listOf("phrase", "overlap"), hits.map { it.memory.id })
-    }
-
-    @Test
-    fun perSourceActivityQuotaCapsThreeForMultipleSourcesAndEightForSingle() {
-        val ranked = (1..10).map { index ->
-            ActivitySource.APP_USAGE to activityHit("usage-$index", 1f - index * 0.01f)
-        } + (1..10).map { index ->
-            ActivitySource.NOTIFICATION to activityHit("notif-$index", 0.5f - index * 0.01f)
-        }
-
-        assertEquals(8, perSourceActivityLimit(1))
-        assertEquals(3, perSourceActivityLimit(2))
-        assertEquals(3, perSourceActivityLimit(0))
-
-        val multiQuota = applyPerSourceActivityQuota(ranked, perSourceActivityLimit(2))
-        assertEquals(6, multiQuota.size)
-        assertEquals(3, multiQuota.count { it.memory.id.startsWith("usage-") })
-        assertEquals(3, multiQuota.count { it.memory.id.startsWith("notif-") })
-
-        val singleQuota = applyPerSourceActivityQuota(ranked, perSourceActivityLimit(1))
-        assertEquals(16, singleQuota.size)
-        assertEquals(8, singleQuota.count { it.memory.id.startsWith("usage-") })
-        assertEquals(8, singleQuota.count { it.memory.id.startsWith("notif-") })
     }
 
     @Test
@@ -309,129 +284,6 @@ class MemorySearchTest {
      * hit is capped at the 1.5 memory ceiling and a memory hit at that ceiling
      * keeps precedence at equal scores.
      */
-    @Test
-    fun cappedActivityScoreNeverOutranksMemoryCeiling() = runTest {
-        val intent = ActivityRetrievalIntent(
-            sources = setOf(ActivitySource.NOTIFICATION),
-            periodStart = NOW - 1_000,
-            periodEnd = null,
-            broadPhoneActivity = true,
-        )
-        val activity = requireNotNull(
-            activityEvent("event-max", title = "coffee meeting", pinned = true)
-                .toMemoryHit("coffee meeting", setOf("coffee", "meeting"), NOW, intent),
-        )
-        assertEquals(1.5f, activity.score, 0.0001f)
-
-        val memory = activityHit("memory-max", 1.5f)
-        val merged = mergeSearchHits(listOf(memory), listOf(activity), 8)
-
-        assertEquals(listOf("memory-max", "activity:event-max"), merged.map { it.memory.id })
-    }
-}
-
-/**
- * Characterization of [toMemoryHit] scoring across the intent quadrants.
- *
- * Fixture: query "coffee meeting" against a NOTIFICATION event titled
- * "coffee break" started exactly at [NOW]. overlap = 0.5 (one of two terms),
- * phrase = 0, recency = 1. Base score is therefore 0.5 * 0.52 + 0.12 = 0.38.
- * Bonus weights: requestedSource 0.38, periodStart 0.28, broad 0.18, pinned 0.25.
- */
-class ActivityScoringCharacterizationTest {
-    private val epsilon = 0.0001f
-
-    @Test
-    fun requestedSourceWithEveryBonusActive() {
-        val intent = intent(
-            sources = setOf(ActivitySource.NOTIFICATION),
-            periodStart = NOW - 1_000,
-            broadPhoneActivity = true,
-        )
-        val hit = score(intent, pinned = true)
-        // All bonuses are additive: 0.38 + 0.38 + 0.28 + 0.18 + 0.25 = 1.47.
-        assertEquals(1.47f, hit, epsilon)
-    }
-
-    @Test
-    fun periodBonusAppliesWhenSourceNotRequested() {
-        val intent = intent(
-            sources = setOf(ActivitySource.APP_USAGE),
-            periodStart = NOW - 1_000,
-        )
-        val hit = score(intent, pinned = false)
-        // 0.38 base + 0.28 period bonus = 0.66.
-        assertEquals(0.66f, hit, epsilon)
-    }
-
-    @Test
-    fun pinnedBonusWhenSourceRequested() {
-        val intent = intent(sources = setOf(ActivitySource.NOTIFICATION))
-        val hit = score(intent, pinned = true)
-        // requestedSource and pinned bonuses stack: 0.38 + 0.38 + 0.25 = 1.01.
-        assertEquals(1.01f, hit, epsilon)
-    }
-
-    @Test
-    fun requestedSourceOnly() {
-        val intent = intent(sources = setOf(ActivitySource.NOTIFICATION))
-        val hit = score(intent, pinned = false)
-        assertEquals(0.76f, hit, epsilon)
-    }
-
-    @Test
-    fun pinnedBonusWithoutRequestedSource() {
-        val intent = intent(sources = emptySet())
-        val hit = score(intent, pinned = true)
-        // 0.38 base + 0.25 pinned = 0.63.
-        assertEquals(0.63f, hit, epsilon)
-    }
-
-    @Test
-    fun broadPhoneActivityBonusWithoutRequestedSource() {
-        val intent = intent(sources = emptySet(), broadPhoneActivity = true)
-        val hit = score(intent, pinned = false)
-        // 0.38 base + 0.18 broad-activity bonus = 0.56.
-        assertEquals(0.56f, hit, epsilon)
-    }
-
-    @Test
-    fun baselineWithoutAnyBonus() {
-        val intent = intent(sources = emptySet())
-        val hit = score(intent, pinned = false)
-        assertEquals(0.38f, hit, epsilon)
-    }
-
-    @Test
-    fun eventOutsidePeriodWindowIsDropped() {
-        val intent = intent(
-            sources = setOf(ActivitySource.NOTIFICATION),
-            periodStart = NOW - 1_000,
-        )
-        val event = activityEvent("old", startedAt = NOW - 2_000)
-        val hit = event.toMemoryHit("coffee meeting", setOf("coffee", "meeting"), NOW, intent)
-        assertEquals(null, hit)
-    }
-
-    private fun intent(
-        sources: Set<ActivitySource>,
-        periodStart: Long? = null,
-        periodEnd: Long? = null,
-        broadPhoneActivity: Boolean = false,
-    ) = ActivityRetrievalIntent(
-        sources = sources,
-        periodStart = periodStart,
-        periodEnd = periodEnd,
-        broadPhoneActivity = broadPhoneActivity,
-    )
-
-    private fun score(intent: ActivityRetrievalIntent, pinned: Boolean): Float {
-        val event = activityEvent("event-1", pinned = pinned)
-        val hit = requireNotNull(
-            event.toMemoryHit("coffee meeting", setOf("coffee", "meeting"), NOW, intent),
-        )
-        return hit.score
-    }
 }
 
 /** Pure-predicate coverage for the AppSearch stale-document startup sweep. */
@@ -541,46 +393,4 @@ private fun memoryRow(
     updatedAt = updatedAt,
 )
 
-private fun activityEvent(
-    id: String,
-    source: ActivitySource = ActivitySource.NOTIFICATION,
-    title: String? = "coffee break",
-    pinned: Boolean = false,
-    startedAt: Long = NOW,
-) = ActivityEventEntity(
-    id = id,
-    source = source,
-    eventType = "test",
-    startedAt = startedAt,
-    endedAt = null,
-    packageName = null,
-    title = title,
-    redactedText = null,
-    metadataJson = "{}",
-    sensitivity = MemorySensitivity.PRIVATE,
-    pinned = pinned,
-    compactedIntoId = null,
-    createdAt = NOW,
-)
 
-private fun activityHit(id: String, score: Float) = MemoryHit(
-    memory = MemoryItem(
-        id = id,
-        type = MemoryType.EPISODE,
-        title = id,
-        content = id,
-        confidence = 0.95f,
-        importance = 0.5f,
-        sensitivity = MemorySensitivity.PRIVATE,
-        status = MemoryStatus.ACTIVE,
-        pinned = false,
-        validFrom = null,
-        validTo = null,
-        supersedesId = null,
-        createdAt = NOW,
-        updatedAt = NOW,
-    ),
-    score = score,
-    sources = emptyList(),
-    reason = "Relevant phone activity",
-)

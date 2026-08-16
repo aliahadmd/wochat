@@ -22,7 +22,7 @@ class DatabaseMigrationInstrumentedTest {
     )
 
     @Test
-    fun migrationOneToSeventeenPreservesChatsAndRemovesRetiredTables() {
+    fun migrationOneToEighteenPreservesChatsAndRemovesRetiredTables() {
         helper.createDatabase(DATABASE_NAME, 1).apply {
             execSQL(
                 "INSERT INTO conversations(id, title, createdAt, updatedAt) " +
@@ -54,6 +54,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_14_15,
                 AppDatabase.MIGRATION_15_16,
                 AppDatabase.MIGRATION_16_17,
+                AppDatabase.MIGRATION_17_18,
             )
             .build()
         try {
@@ -168,6 +169,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_14_15,
                 AppDatabase.MIGRATION_15_16,
                 AppDatabase.MIGRATION_16_17,
+                AppDatabase.MIGRATION_17_18,
             )
             .build()
         try {
@@ -253,6 +255,67 @@ class DatabaseMigrationInstrumentedTest {
     private fun androidx.sqlite.db.SupportSQLiteDatabase.tableExists(name: String): Boolean =
         query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", arrayOf(name))
             .use { it.moveToFirst() }
+
+    /**
+     * Plan 033 removed phone sources. Dropping the event tables alone was not
+     * enough: collected events had already been compacted into ordinary
+     * memory_items rows, which would have kept being retrieved and injected into
+     * prompts. A memory that also carries a non-ACTIVITY source is the user's own
+     * content and must survive.
+     */
+    @Test
+    fun migrationSeventeenToEighteenDropsActivityTablesAndPurelyCollectedMemories() {
+        helper.createDatabase(DATABASE_NAME, 17).apply {
+            execSQL(
+                "INSERT INTO memory_items(id, type, title, content, normalizedContent, " +
+                    "contentHash, confidence, importance, sensitivity, status, pinned, " +
+                    "validFrom, validTo, supersedesId, createdAt, updatedAt) VALUES" +
+                    "('collected', 'EPISODE', 'usage archive', 'scraped', 'scraped', " +
+                    "'h1', 0.9, 0.5, 'PRIVATE', 'ACTIVE', 0, NULL, NULL, NULL, 1, 1)",
+            )
+            execSQL(
+                "INSERT INTO memory_items(id, type, title, content, normalizedContent, " +
+                    "contentHash, confidence, importance, sensitivity, status, pinned, " +
+                    "validFrom, validTo, supersedesId, createdAt, updatedAt) VALUES" +
+                    "('mixed', 'FACT', 'mine', 'user fact', 'user fact', " +
+                    "'h2', 0.9, 0.5, 'NORMAL', 'ACTIVE', 0, NULL, NULL, NULL, 1, 1)",
+            )
+            execSQL(
+                "INSERT INTO memory_sources(id, memoryId, kind, sourceId, label, createdAt) " +
+                    "VALUES('s1', 'collected', 'ACTIVITY', 'sum1', 'ACCESSIBILITY', 1)",
+            )
+            execSQL(
+                "INSERT INTO memory_sources(id, memoryId, kind, sourceId, label, createdAt) " +
+                    "VALUES('s2', 'mixed', 'ACTIVITY', 'sum2', 'CALENDAR', 1)",
+            )
+            execSQL(
+                "INSERT INTO memory_sources(id, memoryId, kind, sourceId, label, createdAt) " +
+                    "VALUES('s3', 'mixed', 'CHAT_MESSAGE', 'msg1', 'Chat message', 1)",
+            )
+            close()
+        }
+
+        val migrated = helper.runMigrationsAndValidate(
+            DATABASE_NAME,
+            18,
+            true,
+            AppDatabase.MIGRATION_17_18,
+        )
+        fun count(sql: String) = migrated.query(sql).use {
+            it.moveToFirst()
+            it.getInt(0)
+        }
+        assertEquals(0, count("SELECT count(*) FROM memory_items WHERE id = 'collected'"))
+        assertEquals(1, count("SELECT count(*) FROM memory_items WHERE id = 'mixed'"))
+        assertEquals(
+            0,
+            count(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN " +
+                    "('activity_events', 'memory_summaries', 'collector_checkpoints')",
+            ),
+        )
+        migrated.close()
+    }
 
     private companion object {
         const val DATABASE_NAME = "migration-test"

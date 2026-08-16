@@ -115,44 +115,9 @@ enum class MemoryStatus {
 enum class MemorySourceKind {
     CHAT_MESSAGE,
     ATTACHMENT,
-    ACTIVITY,
     MANUAL,
     IMPORT,
 }
-
-enum class ActivitySource {
-    APP_USAGE,
-    APP_INSTALL,
-    NOTIFICATION,
-    ACCESSIBILITY,
-    LOCATION,
-    SENSOR,
-    HEALTH,
-    CONTACT,
-    CALENDAR,
-    DOCUMENT,
-    SMS,
-    CALL,
-}
-
-enum class PhoneSourceAccessState {
-    GRANTED,
-    NOT_GRANTED,
-    UNAVAILABLE,
-}
-
-data class PhoneSourceStatus(
-    val source: ActivitySource,
-    val state: PhoneSourceAccessState,
-    val detail: String,
-    val actionLabel: String? = null,
-)
-
-data class ActivitySourceStats(
-    val source: ActivitySource,
-    val eventCount: Long,
-    val lastEventAt: Long?,
-)
 
 enum class AttachmentKind {
     IMAGE,
@@ -457,7 +422,6 @@ data class BackupPreview(
     val conversations: Long,
     val messages: Long,
     val memories: Long,
-    val activities: Long,
     val attachments: Long,
 )
 

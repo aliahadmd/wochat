@@ -12,8 +12,7 @@ not send prompts to a hosted inference service.
 - **Automatic context sizing** that verifies safe context limits on the device.
 - **Resumable model downloads** with pinned artifact revisions, SHA-256
   verification, progress, transfer rate, ETA, pause, resume, and retry controls.
-- **Office Memory** for optional, private context from conversations and granted
-  phone sources.
+- **Office Memory** for optional, private context drawn from your conversations.
 - **Prompt skills** that can be selected per message without running arbitrary
   code.
 - **Encrypted portable backups** for chats, memory, settings, and attachments.
@@ -55,13 +54,10 @@ required. Interrupted downloads keep a verified partial file and can resume.
 Core chat and inference run locally. Model files are stored in app-private
 storage, and Android backup is disabled.
 
-Office Memory is optional. Each phone source requires explicit Android access
-and can be disabled independently. Depending on the sources you choose, Android
-may request access to usage statistics, installed apps, notifications,
-accessibility text, location, activity recognition, contacts, calendar, or
-Health Connect data. Password fields and keyboards are excluded from
-accessibility collection, and sensitive number patterns are redacted before
-storage.
+Office Memory is optional and is built only from your own conversations. The
+app does not collect phone activity: there are no usage-statistics,
+notification, accessibility, location, contacts, calendar, or Health Connect
+collectors, and it requests none of those permissions.
 
 Encrypted Office backups exclude model files, authentication tokens, indexes,
 and encryption keys.
@@ -124,7 +120,6 @@ test APKs are accepted.
 
 ```text
 app/src/main/java/com/aliahad/aichat/
-├── activity/      Optional Office Memory collectors
 ├── attachment/    Private attachment ingestion and processing
 ├── backup/        Encrypted Office export and import
 ├── context/       Per-model context verification
