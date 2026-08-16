@@ -10,6 +10,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -38,6 +39,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -95,6 +97,7 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -128,6 +131,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -140,6 +144,7 @@ import androidx.navigation.compose.rememberNavController
 import com.aliahad.aichat.ThinkingUiState
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.Attachment
+import com.aliahad.aichat.R
 import com.aliahad.aichat.core.AttachmentKind
 import com.aliahad.aichat.core.AttachmentProcessingState
 import com.aliahad.aichat.core.ChatMessage
@@ -599,19 +604,21 @@ private fun ChatScreen(
         else -> null
     }
 
+    val preparing = !state.modelCatalogLoaded ||
+        state.inferenceState is InferenceState.Loading ||
+        state.residencyState is ModelResidencyState.Loading
     Column(modifier = modifier.fillMaxSize()) {
-        if (!state.modelCatalogLoaded) {
-            ModelCatalogLoadingBanner()
-        } else if (selectedModel == null) {
+        if (state.modelCatalogLoaded && selectedModel == null) {
             ModelRequiredBanner(onOpenSettings)
-        } else {
-            InferenceStatusBar(state, selectedModel)
         }
-        if (!state.modelCatalogLoaded) {
-            StartupChatPlaceholder(modifier = Modifier.weight(1f))
-        } else if (state.messages.isEmpty()) {
-            EmptyChat(
-                modelName = selectedModel?.displayName,
+        ChatActivityBar(state)
+        if (state.messages.isEmpty()) {
+            // One centred brand state for both "starting up" and "nothing said yet",
+            // so preparing the model reads as the app waking up rather than as a
+            // separate banner stacked above an empty screen.
+            ChatBrandState(
+                preparing = preparing,
+                ready = state.modelCatalogLoaded && selectedModel != null,
                 modifier = Modifier.weight(1f),
             )
         } else {
@@ -625,13 +632,6 @@ private fun ChatScreen(
                 onContinue = onContinue,
                 onPreviewAttachment = { previewAttachment = it },
                 modifier = Modifier.weight(1f),
-            )
-        }
-        AnimatedVisibility(visible = state.usedMemoryCount > 0 && state.isSending) {
-            AssistChip(
-                onClick = {},
-                label = { Text("Using ${state.usedMemoryCount} memories") },
-                modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
         Composer(
@@ -690,25 +690,6 @@ private fun ChatScreen(
 }
 
 @Composable
-private fun ModelCatalogLoadingBanner() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainer)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-        Spacer(Modifier.width(10.dp))
-        Text(
-            "Loading local model catalog...",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
 private fun ModelRequiredBanner(onOpenSettings: () -> Unit) {
     Row(
         modifier = Modifier
@@ -723,32 +704,22 @@ private fun ModelRequiredBanner(onOpenSettings: () -> Unit) {
 }
 
 
+/**
+ * Transient one-line status, shown only while something is actually happening or
+ * has gone wrong.
+ *
+ * This replaced a bar that was always on screen and led with the model name. The
+ * app ships a single chat model, so naming it on every frame was chrome the user
+ * could do nothing with, and it pushed the conversation down permanently. The
+ * phase text is kept because time to first token is seconds, not milliseconds,
+ * and silence during that wait reads as a hang.
+ */
 @Composable
-private fun StartupChatPlaceholder(modifier: Modifier = Modifier) {
-    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CircularProgressIndicator()
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "Preparing wochat",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                "Checking your local models and background services.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun InferenceStatusBar(state: ChatUiState, model: ModelRecord) {
-    val status = when (val inference = state.inferenceState) {
-        InferenceState.Uninitialized -> "Starting engine"
-        InferenceState.Idle -> residencyLabel(state.residencyState)
-        is InferenceState.Loading -> "Loading ${inference.modelName}"
-        is InferenceState.Ready -> residencyLabel(state.residencyState)
+private fun ChatActivityBar(state: ChatUiState) {
+    val error = (state.inferenceState as? InferenceState.Error)?.message
+        ?: (state.residencyState as? ModelResidencyState.Error)?.message
+    val activity = when (val inference = state.inferenceState) {
+        is InferenceState.Loading -> "Loading model"
         InferenceState.PreparingHistory -> "Reconstructing conversation"
         InferenceState.EvaluatingPrompt -> "Evaluating prompt"
         InferenceState.EncodingMedia -> "Encoding media"
@@ -757,45 +728,96 @@ private fun InferenceStatusBar(state: ChatUiState, model: ModelRecord) {
         } ?: "Waiting for first token"
         is InferenceState.Recovering ->
             "Recovering on ${inference.to.name.lowercase().replaceFirstChar(Char::uppercase)}"
-        is InferenceState.Error -> inference.message
+        else -> (state.residencyState as? ModelResidencyState.Loading)
+            ?.let { "Preloading model" }
     }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainer)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .background(
-                    if (state.inferenceState is InferenceState.Error ||
-                        state.residencyState is ModelResidencyState.Error
-                    ) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.primary,
-                    RoundedCornerShape(50),
-                ),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "${model.displayName} · $status",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+    val label = error ?: activity
+    AnimatedVisibility(visible = label != null, enter = fadeIn(), exit = fadeOut()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .background(
+                        if (error != null) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.primary,
+                        RoundedCornerShape(50),
+                    ),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                label.orEmpty(),
+                style = MaterialTheme.typography.labelMedium,
+                color = if (error != null) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
+/**
+ * The centred mark shown whenever the transcript is empty.
+ *
+ * Startup used to be a spinner and two lines of text stacked above a separate
+ * empty state, which meant the first thing a new user saw was machinery. The mark
+ * itself carries the wait instead: a progress ring is drawn around it while the
+ * model loads, and simply stops once the app is ready to take a message. The model
+ * is never named — the app ships exactly one, so naming it tells the user nothing
+ * they can act on.
+ */
 @Composable
-private fun EmptyChat(modelName: String?, modifier: Modifier = Modifier) {
+private fun ChatBrandState(
+    preparing: Boolean,
+    ready: Boolean,
+    modifier: Modifier = Modifier,
+) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("wochat", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
+            Box(contentAlignment = Alignment.Center) {
+                if (preparing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(84.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(64.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_launcher_monochrome),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(20.dp))
             Text(
-                modelName?.let { "Private, on-device chat with $it" } ?: "Set up a local model to begin",
+                "wochat",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                when {
+                    preparing -> "Warming up on your device"
+                    ready -> "Private, on-device chat"
+                    else -> "Set up a local model to begin"
+                },
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -1233,37 +1255,6 @@ private fun Composer(
                 onPreview = onPreviewAttachment,
             )
         }
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(bottom = 8.dp),
-        ) {
-            item {
-                FilterChip(
-                    selected = thinkingEnabled,
-                    onClick = { onThinkingModeChange(!thinkingEnabled) },
-                    enabled = !sending,
-                    label = { Text("Thinking") },
-                    leadingIcon = if (thinkingEnabled) {
-                        { Icon(Icons.Default.Check, contentDescription = null, Modifier.size(16.dp)) }
-                    } else null,
-                )
-            }
-            items(selectedSkills, key = SkillRecord::id) { skill ->
-                AssistChip(
-                    onClick = { onRemoveSkill(skill.id) },
-                    label = {
-                        Text(
-                            skill.name,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, Modifier.size(16.dp))
-                    },
-                )
-            }
-        }
         AnimatedVisibility(visible = blockingReason != null) {
             Text(
                 blockingReason.orEmpty(),
@@ -1282,13 +1273,6 @@ private fun Composer(
             )
         }
         Row(verticalAlignment = Alignment.Bottom) {
-            IconButton(
-                onClick = onAttach,
-                enabled = enabled && !sending && attachments.size < MAX_MESSAGE_ATTACHMENTS,
-                modifier = Modifier.size(50.dp),
-            ) {
-                Icon(Icons.Default.AttachFile, contentDescription = "Add attachment")
-            }
             OutlinedTextField(
                 value = input,
                 onValueChange = onInputChange,
@@ -1340,6 +1324,94 @@ private fun Composer(
                     contentDescription = if (sending) "Stop generation" else "Send",
                 )
             }
+        }
+        // Modes and attachment share one short row under the field. These used to be
+        // a full-width chip row *above* the input, which cost a whole line of screen
+        // permanently to controls that are only occasionally touched.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 6.dp),
+        ) {
+            IconButton(
+                onClick = onAttach,
+                enabled = enabled && !sending && attachments.size < MAX_MESSAGE_ATTACHMENTS,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    Icons.Default.AttachFile,
+                    contentDescription = "Add attachment",
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f),
+            ) {
+                item {
+                    ComposerModeChip(
+                        label = "Thinking",
+                        selected = thinkingEnabled,
+                        enabled = !sending,
+                        onClick = { onThinkingModeChange(!thinkingEnabled) },
+                    )
+                }
+                items(selectedSkills, key = SkillRecord::id) { skill ->
+                    ComposerModeChip(
+                        label = skill.name,
+                        selected = true,
+                        enabled = true,
+                        onClick = { onRemoveSkill(skill.id) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A deliberately small composer chip.
+ *
+ * `FilterChip` at its default size made two controls occupy a full row of the
+ * screen; this keeps the same toggle semantics at roughly half the height.
+ */
+@Composable
+private fun ComposerModeChip(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val container = if (selected) {
+        MaterialTheme.colorScheme.secondaryContainer
+    } else {
+        Color.Transparent
+    }
+    val content = if (selected) {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(16.dp),
+        color = container,
+        contentColor = content,
+        border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.height(32.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
