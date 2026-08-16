@@ -22,7 +22,7 @@ class DatabaseMigrationInstrumentedTest {
     )
 
     @Test
-    fun migrationOneToEighteenPreservesChatsAndRemovesRetiredTables() {
+    fun migrationOneToNineteenPreservesChatsAndRemovesRetiredTables() {
         helper.createDatabase(DATABASE_NAME, 1).apply {
             execSQL(
                 "INSERT INTO conversations(id, title, createdAt, updatedAt) " +
@@ -55,6 +55,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_15_16,
                 AppDatabase.MIGRATION_16_17,
                 AppDatabase.MIGRATION_17_18,
+                AppDatabase.MIGRATION_18_19,
             )
             .build()
         try {
@@ -152,7 +153,7 @@ class DatabaseMigrationInstrumentedTest {
     }
 
     @Test
-    fun migrationNineToSeventeenPreservesAttachmentAndRemovesRetiredTables() {
+    fun migrationNineToNineteenPreservesAttachmentAndRemovesRetiredTables() {
         val name = "migration-9-16"
         helper.createDatabase(name, 9).apply {
             insertLegacyAttachment("existing-attachment", "keep.txt", "TEXT")
@@ -170,6 +171,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_15_16,
                 AppDatabase.MIGRATION_16_17,
                 AppDatabase.MIGRATION_17_18,
+                AppDatabase.MIGRATION_18_19,
             )
             .build()
         try {
@@ -314,6 +316,38 @@ class DatabaseMigrationInstrumentedTest {
                     "('activity_events', 'memory_summaries', 'collector_checkpoints')",
             ),
         )
+        migrated.close()
+    }
+
+    /**
+     * 18 -> 19 adds the memory embedding column. Nullable on purpose: existing rows
+     * are backfilled in the background rather than blocking the upgrade on a forward
+     * pass per memory.
+     */
+    @Test
+    fun migrationEighteenToNineteenAddsNullableEmbeddingColumn() {
+        helper.createDatabase(DATABASE_NAME, 18).apply {
+            execSQL(
+                "INSERT INTO memory_items(id, type, title, content, normalizedContent, " +
+                    "contentHash, confidence, importance, sensitivity, status, pinned, " +
+                    "validFrom, validTo, supersedesId, createdAt, updatedAt) VALUES" +
+                    "('existing', 'FACT', 'mine', 'user fact', 'user fact', " +
+                    "'h1', 0.9, 0.5, 'NORMAL', 'ACTIVE', 0, NULL, NULL, NULL, 1, 1)",
+            )
+            close()
+        }
+
+        val migrated = helper.runMigrationsAndValidate(
+            DATABASE_NAME,
+            19,
+            true,
+            AppDatabase.MIGRATION_18_19,
+        )
+        migrated.query("SELECT embedding FROM memory_items WHERE id = 'existing'").use {
+            assertEquals(1, it.count)
+            it.moveToFirst()
+            assertEquals(true, it.isNull(0))
+        }
         migrated.close()
     }
 
