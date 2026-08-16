@@ -3,7 +3,6 @@ package com.aliahad.aichat.ui
 import android.animation.ValueAnimator
 import android.os.PowerManager
 import androidx.compose.animation.AnimatedContent
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateContentSize
@@ -571,10 +570,11 @@ private fun ChatScreen(
     onSelectPages: (String, Set<Int>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // While a response is streaming, back stops generation instead of sending
-    // the user out of the app mid-turn. Disabled otherwise, so ordinary back
-    // behaviour is untouched.
-    BackHandler(enabled = state.isSending) { onStop() }
+    // No BackHandler here on purpose. Back used to cancel generation rather than
+    // leave, which was reasonable when a turn could not survive the Activity being
+    // destroyed — leaving would have thrown the answer away regardless. Turns now
+    // run on the process, so back means leave and the reply keeps being written.
+    // Stopping early is still one tap, from the composer or the notification.
 
     // A local answer can take a long time, so the user often looks away. One
     // confirmation when it lands is the highest-value haptic in the app.

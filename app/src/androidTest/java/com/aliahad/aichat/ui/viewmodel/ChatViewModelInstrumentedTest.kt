@@ -61,6 +61,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -133,6 +134,9 @@ class ChatViewModelInstrumentedTest {
             inferenceEngine = fakeInferenceEngine,
             settingsRepository = settings,
             messages = uiMessages,
+            // The runner owns the turn's scope now; the test drives it directly so it
+            // stays deterministic rather than racing a background launch.
+            scope = CoroutineScope(UnconfinedTestDispatcher()),
         )
         val projectorPrompts = ProjectorPromptCoordinator(fakeModelRepo)
 

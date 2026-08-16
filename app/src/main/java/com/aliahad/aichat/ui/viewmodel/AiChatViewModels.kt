@@ -10,20 +10,11 @@ import com.aliahad.aichat.AppContainer
 class AiChatViewModelFactory(
     private val container: AppContainer,
 ) : ViewModelProvider.Factory {
-    private val messages = UiMessageManager()
+    // Both come from the container: a turn keeps running when the Activity goes
+    // away, so neither the runner nor the message queue may be Activity-scoped.
+    private val messages = container.uiMessages
     private val projectorPrompts = ProjectorPromptCoordinator(container.modelRepository)
-    private val chatTurnRunner = ChatTurnRunner(
-        chatRepository = container.chatRepository,
-        attachmentRepository = container.attachmentRepository,
-        skillRepository = container.skillRepository,
-        memoryRepository = container.memoryRepository,
-        modelRepository = container.modelRepository,
-        promptContextPlanner = container.promptContextPlanner,
-        residencyController = container.residencyController,
-        inferenceEngine = container.inferenceEngine,
-        settingsRepository = container.settings,
-        messages = messages,
-    )
+    private val chatTurnRunner = container.chatTurnRunner
 
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {

@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class ModelResidencyService : Service() {
@@ -65,10 +66,18 @@ class ModelResidencyService : Service() {
             )
             return
         }
+        val runner = (application as AiChatApplication).container.chatTurnRunner
         scope.launch {
-            controller.state.collectLatest { state ->
-                notificationManager.notify(NOTIFICATION_ID, notificationFor(state))
-            }
+            // A turn now outlives the Activity, so this notification is the only thing
+            // telling the user it is still running — and the only way to stop it
+            // without reopening the app.
+            combine(controller.state, runner.state) { residency, run -> residency to run }
+                .collectLatest { (residency, run) ->
+                    notificationManager.notify(
+                        NOTIFICATION_ID,
+                        if (run.isSending) generatingNotification() else notificationFor(residency),
+                    )
+                }
         }
     }
 
@@ -83,6 +92,8 @@ class ModelResidencyService : Service() {
                     stopSelf()
                 }
             }
+            ACTION_STOP_GENERATION ->
+                (application as AiChatApplication).container.chatTurnRunner.cancelTurn()
             ACTION_RETRY, ACTION_PRELOAD, null -> startPreload()
         }
         return START_STICKY
@@ -124,6 +135,37 @@ class ModelResidencyService : Service() {
             )
         is ModelResidencyState.Error ->
             notification("Model preload failed", state.message)
+    }
+
+    /**
+     * Shown while a reply is being written. Carries Stop rather than Unload: pulling
+     * the model out from under a running turn is never what the user means here.
+     */
+    private fun generatingNotification(): Notification {
+        val openIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val stopIntent = PendingIntent.getService(
+            this,
+            3,
+            Intent(this, ModelResidencyService::class.java).setAction(ACTION_STOP_GENERATION),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_aichat)
+            .setContentTitle("Writing a reply")
+            .setContentText("wochat is still answering. Open it to read along.")
+            .setContentIntent(openIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(0, "Open wochat", openIntent)
+            .addAction(0, "Stop", stopIntent)
+            .build()
     }
 
     private fun notification(title: String, text: String): Notification {
@@ -180,6 +222,7 @@ class ModelResidencyService : Service() {
         const val ACTION_PRELOAD = "com.aliahad.aichat.action.PRELOAD_MODEL"
         const val ACTION_RETRY = "com.aliahad.aichat.action.RETRY_MODEL"
         const val ACTION_UNLOAD = "com.aliahad.aichat.action.UNLOAD_MODEL"
+        const val ACTION_STOP_GENERATION = "com.aliahad.aichat.action.STOP_GENERATION"
 
         fun start(context: Context) {
             runCatching {

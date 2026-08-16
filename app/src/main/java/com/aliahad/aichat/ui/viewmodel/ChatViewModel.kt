@@ -118,7 +118,6 @@ class ChatViewModel internal constructor(
 
     private var messagesJob: Job? = null
     private var draftJob: Job? = null
-    private var generationJob: Job? = null
     private var searchJob: Job? = null
     private var observedConversationId: String? = null
     private var memoryEnabled: Boolean = true
@@ -232,8 +231,9 @@ class ChatViewModel internal constructor(
     fun selectConversation(id: String) {
         if (_uiState.value.selectedConversationId == id && observedConversationId == id) return
         val previous = _uiState.value.selectedConversationId
-        generationJob?.cancel()
-        runner.stop()
+        // An explicit conversation switch ends the turn. Background continuation is
+        // for leaving the app, not for abandoning the conversation it belongs to.
+        runner.cancelTurn()
         // Moving to a different conversation starts a fresh draft. Without this
         // the text, staged attachments and selected skills follow the user into
         // the new conversation and can be sent there by mistake.
@@ -284,8 +284,7 @@ class ChatViewModel internal constructor(
         viewModelScope.launch {
             runCatching {
                 if (_uiState.value.selectedConversationId == id) {
-                    runner.stop()
-                    generationJob?.cancelAndJoin()
+                    runner.cancelTurnAndJoin()
                 }
                 val messageIds = chatRepository.getMessages(id).map { it.id }
                 attachmentRepository.attachmentsForMessages(messageIds).values
@@ -314,12 +313,14 @@ class ChatViewModel internal constructor(
     }
 
     fun sendMessage(text: String, origin: TurnOrigin = TurnOrigin.TYPED) {
-        if (generationJob?.isActive == true) return
-        generationJob = viewModelScope.launch {
+        if (runner.isRunning) return
+        // Only the preparation runs here. The turn itself is handed to the runner's
+        // process scope so closing the app does not throw away the rest of the answer.
+        viewModelScope.launch {
             val conversationId = ensureConversation() ?: return@launch
             val state = _uiState.value
             val temporary = state.conversations.firstOrNull { it.id == conversationId }?.temporary == true
-            runner.send(
+            runner.launchTurn(
                 SendTurnRequest(
                     conversationId = conversationId,
                     text = text,
@@ -335,8 +336,7 @@ class ChatViewModel internal constructor(
     }
 
     fun stopGeneration() {
-        runner.stop()
-        generationJob?.cancel()
+        runner.cancelTurn()
     }
 
     /** Debounced full-text chat search across all conversations. */
@@ -383,15 +383,13 @@ class ChatViewModel internal constructor(
     }
 
     fun continueResponse() {
-        if (generationJob?.isActive == true) return
+        if (runner.isRunning) return
         val state = _uiState.value
         val conversationId = state.selectedConversationId ?: return
         val target = state.messages.lastOrNull {
             it.role == MessageRole.ASSISTANT && it.status == MessageStatus.CONTINUABLE
         } ?: return
-        generationJob = viewModelScope.launch {
-            runner.continueResponse(ContinueTurnRequest(conversationId, target, memoryEnabled))
-        }
+        runner.launchContinue(ContinueTurnRequest(conversationId, target, memoryEnabled))
     }
 
     fun toggleThinking(messageId: String) = runner.toggleThinking(messageId)
@@ -529,7 +527,10 @@ class ChatViewModel internal constructor(
     }
 
     override fun onCleared() {
-        runner.stop()
+        // Deliberately does NOT stop generation. This used to cancel inference the
+        // moment the Activity went away, so leaving the app mid-answer discarded the
+        // rest of it. The turn belongs to the process now; only an explicit Stop —
+        // from the composer or the notification — ends it early.
         super.onCleared()
     }
 

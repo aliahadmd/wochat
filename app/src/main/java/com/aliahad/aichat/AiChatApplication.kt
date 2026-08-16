@@ -41,6 +41,8 @@ import com.aliahad.aichat.memory.RoomMemoryRepository
 import com.aliahad.aichat.context.ContextProfileRepository
 import com.aliahad.aichat.context.RoomContextProfileRepository
 import com.aliahad.aichat.residency.ModelResidencyController
+import com.aliahad.aichat.ui.viewmodel.ChatTurnRunner
+import com.aliahad.aichat.ui.viewmodel.UiMessageManager
 import com.aliahad.aichat.settings.AppSettingsRepository
 import com.aliahad.aichat.settings.TokenCipher
 import com.aliahad.aichat.skill.RoomSkillRepository
@@ -390,6 +392,43 @@ class AppContainer(val application: Application) {
         }
     }
     val residencyController: ModelResidencyController by residencyControllerLazy
+
+    /**
+     * Snackbar/message queue. Container-scoped rather than per-Activity so a message
+     * raised by a turn still running in the background is not lost with the UI.
+     */
+    val uiMessages by lazy { UiMessageManager() }
+
+    /**
+     * Scope for chat turns.
+     *
+     * Deliberately NOT viewModelScope. A turn used to die the moment the Activity
+     * went away — the ViewModel's onCleared even cancelled inference explicitly — so
+     * leaving the app mid-answer threw away the rest of it. Turns now run on the
+     * process, and the UI attaches to and detaches from them.
+     */
+    private val turnScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Single process-wide runner. There is one inference engine, so there must be
+     * exactly one thing driving it: a per-Activity runner meant a relaunched UI had
+     * no idea a turn was in flight and would start a second one on the same engine.
+     */
+    val chatTurnRunner: ChatTurnRunner by lazy {
+        ChatTurnRunner(
+            chatRepository = chatRepository,
+            attachmentRepository = attachmentRepository,
+            skillRepository = skillRepository,
+            memoryRepository = memoryRepository,
+            modelRepository = modelRepository,
+            promptContextPlanner = promptContextPlanner,
+            residencyController = residencyController,
+            inferenceEngine = inferenceEngine,
+            settingsRepository = settings,
+            messages = uiMessages,
+            scope = turnScope,
+        )
+    }
 
     val conversationSummarizer: BackgroundConversationSummarizer by lazy {
         BackgroundConversationSummarizer(

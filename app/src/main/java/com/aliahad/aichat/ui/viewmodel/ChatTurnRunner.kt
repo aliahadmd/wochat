@@ -30,7 +30,11 @@ import com.aliahad.aichat.residency.ModelResidencyState
 import com.aliahad.aichat.settings.AppSettingsRepository
 import com.aliahad.aichat.skill.MAX_SELECTED_SKILLS
 import com.aliahad.aichat.skill.SkillRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -75,9 +79,52 @@ class ChatTurnRunner(
     private val inferenceEngine: InferenceEngine,
     private val settingsRepository: AppSettingsRepository,
     private val messages: UiMessageManager,
+    private val scope: CoroutineScope,
 ) {
     private val _state = MutableStateFlow(ChatRunState())
     val state: StateFlow<ChatRunState> = _state.asStateFlow()
+
+    private var turnJob: Job? = null
+
+    /** True while a turn is running, regardless of whether any UI is attached. */
+    val isRunning: Boolean
+        get() = turnJob?.isActive == true
+
+    /**
+     * Runs a turn on the process scope so it survives the Activity.
+     *
+     * Returns false when a turn is already in flight. That check lives here rather
+     * than in the ViewModel because the ViewModel is recreated on every relaunch and
+     * would otherwise have no idea a turn was still going — two turns would then
+     * race on the one inference engine.
+     */
+    fun launchTurn(request: SendTurnRequest): Boolean {
+        if (isRunning) return false
+        turnJob = scope.launch { send(request) }
+        return true
+    }
+
+    /** Cancels the running turn, if any. Only ever called for an explicit user stop. */
+    fun cancelTurn() {
+        stop()
+        turnJob?.cancel()
+    }
+
+    /**
+     * Cancels and waits. Needed before deleting a conversation: letting a turn write
+     * a message row into a conversation being torn down is how orphaned rows appear.
+     */
+    suspend fun cancelTurnAndJoin() {
+        stop()
+        turnJob?.cancelAndJoin()
+    }
+
+    /** Resumes a CONTINUABLE reply on the same process scope as a normal turn. */
+    fun launchContinue(request: ContinueTurnRequest): Boolean {
+        if (isRunning) return false
+        turnJob = scope.launch { continueResponse(request) }
+        return true
+    }
 
     fun toggleThinking(messageId: String) {
         _state.update { state ->
