@@ -98,6 +98,11 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
+            // Lets the debug build sit alongside the signed release build.
+            // Without this, running instrumented tests means uninstalling the
+            // real app — which deletes noBackupFilesDir/models and forces a
+            // 4.8 GB model re-download. That happened twice before this existed.
+            applicationIdSuffix = ".debug"
         }
         release {
             isMinifyEnabled = true
