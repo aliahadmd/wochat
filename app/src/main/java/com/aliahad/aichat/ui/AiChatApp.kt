@@ -118,6 +118,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -1260,6 +1262,8 @@ private fun Composer(
         skills.firstOrNull { it.id == id && it.enabled }
     }
     val haptics = LocalHapticFeedback.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1328,7 +1332,25 @@ private fun Composer(
             FilledIconButton(
                 onClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.ContextClick)
-                    if (sending) onStop() else onSend()
+                    if (sending) {
+                        onStop()
+                    } else {
+                        // Messaging apps keep the keyboard up after send because people
+                        // fire off several short messages in a row. That does not hold
+                        // here: the next thing to happen is a long reply the user wants
+                        // to read, and on this device it is seconds away. Holding the
+                        // keyboard would cover roughly 40% of the screen through the
+                        // wait and the answer both.
+                        //
+                        // Focus is cleared as well as hidden — hiding alone leaves the
+                        // field focused, and the IME reappears on the next recomposition
+                        // or when returning to the app. Composing during generation is
+                        // still allowed (see the enabled flag on the field); it just
+                        // takes a tap to come back.
+                        keyboard?.hide()
+                        focusManager.clearFocus()
+                        onSend()
+                    }
                 },
                 enabled = sending || (
                     enabled &&
