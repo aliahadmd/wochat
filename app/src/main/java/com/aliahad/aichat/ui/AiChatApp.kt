@@ -287,11 +287,6 @@ fun AiChatApp(
                     navigateTo(AppRoute.CHAT)
                     scope.launch { drawerState.close() }
                 },
-                onNewTemporaryChat = {
-                    chatActions.newTemporaryConversation()
-                    navigateTo(AppRoute.CHAT)
-                    scope.launch { drawerState.close() }
-                },
                 onSelect = {
                     chatActions.selectConversation(it)
                     navigateTo(AppRoute.CHAT)
@@ -330,6 +325,20 @@ fun AiChatApp(
                     },
                     actions = {
                         if (currentRoute == AppRoute.CHAT) {
+                            // Starting a chat is the most frequent action in the app;
+                            // routing it through the drawer made it a three-tap trip.
+                            IconButton(
+                                onClick = {
+                                    chatActions.newConversation()
+                                    navigateTo(AppRoute.CHAT)
+                                },
+                                enabled = !chat.isSending,
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = "New chat",
+                                )
+                            }
                             IconButton(
                                 onClick = { showSkillSheet = true },
                                 enabled = !chat.isSending,
@@ -425,7 +434,6 @@ fun AiChatApp(
 private fun ConversationDrawer(
     state: ChatUiState,
     onNewChat: () -> Unit,
-    onNewTemporaryChat: () -> Unit,
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
     onExport: (String) -> Unit,
@@ -444,9 +452,6 @@ private fun ConversationDrawer(
                 Icon(Icons.Default.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("New chat")
-            }
-            TextButton(onClick = onNewTemporaryChat, modifier = Modifier.fillMaxWidth()) {
-                Text("Temporary chat")
             }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(

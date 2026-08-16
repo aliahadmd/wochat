@@ -209,7 +209,11 @@ class ChatViewModel internal constructor(
 
     fun newConversation() = createConversation(temporary = false)
 
-    fun newTemporaryConversation() = createConversation(temporary = true)
+    // The "Temporary chat" entry point is gone: the composer's Memory toggle gates
+    // the same two paths (memory is neither read into the prompt nor written back),
+    // so a second control for it was redundant. The `temporary` flag itself stays
+    // on the conversation model and is still honoured by ChatTurnRunner, because
+    // conversations created before this change still carry it.
 
     private fun createConversation(temporary: Boolean) {
         viewModelScope.launch {
