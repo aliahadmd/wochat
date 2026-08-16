@@ -109,8 +109,8 @@ private fun getOrCreateWrappingKey(): SecretKey {
 |---------|---------|---------------------|
 | Unit tests | `./gradlew testDebugUnitTest` | exit 0 |
 | Release APK | `./gradlew assembleRelease` | exit 0 |
-| Lock the device | `adb -s 3a9d820 shell input keyevent 26` | `mIsShowing=true` |
-| Launch while locked | `adb -s 3a9d820 shell am start -n com.aliahad.aichat/.MainActivity` | process stays alive |
+| Lock the device | `adb -s <serial> shell input keyevent 26` | `mIsShowing=true` |
+| Launch while locked | `adb -s <serial> shell am start -n com.aliahad.aichat/.MainActivity` | process stays alive |
 
 ## Scope
 
