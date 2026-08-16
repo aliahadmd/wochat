@@ -47,6 +47,7 @@ data class ChatUiState(
     val thinking: ThinkingUiState? = null,
     val thinkingEnabled: Boolean = false,
     val usedMemoryCount: Int = 0,
+    val memoryEnabled: Boolean = true,
     val isSending: Boolean = false,
     val modelCatalogLoaded: Boolean = false,
     val searchQuery: String = "",

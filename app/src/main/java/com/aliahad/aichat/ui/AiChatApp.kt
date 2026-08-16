@@ -104,6 +104,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -365,6 +366,7 @@ fun AiChatApp(
                     onContinue = chatActions::continueResponse,
                     onToggleThinking = chatActions::toggleThinking,
                     onSetThinkingMode = chatActions::setThinkingMode,
+                    onSetMemoryMode = chatActions::setMemoryMode,
                     onOpenSettings = { navigateTo(AppRoute.SETTINGS) },
                     onToggleSkill = chatActions::toggleSelectedSkill,
                     onAddPhotos = onAddPhotos,
@@ -551,6 +553,7 @@ private fun ChatScreen(
     onContinue: () -> Unit,
     onToggleThinking: (String) -> Unit,
     onSetThinkingMode: (Boolean) -> Unit,
+    onSetMemoryMode: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
     onToggleSkill: (String) -> Unit,
     onAddPhotos: () -> Unit,
@@ -639,12 +642,17 @@ private fun ChatScreen(
             onInputChange = onInputChange,
             sending = state.isSending,
             enabled = state.modelCatalogLoaded && selectedModel != null,
-            thinkingEnabled = state.thinkingEnabled,
+            modes = ComposerModes(
+                thinkingEnabled = state.thinkingEnabled,
+                memoryEnabled = state.memoryEnabled,
+                usedMemoryCount = state.usedMemoryCount,
+                onThinkingChange = onSetThinkingMode,
+                onMemoryChange = onSetMemoryMode,
+            ),
             attachments = state.draftAttachments,
             skills = state.skills,
             selectedSkillIds = state.selectedSkillIds,
             onAttach = { showAttachmentSheet = true },
-            onThinkingModeChange = onSetThinkingMode,
             onRemoveSkill = onToggleSkill,
             onRemoveAttachment = onRemoveAttachment,
             onRetryAttachment = onRetryAttachment,
@@ -1210,18 +1218,31 @@ private fun formatThoughtForDisplay(text: String): String =
         }
         .trim()
 
+
+/**
+ * The per-turn switches shown under the composer, grouped so the composer's
+ * parameter list stays readable as more modes appear.
+ */
+@Immutable
+private data class ComposerModes(
+    val thinkingEnabled: Boolean,
+    val memoryEnabled: Boolean,
+    val usedMemoryCount: Int,
+    val onThinkingChange: (Boolean) -> Unit,
+    val onMemoryChange: (Boolean) -> Unit,
+)
+
 @Composable
 private fun Composer(
     input: String,
     onInputChange: (String) -> Unit,
     sending: Boolean,
     enabled: Boolean,
-    thinkingEnabled: Boolean,
+    modes: ComposerModes,
     attachments: List<Attachment>,
     skills: List<SkillRecord>,
     selectedSkillIds: List<String>,
     onAttach: () -> Unit,
-    onThinkingModeChange: (Boolean) -> Unit,
     onRemoveSkill: (String) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
@@ -1352,9 +1373,24 @@ private fun Composer(
                 item {
                     ComposerModeChip(
                         label = "Thinking",
-                        selected = thinkingEnabled,
+                        selected = modes.thinkingEnabled,
                         enabled = !sending,
-                        onClick = { onThinkingModeChange(!thinkingEnabled) },
+                        onClick = { modes.onThinkingChange(!modes.thinkingEnabled) },
+                    )
+                }
+                item {
+                    // Carries the count that used to live in a separate floating
+                    // label, so the information survives without costing a row —
+                    // and unlike that label, this one actually does something.
+                    ComposerModeChip(
+                        label = if (modes.memoryEnabled && modes.usedMemoryCount > 0) {
+                            "Memory · ${modes.usedMemoryCount}"
+                        } else {
+                            "Memory"
+                        },
+                        selected = modes.memoryEnabled,
+                        enabled = !sending,
+                        onClick = { modes.onMemoryChange(!modes.memoryEnabled) },
                     )
                 }
                 items(selectedSkills, key = SkillRecord::id) { skill ->

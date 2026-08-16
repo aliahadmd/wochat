@@ -194,7 +194,10 @@ class ChatViewModel internal constructor(
             }
         }
         viewModelScope.launch {
-            settings.memoryEnabled.collectLatest { memoryEnabled = it }
+            settings.memoryEnabled.collectLatest { enabled ->
+                memoryEnabled = enabled
+                _uiState.update { it.copy(memoryEnabled = enabled) }
+            }
         }
         viewModelScope.launch {
             settings.thinkingEnabled.collectLatest { enabled ->
@@ -391,6 +394,14 @@ class ChatViewModel internal constructor(
 
     fun setThinkingMode(enabled: Boolean) {
         launchCatching { settings.setThinkingEnabled(enabled) }
+    }
+
+    /**
+     * Same preference the Memory screen owns, surfaced in the composer so a single
+     * question can be asked without it recalling — or being recalled — later.
+     */
+    fun setMemoryMode(enabled: Boolean) {
+        launchCatching { settings.setMemoryEnabled(enabled) }
     }
 
     fun toggleSelectedSkill(id: String) {
