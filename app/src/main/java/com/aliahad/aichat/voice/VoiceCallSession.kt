@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.time.TimeSource
 
 /** Where a call currently is. The call screen animates on exactly this. */
 enum class VoiceCallPhase { IDLE, LISTENING, THINKING, SPEAKING }
@@ -49,6 +50,15 @@ class VoiceCallSession(
     val state: StateFlow<VoiceCallState> = _state.asStateFlow()
 
     private var callJob: Job? = null
+
+    /**
+     * Set when a transcript arrives, cleared once the first sentence has been
+     * spoken. This is what plan 036 Step 8 actually asks for: the gap the user
+     * experiences between finishing their sentence and hearing a reply, which
+     * time-to-first-token alone understates — speech waits for a whole sentence,
+     * not for the first token.
+     */
+    private var heardAt: TimeSource.Monotonic.ValueTimeMark? = null
 
     val isActive: Boolean get() = callJob?.isActive == true
 
@@ -104,6 +114,7 @@ class VoiceCallSession(
                 }
                 is HeardSpeech.Final -> {
                     _state.update { it.copy(heard = heard.text) }
+                    heardAt = TimeSource.Monotonic.markNow()
                     finalText = heard.text
                     true
                 }
@@ -132,10 +143,26 @@ class VoiceCallSession(
         _state.update {
             it.copy(phase = VoiceCallPhase.SPEAKING, spoken = (it.spoken + " " + sentence).trim())
         }
-        speaker.speak(sentence).onFailure { failure ->
-            Log.e(TAG, "Could not speak a sentence", failure)
-            _state.update { it.copy(error = failure.message) }
-        }
+        val waitedForSentence = heardAt?.elapsedNow()?.inWholeMilliseconds
+        speaker.speak(sentence)
+            .onSuccess { synthesisMillis ->
+                // Report once per turn, at the moment sound first exists. Synthesis
+                // finishing is when playback starts, so this is the honest
+                // "stopped talking -> heard something" figure, minus the VAD's
+                // deliberate end-of-turn silence which precedes the transcript.
+                if (waitedForSentence != null) {
+                    Log.i(
+                        TAG,
+                        "First audio ${waitedForSentence + synthesisMillis}ms after transcript " +
+                            "(sentence ready in ${waitedForSentence}ms, synthesis ${synthesisMillis}ms)",
+                    )
+                    heardAt = null
+                }
+            }
+            .onFailure { failure ->
+                Log.e(TAG, "Could not speak a sentence", failure)
+                _state.update { it.copy(error = failure.message) }
+            }
     }
 
     private fun currentJobActive() = callJob?.isActive != false

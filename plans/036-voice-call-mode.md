@@ -448,7 +448,45 @@ Reduced-motion must be honoured; the animation is feedback, not decoration.
 **Verify**: on the device — all three states animate distinctly, the transcript
 toggles, and the memory state matches the setting.
 
-### Step 8: Measure, and report the real number
+### Step 8: DONE — and it fires this plan's STOP condition, 2026-08-18
+
+Measured on the device with a fresh conversation, from the transcript arriving to
+the first audible word:
+
+| stage | turn 1 | turn 2 |
+|---|---|---|
+| Whisper transcription | 370 ms | 363 ms |
+| **LLM, to a complete first sentence** | **50 328 ms** | **36 874 ms** |
+| Piper synthesis | 222 ms | 208 ms |
+| **first audio after transcript** | **50.5 s** | **37.1 s** |
+
+**The speech stack is ~0.6 s of a ~50 s turn — under 1.5 %.** Every component this
+plan chose is comfortably fast: Whisper at RTF 0.26-0.30, Piper at RTF 0.14, VAD
+negligible. The remaining ~98.5 % is the LLM, and this was a *fresh* conversation,
+so it is not the cold-replay cost either.
+
+**STOP condition triggered** ("materially worse than ~6 s ... attack TTFT first,
+not keep building"). Steps 1-7 are complete and the feature demonstrably works —
+a spoken exchange with an accurate transcript and an audible answer — but it is
+not pleasant to use at this latency, and no further polish changes that.
+
+Two things make the gap worse than `037`'s time-to-first-token figure, and both
+are properties of *this* design rather than of the model:
+
+1. **Speech waits for a whole sentence, not the first token.** Turn 2 reached its
+   first token at 19.5 s and its first *sentence* at 36.9 s — 17 s of generation
+   spent before a word could be spoken. Speaking on a clause boundary, or on a
+   token budget with a timeout, would recover a large part of that.
+2. **The degraded per-decode regime from `037` dominates.** Same feature measured
+   **989 ms** to first token on a healthy turn and **19-27 s** here. Until that
+   regime is understood, call latency is unpredictable by an order of magnitude,
+   which is worse for a call than being uniformly slow.
+
+**Do not tune the speech stack further.** The next work is `037`'s open question —
+what causes a fixed multi-second cost per `llama_decode` — and it needs Perfetto
+and a look at thread scheduling, not more audio engineering.
+
+### Step 8 (original text): Measure, and report the real number
 
 Re-measure end-to-end latency on the device and put the true figure in the
 status row, including a null result if it is worse than the ~6 s estimate.
