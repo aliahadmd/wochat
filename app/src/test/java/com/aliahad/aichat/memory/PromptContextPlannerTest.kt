@@ -412,6 +412,133 @@ class PromptContextPlannerTest {
         ),
     )
 
+    @Test
+    fun aSpokenTurnAsksForFewerMemoriesThanATypedOne() = runTest {
+        // Plan 037: with memory on, a short question carried 63-68 prompt tokens and
+        // 5.34 s of prefill; with it off, 13 tokens and 1.43 s. A caller waits in
+        // silence, so a spoken turn buys less of it.
+        val typedRepository = FakeMemoryRepository()
+        val spokenRepository = FakeMemoryRepository()
+
+        PromptContextPlanner(FakeInferenceEngine(), typedRepository, summariesDatabase()).plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "what do I like",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+            budget = ContextBudget.FULL,
+        )
+        PromptContextPlanner(FakeInferenceEngine(), spokenRepository, summariesDatabase()).plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "what do I like",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+            budget = ContextBudget.COMPACT,
+        )
+
+        assertEquals(4, typedRepository.queries.single().limit)
+        assertEquals(2, spokenRepository.queries.single().limit)
+    }
+
+    @Test
+    fun aSpokenTurnStillRetrievesTheMemoryItNeeds() = runTest {
+        // The trade this plan forbids is a faster assistant that forgot the user.
+        // A compact budget must still carry the top-ranked memory into the prompt.
+        val planner = PromptContextPlanner(
+            FakeInferenceEngine(),
+            FakeMemoryRepository(listOf(memoryHit())),
+            summariesDatabase(),
+        )
+
+        val plan = planner.plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "what do I like",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+            budget = ContextBudget.COMPACT,
+        )
+
+        assertEquals(1, plan.memories.size)
+        assertTrue(plan.turnPreamble.contains("remembered fact"))
+    }
+
+    @Test
+    fun aSpokenTurnSkipsTheConversationSummaryButATypedOneKeepsIt() = runTest {
+        val summary = "s".repeat(200)
+
+        val typed = PromptContextPlanner(
+            FakeInferenceEngine(),
+            FakeMemoryRepository(),
+            summariesDatabase(summary),
+        ).plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "hello",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+            budget = ContextBudget.FULL,
+        )
+        val spoken = PromptContextPlanner(
+            FakeInferenceEngine(),
+            FakeMemoryRepository(),
+            summariesDatabase(summary),
+        ).plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "hello",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+            budget = ContextBudget.COMPACT,
+        )
+
+        assertNotNull(typed.summary)
+        assertTrue(typed.turnPreamble.contains("Conversation summary"))
+        assertNull(spoken.summary)
+        assertFalse(spoken.turnPreamble.contains("Conversation summary"))
+    }
+
+    @Test
+    fun bothBudgetsShareOneSystemPromptSoTheKvPrefixSurvivesSwitching() = runTest {
+        // The stable prefix must not vary with the budget: a conversation that mixes
+        // typing and talking would otherwise decline session reuse on every switch
+        // and re-prefill everything, trading ~4 s for ~30 s.
+        val typed = PromptContextPlanner(
+            FakeInferenceEngine(),
+            FakeMemoryRepository(listOf(memoryHit())),
+            summariesDatabase("s".repeat(200)),
+        ).plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "hello",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+            budget = ContextBudget.FULL,
+        )
+        val spoken = PromptContextPlanner(
+            FakeInferenceEngine(),
+            FakeMemoryRepository(listOf(memoryHit())),
+            summariesDatabase("s".repeat(200)),
+        ).plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "hello",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+            budget = ContextBudget.COMPACT,
+        )
+
+        assertEquals(typed.systemPrompt, spoken.systemPrompt)
+    }
+
     private fun memoryHit() = MemoryHit(
         memory = MemoryItem(
             id = "mem1",

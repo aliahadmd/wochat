@@ -6,8 +6,57 @@ import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.MemoryHit
 import com.aliahad.aichat.core.MemoryQuery
 import com.aliahad.aichat.core.SkillPromptBlock
+import com.aliahad.aichat.core.TurnOrigin
 import com.aliahad.aichat.inference.InferenceEngine
 import com.aliahad.aichat.skill.formatSkillPromptBlocks
+
+/**
+ * How much context a turn can afford.
+ *
+ * Talking and typing have different economics. Plan 037 measured prefill as the
+ * dominant term in time to first token, and a retrieved memory block as its
+ * biggest controllable input: with memory on a short question carried 63-68 prompt
+ * tokens and 5.34 s of prefill, with memory off 13 tokens and 1.43 s. A reader
+ * waits for a screen; a caller waits in silence, and notices every second.
+ *
+ * [COMPACT] trims only what lives in the *per-turn preamble* — retrieved memories
+ * and the conversation summary. The system prompt is deliberately identical in both
+ * budgets: it is the stable KV-cache prefix, and varying it would make every switch
+ * between a typed and a spoken turn decline session reuse and re-prefill the whole
+ * conversation, trading ~4 s for ~30 s.
+ */
+enum class ContextBudget {
+    FULL,
+    COMPACT,
+    ;
+
+    /** Retrieved memories admitted to the preamble. */
+    val maxMemories: Int get() = if (this == COMPACT) COMPACT_MEMORIES else FULL_MEMORIES
+
+    /** Ceiling on the assembled memory block, in tokens. */
+    val maxMemoryTokens: Int get() = if (this == COMPACT) COMPACT_MEMORY_TOKENS else FULL_MEMORY_TOKENS
+
+    /**
+     * A spoken answer is short and the summary is long; it costs more prefill than
+     * it earns back in a call, where the recent turns are still in the KV cache.
+     */
+    val includesSummary: Boolean get() = this != COMPACT
+
+    companion object {
+        /** Talking buys less context than typing; see the class comment for why. */
+        fun forOrigin(origin: TurnOrigin): ContextBudget =
+            if (origin == TurnOrigin.VOICE) COMPACT else FULL
+
+        private const val FULL_MEMORIES = 4
+        private const val FULL_MEMORY_TOKENS = 192
+
+        // Halved rather than removed: plan 037's STOP condition is explicit that a
+        // faster assistant which forgot the user is not an improvement, and
+        // retrieval is ranked, so the top 2 are the ones worth having.
+        private const val COMPACT_MEMORIES = 2
+        private const val COMPACT_MEMORY_TOKENS = 96
+    }
+}
 
 class PromptContextPlanner(
     private val inferenceEngine: InferenceEngine,
@@ -22,6 +71,7 @@ class PromptContextPlanner(
         contextTokens: Int,
         memoryEnabled: Boolean,
         skillBlocks: List<SkillPromptBlock> = emptyList(),
+        budget: ContextBudget = ContextBudget.FULL,
     ): ContextPlan {
         val normalized = settings.normalized()
         val skillText = formatSkillPromptBlocks(skillBlocks)
@@ -58,7 +108,7 @@ class PromptContextPlanner(
             memoryRepository.search(
                 MemoryQuery(
                     text = currentText,
-                    limit = MAX_MEMORIES_PER_TURN,
+                    limit = budget.maxMemories,
                     expansion = memoryQueryExpansion(history),
                 ),
             )
@@ -85,7 +135,7 @@ class PromptContextPlanner(
             // (preamble tokens) / 21 per second on this hardware, so an unbounded
             // memory block is an unbounded wait. A calendar question once pulled
             // 1578 tokens of memory, which was ~75 s of prefill before a word appeared.
-            if (memoryTokens + tokens > MAX_MEMORY_TOKENS) continue
+            if (memoryTokens + tokens > budget.maxMemoryTokens) continue
             selectedMemories += hit
             memoryText.append(line)
             memoryHeaderReserved = true
@@ -105,7 +155,7 @@ class PromptContextPlanner(
             }
         }
 
-        var summary = summaries.get(conversationId)
+        var summary = if (budget.includesSummary) summaries.get(conversationId) else null
         if (trimmed.isNotEmpty()) {
             summary = summaries.updateFromTrimmed(
                 conversationId = conversationId,
@@ -190,15 +240,10 @@ class PromptContextPlanner(
                 "conversation. If the user asks you to remember something, say plainly " +
                 "that memory is off rather than agreeing to remember it."
 
-        /**
-         * Retrieval used to ask for 16 and, with the relevance floor bypassed for
-         * every AppSearch hit, effectively always return 16 — regardless of whether
-         * any of them related to the question.
-         */
-        const val MAX_MEMORIES_PER_TURN = 4
-
-        /** Ceiling on the assembled memory block, in tokens. */
-        const val MAX_MEMORY_TOKENS = 192
+        // Retrieval used to ask for 16 and, with the relevance floor bypassed for
+        // every AppSearch hit, effectively always return 16 — regardless of whether
+        // any of them related to the question. The caps now live on [ContextBudget],
+        // because a spoken turn can afford less of them than a typed one.
     }
 }
 

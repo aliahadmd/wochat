@@ -23,6 +23,7 @@ import com.aliahad.aichat.inference.InferenceEngine
 import com.aliahad.aichat.inference.VisionBudgetPlanner
 import com.aliahad.aichat.inference.VisionDetailProfile
 import com.aliahad.aichat.memory.MemoryRepository
+import com.aliahad.aichat.memory.ContextBudget
 import com.aliahad.aichat.memory.PromptContextPlanner
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.model.ModelRepository
@@ -162,17 +163,8 @@ class ChatTurnRunner(
             messages.report("Wait for every attachment to finish processing.")
             return
         }
-        val audio = draft.filter { it.kind == AttachmentKind.AUDIO }
-        if (audio.size > MAX_AUDIO_ATTACHMENTS) {
-            messages.report("A message can include up to $MAX_AUDIO_ATTACHMENTS audio files.")
-            return
-        }
-        if (audio.any { it.durationMillis == null }) {
-            messages.report("Audio duration is unavailable. Retry the attachment.")
-            return
-        }
-        if (audio.sumOf { it.durationMillis ?: 0L } > MAX_AUDIO_DURATION_MILLIS) {
-            messages.report("Audio attachments can total up to 90 seconds per message.")
+        audioAttachmentError(draft)?.let { problem ->
+            messages.report(problem)
             return
         }
 
@@ -264,6 +256,7 @@ class ChatTurnRunner(
                 contextTokens = planningContextTokens,
                 memoryEnabled = request.memoryEnabled && !request.conversationTemporary,
                 skillBlocks = activeSkills,
+                budget = ContextBudget.forOrigin(request.origin),
             )
             trace.mark("plan")
             val plannedTurns = contextPlan.history
@@ -730,6 +723,26 @@ private fun maxImageTokenBudget(turns: List<ChatTurn>): Int =
         turn.attachments.filter { it.imagePaths.isNotEmpty() }
             .maxOfOrNull { it.imageTokenBudget } ?: 0
     } ?: 0
+
+/**
+ * Why [draft]'s audio cannot be sent, or null when it can.
+ *
+ * Pure and outside the runner so the limits can be tested without a database, a
+ * model or a coroutine — and because the turn lifecycle is already the largest
+ * class in this layer (deferred item DEBT-02).
+ */
+internal fun audioAttachmentError(draft: List<Attachment>): String? {
+    val audio = draft.filter { it.kind == AttachmentKind.AUDIO }
+    return when {
+        audio.size > ChatTurnRunner.MAX_AUDIO_ATTACHMENTS ->
+            "A message can include up to ${ChatTurnRunner.MAX_AUDIO_ATTACHMENTS} audio files."
+        audio.any { it.durationMillis == null } ->
+            "Audio duration is unavailable. Retry the attachment."
+        audio.sumOf { it.durationMillis ?: 0L } > ChatTurnRunner.MAX_AUDIO_DURATION_MILLIS ->
+            "Audio attachments can total up to 90 seconds per message."
+        else -> null
+    }
+}
 
 private fun GenerationStopReason.toMessageStatus(): MessageStatus = when (this) {
     GenerationStopReason.EOG -> MessageStatus.COMPLETE

@@ -265,7 +265,48 @@ Also worth carrying into `036`: the first turn after app start replays the whole
 conversation (15.4 s for ~170 tokens, 33.4 s for ~380), so the first turn of a
 call pays a cold-session cost that no prompt trimming touches.
 
-### Why Steps 2 and 3 did not proceed
+### Step 2 DONE, with a partly negative result — 2026-08-18
+
+Unblocked once `036` introduced `TurnOrigin.VOICE`. A spoken turn now plans with
+`ContextBudget.COMPACT`: 2 retrieved memories instead of 4, a 96-token instead of
+192-token memory block, and no conversation summary.
+
+**One of this plan's three suggestions was rejected on measurement grounds.** A
+"terser system prompt in voice mode" would change the *stable KV prefix*, so any
+conversation mixing typed and spoken turns would decline session reuse and
+re-prefill everything on each switch — trading ~4 s for ~30 s. Both budgets share
+one system prompt, and a unit test pins that.
+
+**Verified on device, in a fresh conversation so the fact could only come from
+retrieval**: "Do I like to drink after lunch?" -> "Yes, you prefer green tea after
+lunch.", with the composer reporting `Memory · 1`. Recall survives the cut, which is
+this plan's STOP condition.
+
+**But the latency win is smaller than the framing suggested, and the honest reason
+is that the cap rarely binds:**
+
+| | prompt tokens | prefill |
+|---|---|---|
+| before (FULL) | 63-68 | 5.34 s |
+| after (COMPACT) | **67** | **2.73 s** |
+
+The token count barely moved. The prefill halved because of the mapping fix above
+(`minor=1808 major=0`, against tens of thousands before), **not** because of the
+budget. Retrieval had found only one relevant memory, so a cap of 2 never applied.
+
+The compact budget is therefore a **guard on the worst case** — 4 memories at the
+192-token ceiling is ~17 s of prefill — rather than a saving on the common one. It
+is worth keeping for that, and for skipping the summary, but it is not the lever.
+
+**The lever is retrieval selectivity.** The evidence was already in this plan and
+was under-weighted: *"Name one animal."* pulled a ~50-token memory preamble, so a
+question needing no memory pays ~2-5 s of prefill for one. Tightening the relevance
+floor would cut tokens on turns that should retrieve nothing *and* improve answers
+by not injecting irrelevant context — it helps both sides of the trade, which is
+rare here. That is the next thing to do, and it must be measured against the
+cross-conversation recall check above so a tighter floor cannot silently break it.
+
+### Why Steps 2 and 3 did not proceed (superseded above for Step 2)
 
 Both are specified as *voice-specific* — "fewer retrieved memories for voice",
 "a terser system prompt in voice mode", "lower `maxNewTokens` for voice turns".
