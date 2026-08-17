@@ -52,8 +52,16 @@ class DatabaseConverters {
     @TypeConverter fun toContextVerificationState(value: String): ContextVerificationState =
         ContextVerificationState.valueOf(value)
     @TypeConverter fun fromTurnOrigin(value: TurnOrigin): String = value.name
+    /**
+     * `VOICE` used to be mapped to `TYPED` here, because the constant had been
+     * removed from the enum and rows written by an older build would otherwise
+     * crash `valueOf`. Call mode (plan 036) brings it back, so the mapping now
+     * round-trips — keeping it would have silently recorded every spoken turn as
+     * typed. Unknown values still degrade to TYPED rather than throwing, which is
+     * what made the old guard necessary in the first place.
+     */
     @TypeConverter fun toTurnOrigin(value: String): TurnOrigin =
-        if (value == "VOICE") TurnOrigin.TYPED else TurnOrigin.valueOf(value)
+        runCatching { TurnOrigin.valueOf(value) }.getOrDefault(TurnOrigin.TYPED)
 }
 
 @Database(

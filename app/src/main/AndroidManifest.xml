@@ -2,6 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+      Voice call mode (plan 036). Plan 033 deliberately cut this manifest from 19
+      permissions to 7, so this is the only one added back, it is requested at the
+      point of use rather than at startup, and the audio never leaves the device:
+      VAD, recognition and speech all run locally through sherpa-onnx.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />

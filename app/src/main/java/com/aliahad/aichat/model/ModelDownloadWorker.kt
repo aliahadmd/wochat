@@ -96,8 +96,16 @@ class ModelDownloadWorker(
                 partial.delete()
                 error("Model checksum failed. The corrupt download was discarded.")
             }
-            GgufValidator.validate(partial).getOrThrow()
+            // Only the chat model and the embedder are GGUF. Voice call mode adds ONNX
+            // files, a tokens list and a tarball, none of which carry the GGUF magic —
+            // validating those here would reject every correctly downloaded voice model.
+            if (spec.fileName.endsWith(".gguf")) {
+                GgufValidator.validate(partial).getOrThrow()
+            }
             AtomicFileInstaller.replace(partial, destination)
+            spec.archiveRootDirectory?.let { rootDirectory ->
+                ArchiveInstaller.extract(destination, modelsDirectory, rootDirectory).getOrThrow()
+            }
             val current = requireNotNull(dao.get(record.id))
             dao.upsert(
                 current.copy(

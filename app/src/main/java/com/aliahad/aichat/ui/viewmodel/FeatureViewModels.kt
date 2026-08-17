@@ -89,6 +89,7 @@ class ModelSetupViewModel internal constructor(
     private val chatRunner: ChatTurnRunner,
     private val projectorPrompts: ProjectorPromptCoordinator,
     private val messages: UiMessageManager,
+    private val voiceSpeaker: com.aliahad.aichat.voice.VoiceSpeaker,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(
         ModelSetupUiState(tokenMasked = settings.maskedToken()),
@@ -101,6 +102,9 @@ class ModelSetupViewModel internal constructor(
         collect(modelRepository.projectors) { projectors -> copy(projectors = projectors) }
         collect(modelRepository.embeddingModel) { record ->
             copy(semanticRecall = SemanticRecallUiState(record))
+        }
+        collect(modelRepository.voiceModels) { records ->
+            copy(voiceModels = VoiceModelsUiState(records))
         }
         collect(settings.backendMode) { backendMode -> copy(backendMode = backendMode) }
         collect(settings.generationSettings) { generationSettings ->
@@ -157,6 +161,42 @@ class ModelSetupViewModel internal constructor(
     }
 
     fun pauseDownload(id: String) = launchCatching { modelRepository.pauseOfficialDownload(id) }
+
+    /**
+     * Call mode's six artifacts move together — the UI presents them as one thing,
+     * so start, pause and delete all fan out across the set rather than exposing an
+     * encoder and a joiner as if the user should reason about them separately.
+     */
+    fun downloadVoiceModels() = launchCatching {
+        val allowMetered = _uiState.value.allowMeteredModelDownloads
+        ModelConstants.VOICE_MODELS.forEach { spec ->
+            modelRepository.startOfficialDownload(spec.id, allowMetered)
+        }
+    }
+
+    fun pauseVoiceModels() = launchCatching {
+        ModelConstants.VOICE_MODELS.forEach { spec ->
+            modelRepository.pauseOfficialDownload(spec.id)
+        }
+    }
+
+    fun deleteVoiceModels() = launchCatching {
+        voiceSpeaker.release()
+        ModelConstants.VOICE_MODELS.forEach { spec -> modelRepository.deleteModel(spec.id) }
+    }
+
+    /**
+     * Speaks one sentence so the voice can actually be heard.
+     *
+     * Plan 036 wanted six voices curated by listening; the owner had no preference,
+     * so v1 ships one. This is what makes revisiting that a listening exercise
+     * rather than a guess — and it is also the end-to-end proof that the ONNX
+     * runtime, the extracted model and audio output all work.
+     */
+    fun testVoice() = launchCatching {
+        voiceSpeaker.speak("Hello. This is the voice wochat will use during a call.")
+            .onFailure { messages.report(it) }
+    }
 
     fun selectModel(id: String) {
         if (!allowModelMutation()) return

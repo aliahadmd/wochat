@@ -49,6 +49,15 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -155,6 +164,7 @@ import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.ContextVerificationState
 import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.ui.viewmodel.SemanticRecallUiState
+import com.aliahad.aichat.ui.viewmodel.VoiceModelsUiState
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.MessageRole
@@ -238,6 +248,46 @@ fun AiChatApp(
         ?: launchDestination
     var showSkillSheet by remember { mutableStateOf(false) }
     var settingsSection by remember { mutableStateOf(SettingsSection.MODELS) }
+    var callActive by rememberSaveable { mutableStateOf(false) }
+    val callState by chatActions.voiceCall.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    // RECORD_AUDIO is requested here, at the moment a call is started, rather than at
+    // startup — plan 036's maintenance note, and the reason the manifest gained only
+    // this one permission back.
+    val microphonePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            chatActions.voiceCall.start()
+            callActive = true
+        }
+    }
+    val onStartCall: () -> Unit = {
+        val alreadyGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (alreadyGranted) {
+            chatActions.voiceCall.start()
+            callActive = true
+        } else {
+            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    val endCall: () -> Unit = {
+        chatActions.voiceCall.hangUp()
+        callActive = false
+    }
+    if (callActive) {
+        BackHandler(onBack = endCall)
+        VoiceCallScreen(
+            state = callState,
+            memoryEnabled = chat.memoryEnabled,
+            onInterrupt = chatActions.voiceCall::interrupt,
+            onHangUp = endCall,
+        )
+        return
+    }
     val navigateTo: (AppRoute) -> Unit = { destination ->
         if (navController.currentDestination?.route != destination.route) {
             navController.navigate(destination.route) {
@@ -328,6 +378,17 @@ fun AiChatApp(
                     },
                     actions = {
                         if (currentRoute == AppRoute.CHAT) {
+                            // Call mode gets a first-class button rather than a menu
+                            // entry: it is a mode, not a setting (plan 036 Step 7).
+                            IconButton(
+                                onClick = onStartCall,
+                                enabled = !chat.isSending,
+                            ) {
+                                Icon(
+                                    Icons.Default.Call,
+                                    contentDescription = "Start a voice call",
+                                )
+                            }
                             // Starting a chat is the most frequent action in the app;
                             // routing it through the drawer made it a three-tap trip.
                             IconButton(
@@ -2168,6 +2229,56 @@ private fun MemoryCenter(
  * ETA or retry affordance — which read as a lesser feature even though it runs on
  * exactly the same worker, backoff and retry budget as the chat model.
  */
+/**
+ * Call mode's six artifacts as one card.
+ *
+ * The vendor publishes VAD, encoder, decoder, joiner, tokens and voice separately,
+ * but none of them is individually useful and no user should have to reason about
+ * a "joiner". [VoiceModelsUiState] aggregates them; this renders that aggregate
+ * through the same card as every other artifact.
+ */
+@Composable
+private fun VoiceModelsRow(
+    state: VoiceModelsUiState,
+    allowMeteredDownloads: Boolean,
+    onDownload: () -> Unit,
+    onRetry: () -> Unit,
+    onPause: () -> Unit,
+    onRemove: () -> Unit,
+    onTestVoice: () -> Unit,
+) {
+    if (state.records.isEmpty()) {
+        Text(
+            "Preparing the voice model catalog",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    ArtifactDownloadCard(
+        artifact = DownloadableArtifact(
+            displayName = "English speech pack",
+            expectedBytes = state.expectedBytes,
+            downloadedBytes = state.downloadedBytes,
+            status = state.status,
+            bytesPerSecond = state.bytesPerSecond,
+            etaSeconds = null,
+            retryAttempt = 0,
+            error = state.error,
+            summary = "Listens and speaks entirely on the device",
+            icon = Icons.Default.Info,
+        ),
+        allowMeteredDownloads = allowMeteredDownloads,
+        onDownload = onDownload,
+        onRetry = onRetry,
+        onPause = onPause,
+        onDelete = onRemove,
+        readyActions = {
+            TextButton(onClick = onTestVoice) { Text("Test voice") }
+        },
+    )
+}
+
 @Composable
 private fun SemanticRecallRow(
     state: SemanticRecallUiState,
@@ -2690,6 +2801,24 @@ private fun SettingsScreen(
                     onRetry = actions::downloadEmbeddingModel,
                     onPause = actions::pauseEmbeddingModelDownload,
                     onRemove = actions::deleteEmbeddingModel,
+                )
+            }
+            item {
+                SectionTitle(
+                    "Voice call mode",
+                    "Speech recognition and a voice, so you can talk instead of type",
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+            item {
+                VoiceModelsRow(
+                    state = state.voiceModels,
+                    allowMeteredDownloads = state.allowMeteredModelDownloads,
+                    onDownload = actions::downloadVoiceModels,
+                    onRetry = actions::downloadVoiceModels,
+                    onPause = actions::pauseVoiceModels,
+                    onRemove = actions::deleteVoiceModels,
+                    onTestVoice = actions::testVoice,
                 )
             }
             item {

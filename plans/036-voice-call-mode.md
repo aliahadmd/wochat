@@ -164,13 +164,106 @@ UI, VAD + streaming ASR + Piper TTS, and the two model downloads.
 
 ## Steps
 
-### Step 1: Baseline the latency honestly, before building anything
+### Step 1: Baseline the latency honestly, before building anything — DONE
 
-Measure current warm TTFT on the device and record it. Everything in this plan
-is judged against it, and the owner has already been told the ~6 s figure — if
-it has drifted, say so before building on it.
+Done by plan `037`, 2026-08-17/18, on the device. **The ~6 s figure in the table
+above is wrong, and the table needs rewriting before Step 8 is judged against
+it.** Warm TTFT is not a single number; it is bimodal:
 
-**Verify**: a recorded number in the status row.
+| condition | LLM time to first token |
+|---|---|
+| short prompt, no memory hit, healthy regime | **1.22-1.25 s** |
+| ~50-token memory preamble retrieved | **5.5-6.1 s** |
+| first turn after app start (cold-session replay) | **15-60 s**, grows with conversation length |
+
+The regime split is a **fixed ~4.5 s per `llama_decode` call** that appears
+intermittently; in the healthy regime prefill is a clean ~50-60 ms/token from 7
+tokens to 745 and the first token costs ~107 ms. Details, fault counters and the
+refuted page-warming experiment are in `037`.
+
+**Consequences for this plan:**
+- The STOP condition ("materially worse than ~6 s") is **not** triggered — the
+  common case is better than assumed, sometimes 5x better.
+- The retrieved-memory preamble, not the speech stack, is the second-largest
+  controllable term. A call that pulls memories pays ~4 s more than one that does
+  not, which is what the memory indicator in Step 7 should make legible.
+- The **first turn of a call is the expensive one** (cold-session replay). Step 6
+  should warm the session when the call *opens*, not when the user stops
+  speaking, so the replay overlaps the greeting rather than the first answer.
+- Do not build a "speak the first sentence" design around 6 s of dead air that
+  frequently is not there.
+
+### Step 2: Add sherpa-onnx and prove it loads — DONE (except audible speech)
+
+`sherpa-onnx-1.13.5.aar`, vendored in `app/libs/` beside the SQLCipher AAR and
+referenced with `implementation(files(...))`. k2-fsa publishes **no official
+artifact on Maven Central** — only third-party repackagings, which are not
+acceptable for an offline app — so the unmodified official release asset is kept
+whole, with its URL and sha256 recorded in `app/build.gradle.kts`.
+
+**Measured APK size delta: 23,348,328 -> 35,012,170 bytes (+11.66 MB, +50 %).**
+The AAR ships four ABIs; `abiFilters` keeps only arm64-v8a, which lands four
+libraries totalling ~31 MB uncompressed:
+
+| library | uncompressed |
+|---|---|
+| `libonnxruntime.so` | 21.68 MB |
+| `libsherpa-onnx-jni.so` | 4.76 MB |
+| `libsherpa-onnx-c-api.so` | 4.45 MB |
+| `libsherpa-onnx-cxx-api.so` | 0.44 MB |
+
+`./gradlew :app:assembleRelease` exits 0. The AAR's manifest declares no
+permissions and no components, so it adds nothing to ours.
+
+**Audible speech: DONE.** `VoiceSpeaker` (Piper via `OfflineTts`, played through
+an `AudioTrack` at the model's 22 050 Hz) is wired to a **Test voice** action on
+the ready card, which doubles as the way to audition voices later. Measured on
+device: **60 672 samples = 2.75 s of speech synthesised in 377 ms, RTF 0.14** —
+matching the ~0.15 this plan predicted for Piper, and confirming Kokoro's
+rejection was the right call.
+
+**A release-only crash was found and fixed doing this, and it would have
+shipped.** R8 obfuscated the sherpa classes, and sherpa's JNI resolves its config
+objects *by name*:
+
+    java.lang.NoSuchFieldError: no type "Lcom/k2fsa/sherpa/onnx/OfflineTtsModelConfig;"
+    found and so no field "model" could be found in class "OfflineTtsConfig"
+
+The process died instantly. The AAR ships an **empty** `proguard.txt`, so it
+contributes no rules, and debug builds are not minified — nothing but a release
+build reveals this. Fixed with a `-keep class com.k2fsa.sherpa.onnx.** { *; }` in
+`src/main/keepRules/rules.keep`. **Any future sherpa work must be smoke-tested on
+a release build**, not just debug.
+
+### Step 3 artifacts, pinned and verified by HTTP HEAD
+
+Every one of these was checked with `curl -sIL`, not assumed. LFS files carry
+`x-linked-etag`, which is the sha256 the existing download path already verifies.
+
+**Packaging decision.** ASR is four ordinary files and fits the existing
+single-file machinery exactly. TTS cannot: Piper needs `espeak-ng-data`, which is
+**355 files / 18 MB** — impractical to fetch file-by-file — so the TTS voice
+comes from the vendor tarball and is extracted on device (`commons-compress` is
+already a dependency for backups). Its sha256 must be computed from the
+downloaded bytes and pinned, since GitHub release assets carry no LFS hash.
+
+ASR — HF `csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26`:
+
+| file | bytes | sha256 |
+|---|---|---|
+| `encoder-…-chunk-16-left-128.int8.onnx` | 71,083,163 | `563fde43…3f45ac1` |
+| `decoder-…-chunk-16-left-128.int8.onnx` | 1,307,236 | `98da299f…dd83b02` |
+| `joiner-…-chunk-16-left-128.int8.onnx` | 259,335 | `d944208d…dd6e297` |
+| `tokens.txt` | 5,048 | not LFS — compute and pin |
+
+VAD — HF `csukuangfj/vad/resolve/main/silero_vad.onnx`, 1,807,522 bytes,
+sha256 `a35ebf52…b1f5af28`. (The GitHub copy is a different, older 643 KB build;
+prefer the HF one so it is pinned like everything else.)
+
+TTS — `vits-piper-en_US-libritts_r-medium.tar.bz2`, 82,038,311 bytes, from the
+sherpa-onnx `tts-models` release. The extracted `.onnx` alone is 78,581,047 bytes
+with sha256 `acd94250…4b11ad0e` on HF, which is a useful cross-check that the
+tarball contents match the mirrored files.
 
 ### Step 2: Add sherpa-onnx and prove it loads
 
@@ -184,7 +277,36 @@ later.
 **Verify**: `./gradlew :app:assembleRelease` exits 0; APK size delta recorded;
 audible speech on the device.
 
-### Step 3: Ship the two models through the existing download path
+### Step 3: Ship the models through the existing download path — DONE AND VERIFIED
+
+All six artifacts are `OfficialModelSpec`s in `VOICE_MODELS`, downloaded by the
+existing worker and rendered by `ArtifactDownloadCard` as **one** card ("English
+speech pack, 149.3 MB") — the vendor publishes an encoder, a decoder and a joiner,
+but no user should have to reason about a "joiner", and none of them is useful
+alone. `aggregateDownloadStatus` is worst-news-first (8 unit tests) so five
+successes cannot hide one failure.
+
+Three changes were needed to the shared path, all narrow:
+- `OfficialModelSpec` gained optional `absoluteUrl` and `archiveRootDirectory`.
+  Both default to null, so nothing existing changed.
+- `GgufValidator` now runs **only on `.gguf`**. It previously ran on every
+  download, which would have rejected every ONNX file, the tokens list and the
+  tarball.
+- `ArchiveInstaller` extracts the Piper tarball via `commons-compress`, staging
+  into a `.partial` directory and renaming, with a traversal guard mirroring
+  `BackupPathSafety`.
+
+**Verified on device**: all six downloaded, the tarball extracted (disk grew
+256 MiB — 149 MiB fetched plus ~96 MiB unpacked), the card went to Delete, and
+**everything survived a force-stop and relaunch** — the retire sweep that ate the
+embedder in `034` leaves them alone, because `ALL_DOWNLOADABLE_MODELS` now feeds
+both the record and the sweep.
+
+The tarball is deliberately kept on disk after extraction. `ensureOfficialRecords`
+decides readiness from the downloaded file's size, so deleting it would make the
+app re-download 82 MB on the next start.
+
+### Step 3 (original text): Ship the two models through the existing download path
 
 Both go through `ModelConstants` + `startOfficialDownload`, pinned by revision
 and sha256 exactly like the embedder, and render with `ArtifactDownloadCard`
@@ -199,7 +321,81 @@ deleted on the next app start.
 
 **Verify**: both download, verify and survive an app restart.
 
-### Step 4: Speech in — VAD then streaming ASR
+### Steps 4-7 built; a spoken exchange works end to end — 2026-08-18
+
+`VoiceListener` (mic -> Silero VAD -> streaming Zipformer), `SentenceSegmenter`
+(9 unit tests), `VoiceCallSession` (Idle/Listening/Thinking/Speaking, half-duplex),
+`VoiceCallCoordinator` (a spoken turn goes through the *same* `ChatTurnRunner`,
+tagged `TurnOrigin.VOICE`), and `VoiceCallScreen` behind a call button in the top
+bar. `RECORD_AUDIO` is requested at the point of use, and is the only permission
+added back.
+
+**Verified on device**: the user spoke, the recogniser produced a transcript, the
+endpoint fired, the microphone stopped, a turn ran, and the model answered — a
+full spoken exchange, several turns of it, with the transcript and the memory
+indicator live on screen.
+
+**Four defects were found by running it on the device, none by reading the code.**
+All four presented as "no error, nothing happens", which is why they are recorded:
+
+1. **The VAD gated the recogniser, so the feature failed closed.** Audio was only
+   fed to the recogniser while Silero reported speech; when the VAD said nothing,
+   there was no transcript, no turn and no error. The recogniser is now fed
+   unconditionally and the VAD drives only the animation — a wrong VAD costs a
+   visual, not the call.
+2. **`ENCODING_PCM_FLOAT` capture returns zeros on this device.** `AudioRecord`
+   initialised and read successfully; every window came back at ~1e-4 peak.
+   16-bit PCM works.
+3. **`AudioSource.VOICE_RECOGNITION` delivers a dead line on this HyperOS build.**
+   The "correct" source on paper. Peak went from 1.5e-4 to 0.013-0.42 — about
+   100x — by switching to plain `MIC`. Note the trade this makes: `MIC` gets the
+   platform's ordinary preprocessing rather than the recognition-tuned path.
+4. **`modelType = "zipformer2"` was asserted on a model that is not one.** The
+   recogniser consumed audio and returned empty text, silently. Leaving it unset
+   lets sherpa read the type from the model's own metadata, which cannot disagree
+   with the file. First transcript appeared immediately after.
+
+A silence guard now logs when the microphone delivers nothing above the noise
+floor for 5 s, because three of the four above were invisible without it.
+
+**Accuracy: FIXED by replacing the recogniser.** The streaming Zipformer produced
+"HALLO KA NU YERI" and "GANY HEER MECHILLI" for "Hello, can you hear me?" — and
+audio was ruled out first, properly: level healthy (peak 0.10-0.42, no clipping),
+sample rate confirmed 16 kHz from the recorder itself, and **`dropped=0`** windows
+once capture was instrumented. Phonetically-close-but-word-wrong output with clean
+audio is an acoustic model mismatched to the speaker, not a capture problem.
+
+Swapped to **Whisper base.en, VAD-segmented** (208 MB). Measured on the owner's own
+speech, same sentence:
+
+| | transcript |
+|---|---|
+| streaming Zipformer int8 | `HALLO KA NU YERI` |
+| **Whisper base.en** | **`Hello, can you hear me?`** |
+
+Exact words, capitalisation and punctuation, and the model answered "I can hear
+you. How can I help you?" aloud. **Transcription cost 424 ms for 1.41 s of audio
+(RTF 0.30)** — well inside the budget freed up by the LLM being faster than this
+plan assumed.
+
+What it costs, accepted deliberately: no word-by-word transcript while speaking
+(Whisper is not streaming, so text appears when the user stops), and Silero VAD
+now owns turn-taking, with `minSilenceDuration` raised 0.25 s -> 0.6 s because the
+shorter value cut people off mid-sentence.
+
+A fifth defect was found and fixed on the way: `VoiceCallCoordinator` cached
+`listener.isInstalled()` in a `val` at construction, so a pack that finished
+downloading *after* the ViewModel existed stayed invisible until an app restart —
+and the call screen sat on "Starting" forever with nothing to explain it. It is
+re-checked per call now, and an unavailable pack says so.
+- **Latency is the LLM, exactly as `037` predicted.** The first call turn landed
+  on a conversation with 745+ tokens of history and spent **minutes** in a
+  cold-session replay, in the degraded regime where a *7-token* decode takes
+  6103 ms. Nothing in the voice stack is close to this. Step 6's session warming
+  should happen when the call *opens*, and a call probably wants a fresh
+  conversation rather than inheriting a long one.
+
+### Step 4 (original text): Speech in — VAD then streaming ASR
 
 Silero VAD gates the recogniser so it is not transcribing silence. Streaming
 Zipformer gives partial text as the user speaks; the endpoint decides the turn

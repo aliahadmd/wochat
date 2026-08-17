@@ -430,6 +430,16 @@ class AppContainer(val application: Application) {
         )
     }
 
+    /** Microphone, VAD and streaming recogniser for call mode. */
+    val voiceListener: com.aliahad.aichat.voice.VoiceListener by lazy {
+        com.aliahad.aichat.voice.VoiceListener(modelsDirectory = modelRepository::modelsDirectory)
+    }
+
+    /** Speaks answers in call mode; also backs the voice audition in Settings. */
+    val voiceSpeaker: com.aliahad.aichat.voice.VoiceSpeaker by lazy {
+        com.aliahad.aichat.voice.VoiceSpeaker(modelsDirectory = modelRepository::modelsDirectory)
+    }
+
     val conversationSummarizer: BackgroundConversationSummarizer by lazy {
         BackgroundConversationSummarizer(
             inferenceEngine = inferenceEngine,

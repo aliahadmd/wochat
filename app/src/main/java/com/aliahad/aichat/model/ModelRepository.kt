@@ -32,6 +32,12 @@ interface ModelRepository {
 
     /** The sentence embedder, which is downloadable but never a chat model. */
     val embeddingModel: Flow<ModelRecord?>
+
+    /**
+     * The VAD, ASR and TTS artifacts voice call mode needs, in the order plan 036
+     * lists them. Downloadable, never chat models, and only useful all together.
+     */
+    val voiceModels: Flow<List<ModelRecord>>
     val projectors: Flow<List<ProjectorRecord>>
     fun modelsDirectory(): File
     suspend fun ensureOfficialRecords()
@@ -68,6 +74,12 @@ class DefaultModelRepository(
             rows.firstOrNull { it.id == ModelConstants.EMBEDDING_GEMMA_300M.id }
                 ?.toDomain()
         }
+
+    override val voiceModels: Flow<List<ModelRecord>> =
+        dao.observeAll().map { rows ->
+            val byId = rows.associateBy { it.id }
+            ModelConstants.VOICE_MODELS.mapNotNull { spec -> byId[spec.id]?.toDomain() }
+        }
     override val projectors: Flow<List<ProjectorRecord>> =
         projectorDao.observeAll().map { rows ->
             rows.filter { it.id == ModelConstants.GEMMA_4_E4B_PROJECTOR.id }
@@ -83,7 +95,7 @@ class DefaultModelRepository(
         // Embedding models get the same download/verify/resume machinery as the
         // chat model. They are filtered out of the `models` flow above, so they can
         // never be picked as a chat model.
-        (ModelConstants.OFFICIAL_MODELS + ModelConstants.EMBEDDING_MODELS).forEach { spec ->
+        ModelConstants.ALL_DOWNLOADABLE_MODELS.forEach { spec ->
             val existing = dao.get(spec.id)
             val finalFile = File(modelsDirectory(), spec.fileName)
             val part = File(modelsDirectory(), "${spec.fileName}.part")
@@ -375,7 +387,7 @@ class DefaultModelRepository(
         // live in the same table and directory, so leaving them out of these two sets
         // meant this sweep deleted a freshly downloaded embedder — record and 318 MB
         // file — on the very next app start, silently and after a successful verify.
-        val supportedSpecs = ModelConstants.OFFICIAL_MODELS + ModelConstants.EMBEDDING_MODELS
+        val supportedSpecs = ModelConstants.ALL_DOWNLOADABLE_MODELS
         val supportedModelIds = supportedSpecs.map { it.id }.toSet()
         val supportedProjector = ModelConstants.GEMMA_4_E4B_PROJECTOR
         dao.getAll().filter { it.id !in supportedModelIds }.forEach { record ->

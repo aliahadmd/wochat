@@ -9,6 +9,7 @@ import com.aliahad.aichat.core.ThemeMode
 import com.aliahad.aichat.core.BackupPreview
 import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.Conversation
+import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.InferenceMetrics
 import com.aliahad.aichat.core.InferenceState
@@ -73,6 +74,7 @@ data class ModelSetupUiState(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = false,
     val semanticRecall: SemanticRecallUiState = SemanticRecallUiState(),
+    val voiceModels: VoiceModelsUiState = VoiceModelsUiState(),
 )
 
 data class MemoryUiState(
@@ -102,3 +104,35 @@ data class AppShellUiState(
 data class SemanticRecallUiState(
     val record: com.aliahad.aichat.core.ModelRecord? = null,
 )
+
+/**
+ * The VAD, recogniser and voice artifacts behind call mode, presented as one thing.
+ *
+ * They are six separate downloads because that is how the vendor publishes them,
+ * but they are useless individually — call mode needs all six or none — so the UI
+ * shows a single card and the aggregate below drives it.
+ */
+data class VoiceModelsUiState(
+    val records: List<com.aliahad.aichat.core.ModelRecord> = emptyList(),
+) {
+    val expectedBytes: Long get() = records.sumOf { it.expectedBytes ?: 0L }
+    val downloadedBytes: Long get() = records.sumOf { it.downloadedBytes }
+    val bytesPerSecond: Long get() = records.sumOf { it.bytesPerSecond }
+    val error: String? get() = records.firstNotNullOfOrNull { it.error }
+    val status: DownloadStatus get() = aggregateDownloadStatus(records.map { it.status })
+}
+
+/**
+ * Worst-news-first: a set of downloads is only READY when every part is, and a
+ * single failure has to surface rather than being averaged away by five successes.
+ */
+internal fun aggregateDownloadStatus(statuses: List<DownloadStatus>): DownloadStatus = when {
+    statuses.isEmpty() -> DownloadStatus.NOT_DOWNLOADED
+    statuses.all { it == DownloadStatus.READY } -> DownloadStatus.READY
+    statuses.any { it == DownloadStatus.FAILED } -> DownloadStatus.FAILED
+    statuses.any {
+        it == DownloadStatus.DOWNLOADING || it == DownloadStatus.QUEUED || it == DownloadStatus.VERIFYING
+    } -> DownloadStatus.DOWNLOADING
+    statuses.any { it == DownloadStatus.PAUSED } -> DownloadStatus.PAUSED
+    else -> DownloadStatus.NOT_DOWNLOADED
+}

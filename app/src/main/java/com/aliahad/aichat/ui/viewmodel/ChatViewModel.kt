@@ -88,7 +88,25 @@ class ChatViewModel internal constructor(
     private val runner: ChatTurnRunner,
     private val projectorPrompts: ProjectorPromptCoordinator,
     private val uiMessages: UiMessageManager,
+    private val voiceListener: com.aliahad.aichat.voice.VoiceListener,
+    private val voiceSpeaker: com.aliahad.aichat.voice.VoiceSpeaker,
 ) : ViewModel() {
+    /**
+     * Call mode. Held here because a call *is* a conversation — it sends through the
+     * same runner into the same thread — but the orchestration lives in its own
+     * class rather than swelling this one.
+     */
+    val voiceCall: VoiceCallCoordinator by lazy {
+        VoiceCallCoordinator(
+            chatRepository = chatRepository,
+            runner = runner,
+            listener = voiceListener,
+            speaker = voiceSpeaker,
+            scope = viewModelScope,
+            conversationId = { _uiState.value.selectedConversationId },
+            memoryEnabled = { memoryEnabled },
+        )
+    }
     private val initialDraftKey = savedStateHandle.get<String>(KEY_DRAFT_KEY)
         ?: UUID.randomUUID().toString().also { savedStateHandle[KEY_DRAFT_KEY] = it }
     private val initialModels = ModelConstants.OFFICIAL_MODELS.map { spec ->

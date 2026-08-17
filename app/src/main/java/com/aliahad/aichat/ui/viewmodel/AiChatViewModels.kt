@@ -37,6 +37,8 @@ class AiChatViewModelFactory(
                 runner = chatTurnRunner,
                 projectorPrompts = projectorPrompts,
                 uiMessages = messages,
+                voiceListener = container.voiceListener,
+                voiceSpeaker = container.voiceSpeaker,
             )
             ModelSetupViewModel::class.java -> ModelSetupViewModel(
                 application = container.application,
@@ -50,6 +52,7 @@ class AiChatViewModelFactory(
                 chatRunner = chatTurnRunner,
                 projectorPrompts = projectorPrompts,
                 messages = messages,
+                voiceSpeaker = container.voiceSpeaker,
             )
             MemoryViewModel::class.java -> MemoryViewModel(
                 memoryRepository = container.memoryRepository,

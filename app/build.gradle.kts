@@ -190,6 +190,17 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.markdown.renderer.m3)
     implementation(files("libs/sqlcipher-android-4.16.0.aar"))
+    // sherpa-onnx: VAD + streaming ASR + Piper TTS for offline voice call mode (plan 036).
+    // One runtime for all three, so this adds ONNX Runtime once rather than three engines.
+    //
+    // Vendored rather than resolved: k2-fsa publishes no official artifact on Maven
+    // Central (only third-party repackagings, which are not trustworthy for an
+    // offline app). This is the unmodified official release asset, kept whole so its
+    // provenance stays checkable:
+    //   https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.5/sherpa-onnx-1.13.5.aar
+    //   sha256 6419cd8bc983e0c4fab06067f0fe0313fdc0f7103818ac1e7a08d50787b7a82b
+    //   Apache-2.0. Ships four ABIs; `abiFilters` keeps only arm64-v8a in the APK.
+    implementation(files("libs/sherpa-onnx-1.13.5.aar"))
     ksp(libs.androidx.room.compiler)
 
     testImplementation(libs.junit)

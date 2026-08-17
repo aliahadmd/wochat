@@ -27,6 +27,13 @@ enum class GenerationStopReason {
 
 enum class TurnOrigin {
     TYPED,
+
+    /**
+     * Spoken in call mode. Persisted by name, so adding this leaves existing rows
+     * reading TYPED. Plan 037 needs this distinction to exist before it can make a
+     * voice turn cheaper than a typed one.
+     */
+    VOICE,
 }
 
 enum class InferenceExecutionProfile {

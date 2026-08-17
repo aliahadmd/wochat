@@ -11,3 +11,18 @@
 #   public *;
 #}
 -keep class com.aliahad.aichat.inference.NativeInferenceEngine { *; }
+
+# sherpa-onnx reads its config objects from JNI *by name* — `newFromFile` looks up
+# the class `OfflineTtsModelConfig` and the field `model` as strings — so R8 renaming
+# them is fatal. Without this the release build dies the first time call mode speaks:
+#
+#   java.lang.NoSuchFieldError: no type "Lcom/k2fsa/sherpa/onnx/OfflineTtsModelConfig;"
+#   found and so no field "model" could be found in class "OfflineTtsConfig"
+#
+# The AAR ships an empty proguard.txt, so it contributes no rules of its own, and
+# debug builds are not minified — this only ever appears in release.
+#
+# Deliberately the whole package rather than a curated list of config classes: the
+# JNI touches most of them by name, they change between vendor releases, and a
+# missed one is a crash rather than a compile error.
+-keep class com.k2fsa.sherpa.onnx.** { *; }
