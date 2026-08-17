@@ -308,6 +308,73 @@ That is the next thing worth attacking, and `use_mlock` is the obvious candidate
 measure — with the caveat that locking ~5 GB on a phone may simply fail or provoke
 the low-memory killer, which is exactly why it needs measuring rather than assuming.
 
+### mlock is impossible on this device, and faults were the wrong suspect — 2026-08-18
+
+Two null results in one sitting, both worth writing down so nobody re-derives them.
+
+**`use_mlock` cannot work here.** `/proc/<pid>/limits` on the Redmi K80 Pro:
+
+    Max locked memory   65536   65536   bytes
+
+64 KB, and the *hard* limit is 64 KB too. An unprivileged process may only lower
+its hard limit; raising it needs `CAP_SYS_RESOURCE`, which an Android app never
+has. Setting `use_mlock = true` would ask llama.cpp to lock 4.8 GB against a 64 KB
+ceiling, take `ENOMEM`, log a warning and behave exactly as before. No code was
+written. Do not try this again.
+
+**Page faults do not explain the slow tokens.** Four consecutive samples from one
+generation:
+
+    token 800  236 ms   major=49
+    token 832  247 ms   major=35
+    token 864  205 ms   major=3
+    token 896  217 ms   major=6
+
+The fault count moves 16x while the time barely moves. Token 864 took 205 ms with
+**three** major faults — well under a millisecond of I/O. Across a full 832-token
+generation, decode held ~210-280 ms/token from position 1017 to position 1817 with
+major faults flat at ~29 per sample. Generation is simply ~4.3 tok/s on this device.
+It is not fault-bound and it is not meaningfully context-depth-bound.
+
+### The real variable is whether the KV cache survived — 2026-08-18
+
+Same app, same conversation, two consecutive turns:
+
+| | cache lost | cache warm |
+|---|---|---|
+| `restore` | **72,624 ms** | **5 ms** |
+| `prefill` | 6,144 ms | 15,857 ms |
+| `first-token` | 7,682 ms | 232 ms |
+| total | 86.9 s | 16.3 s |
+
+`restore` is 72.6 s or 5 ms with nothing in between. That is not a paging gradient,
+it is a binary: either the in-RAM KV cache survived, or the entire conversation is
+re-decoded from scratch. The cold turn re-decoded 929 history tokens in 68.6 s
+(13.5 tok/s).
+
+`restoreSession()` already reuses a valid prefix in RAM and skips on an unchanged
+fingerprint — that is why the warm number is 5 ms. What it cannot survive is a
+**model reload**, and the model reloads whenever HyperOS trims the app while it is
+backgrounded. Confirmed: sitting behind another app cost 700 MB of mapped model
+pages (4.19 GB -> 3.50 GB) and pushed swap 667 MB -> 772 MB, and a reload
+("Model weights loaded ... in 3784 ms") landed immediately on return.
+
+This is exactly the owner's report — "if I close this app and then open it, it's
+fast, but when you close this app suddenly and open it, it's not fast." It was never
+about the audio and never about the prompt.
+
+**The fix that follows:** `llama_state_seq_save_file` / `llama_state_seq_load_file`
+are vendored in `llama.cpp/include/llama.h` and the app never calls them. Persisting
+the sequence state and reloading it turns a 72.6 s re-decode into a file read.
+Not yet built, and the state file must be sized by measurement
+(`llama_state_seq_get_size`) rather than estimated — context is 4096, and Gemma's
+interleaved sliding-window attention makes any hand estimate unreliable.
+
+Note the coupling: the state is only valid for the exact token prefix it was saved
+against, so this raises the stakes on [[wochat-prompt-prefix-must-stay-stable]] —
+any drift in the system prompt or memory block invalidates the file as surely as it
+invalidates the live cache.
+
 ### Step 2 DONE, with a partly negative result — 2026-08-18
 
 Unblocked once `036` introduced `TurnOrigin.VOICE`. A spoken turn now plans with
