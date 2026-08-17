@@ -50,21 +50,77 @@ One library covers VAD, streaming ASR and TTS, so this adds **one** runtime
 including arm64-v8a. Kotlin API is small: `OfflineTts`, `OfflineTtsConfig`,
 `GeneratedAudio`, plus the online recognizer types.
 
-| role | model | size | measured speed |
+| role | model | size | speed |
 |---|---|---|---|
 | VAD | Silero VAD | ~2 MB | negligible |
-| STT | `sherpa-onnx-streaming-zipformer-en-2023-06-26` (int8) | ~68 MB encoder | RTF 0.077, ~160 ms |
-| TTS | Piper VITS medium EN (`en_US-lessac-medium` or `libritts_r`) | 61–75 MB | RTF 0.35 |
+| STT | `sherpa-onnx-streaming-zipformer-en-2023-06-26` (int8) | ~68 MB encoder | RTF 0.077, ~160 ms (vendor, Pi 4) |
+| TTS | Piper VITS `en_US-libritts_r-medium` | ~75 MB, **904 speakers** | **RTF ~0.15 measured on this phone** |
 
-**Kokoro-82M was considered and rejected for v1**: ~310 MB and RTF 2.8–3.2 on a
-Raspberry Pi 4 — slower than real time there. It would land near real time on
-this phone, but it would be competing for cores with a 4.8 GB LLM already doing
-CPU inference. Piper leaves headroom. Kokoro is a reasonable *optional upgrade*
-later, exactly like semantic recall.
+### Benchmarked on the owner's device, 2026-08-17
+
+Not vendor numbers. Both models were installed as sherpa-onnx prebuilt TTS APKs
+(`com.k2fsa.sherpa.onnx`) and given the identical 18-word sentence; generation
+time was measured by polling `/proc/<pid>/stat` utime+stime until the busy
+window closed.
+
+| model | CPU for ~7 s of speech | RTF |
+|---|---|---|
+| Kokoro-82M (`kokoro-en-v0_19`) | **5.97 s** | **~0.85** |
+| Piper (`en_US-lessac-medium`) | **1.04 s** | **~0.15** |
+
+**Piper is ~5.7x faster on this hardware.** The Raspberry Pi 4 figures predicted
+~8x, so the ordering held and the newer silicon did not rescue Kokoro.
+
+**Kokoro is rejected for v1 on measured evidence, not size.** The owner
+explicitly does not care about storage, so size is not the argument. RTF 0.85 is
+measured *idle*; during a chat turn the 4.8 GB Gemma is already saturating the
+same cores, so Kokoro would very likely cross 1.0 and stutter mid-sentence.
+Piper's ~6x headroom survives that contention. Kokoro remains viable later for
+*tap-to-speak on a finished message*, where nothing else is running and a
+6-second wait is acceptable — a split worth revisiting once call mode works.
+
+**Two caveats on the above, so nobody over-trusts it**: the ~7 s speech duration
+is estimated from word count rather than measured from the WAV, and both runs
+had the LLM idle. Re-measure under contention before committing.
+
+**Use `libritts_r-medium`, not the `lessac` that was benchmarked.** Same
+architecture and speed class, but 904 selectable speakers in one file versus
+one, and voice choice is exactly what the owner will want to tune. Vendor Pi 4
+numbers put the two within 0.001 RTF of each other, but that is an inference —
+re-run the benchmark on `libritts_r` before shipping it.
+
+### Second language: Bangla
+
+Requested as a secondary language, English primary. Verified to exist by HTTP
+HEAD, not assumed:
+
+    bn/bn_BD/google/medium/bn_BD-google-medium.onnx
+    HTTP 200, x-linked-size: 76,782,515  (~73 MB), 16 speakers
+
+Same VITS architecture, so the same speed class is expected — unmeasured.
+
+Piper covers 30–40+ languages, so adding more later is a download, not a
+re-architecture.
+
+**Language selection should be manual in v1.** Script detection is trivial
+(Bengali has its own Unicode block), but mixed English–Bangla sentences would
+flip voice mid-utterance, which sounds worse than consistently picking one.
+Auto-detection is ~90% right and the remaining 10% is jarring.
+
+**Bangla quality is unverified.** `en_US-libritts_r` comes from a large curated
+corpus; `bn_BD-google-medium` comes from a smaller Google dataset, and open
+Bangla TTS is generally less polished than English. Have the owner listen before
+treating it as shippable.
 
 **audio.cpp was considered and rejected**: ggml-based and architecturally
 aligned with the vendored llama.cpp, but it supports Windows/Linux/macOS only —
 no Android or ARM64. Worth re-checking if it ever ships mobile.
+
+**Installing third-party APKs over adb on this device**: HyperOS returns
+`INSTALL_FAILED_USER_RESTRICTED` when the screen is off, because it cannot show
+its install-confirmation dialog. Send `KEYCODE_WAKEUP` first. This is not a
+developer-options problem and it is not specific to any package — it cost an
+uninstall of the whole app to rule out during benchmarking.
 
 ## Scope
 
@@ -72,7 +128,9 @@ no Android or ARM64. Worth re-checking if it ever ships mobile.
 UI, VAD + streaming ASR + Piper TTS, and the two model downloads.
 
 **Out of scope**:
-- Kokoro, and any non-English voice or language.
+- Kokoro (see the benchmark above).
+- Bangla in v1. English ships first; Bangla is a second model behind the same
+  download card once English works end to end.
 - Full-duplex barge-in. See Step 6 — v1 is half-duplex on purpose.
 - Wake words, phone-call integration, ConnectionService.
 
