@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -121,6 +122,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.onSizeChanged
@@ -2160,68 +2162,41 @@ private fun MemoryCenter(
 
 
 /**
- * Opt-in control for the sentence embedder behind semantic recall.
+ * Semantic recall uses the same card as every other artifact.
  *
- * Deliberately a manual download rather than something the app fetches on its own:
- * it is 318 MB, and without it memory retrieval still works on exact words.
+ * It previously had a bespoke row with an unlabelled bar and no byte counts, rate,
+ * ETA or retry affordance — which read as a lesser feature even though it runs on
+ * exactly the same worker, backoff and retry budget as the chat model.
  */
 @Composable
 private fun SemanticRecallRow(
     state: SemanticRecallUiState,
+    allowMeteredDownloads: Boolean,
     onDownload: () -> Unit,
-    onCancel: () -> Unit,
+    onRetry: () -> Unit,
+    onPause: () -> Unit,
     onRemove: () -> Unit,
 ) {
-    Column {
-        // No title here: the section header above already names this.
+    val record = state.record
+    if (record == null) {
         Text(
-            when (state.status) {
-                DownloadStatus.READY ->
-                    "On. Memories are matched by meaning, not only by shared words."
-                DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED ->
-                    "Downloading the embedding model"
-                else ->
-                    "Off. Add a 318 MB embedding model to match memories by meaning, " +
-                        "so \"what do I drink in the mornings\" finds a note about coffee."
-            },
+            "Preparing the embedding model catalog",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        state.error?.takeIf(String::isNotBlank)?.let { error ->
-            Text(
-                error,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        when (state.status) {
-            DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED -> {
-                if (state.totalBytes > 0) {
-                    LinearProgressIndicator(
-                        progress = {
-                            (state.downloadedBytes.toFloat() / state.totalBytes).coerceIn(0f, 1f)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                }
-                OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
-                    Text("Pause download")
-                }
-            }
-            DownloadStatus.READY -> {
-                OutlinedButton(onClick = onRemove, modifier = Modifier.fillMaxWidth()) {
-                    Text("Remove embedding model")
-                }
-            }
-            else -> {
-                Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
-                    Text("Download embedding model")
-                }
-            }
-        }
+        return
     }
+    ArtifactDownloadCard(
+        artifact = record.asArtifact().copy(
+            summary = "Matches memories by meaning, not only shared words",
+            icon = Icons.Default.Info,
+        ),
+        allowMeteredDownloads = allowMeteredDownloads,
+        onDownload = onDownload,
+        onRetry = onRetry,
+        onPause = onPause,
+        onDelete = onRemove,
+    )
 }
 
 @Composable
@@ -2703,16 +2678,19 @@ private fun SettingsScreen(
                     "Optional embedding model so memories match by meaning",
                 )
                 Spacer(Modifier.height(10.dp))
-                Card {
-                    Column(Modifier.padding(16.dp)) {
-                        SemanticRecallRow(
-                            state = state.semanticRecall,
-                            onDownload = actions::downloadEmbeddingModel,
-                            onCancel = actions::pauseEmbeddingModelDownload,
-                            onRemove = actions::deleteEmbeddingModel,
-                        )
-                    }
-                }
+            }
+            item {
+                // Its own item, matching how the model and projector cards sit under
+                // their section titles. The card supplies its own surface, so the
+                // wrapper Card that used to be here nested one card inside another.
+                SemanticRecallRow(
+                    state = state.semanticRecall,
+                    allowMeteredDownloads = state.allowMeteredModelDownloads,
+                    onDownload = actions::downloadEmbeddingModel,
+                    onRetry = actions::downloadEmbeddingModel,
+                    onPause = actions::pauseEmbeddingModelDownload,
+                    onRemove = actions::deleteEmbeddingModel,
+                )
             }
             item {
                 SectionTitle("Hugging Face", "Optional token for gated downloads")
@@ -3063,6 +3041,196 @@ private fun formatContextTokens(tokens: Int): String = when {
 private fun formatVerificationDate(timestamp: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(timestamp))
 
+
+/**
+ * One downloadable artifact, independent of whether it is the chat model, the
+ * vision projector or the embedder.
+ *
+ * All three already share the same download machinery — the same worker, the same
+ * exponential backoff, twelve retries, the same pause/resume and unmetered
+ * constraint — and both records carry rate, ETA and retry-attempt. Only the chat
+ * model ever rendered any of it, so the other two looked like a lesser feature
+ * while behaving identically.
+ */
+@Immutable
+private data class DownloadableArtifact(
+    val displayName: String,
+    val expectedBytes: Long?,
+    val downloadedBytes: Long,
+    val status: DownloadStatus,
+    val bytesPerSecond: Long,
+    val etaSeconds: Long?,
+    val retryAttempt: Int,
+    val error: String?,
+    val summary: String?,
+    val icon: ImageVector,
+)
+
+private fun ModelRecord.asArtifact() = DownloadableArtifact(
+    displayName = displayName,
+    expectedBytes = expectedBytes,
+    downloadedBytes = downloadedBytes,
+    status = status,
+    bytesPerSecond = bytesPerSecond,
+    etaSeconds = etaSeconds,
+    retryAttempt = retryAttempt,
+    error = error,
+    summary = officialModelSummary(id),
+    icon = Icons.Default.Storage,
+)
+
+private fun ProjectorRecord.asArtifact() = DownloadableArtifact(
+    displayName = displayName,
+    expectedBytes = expectedBytes,
+    downloadedBytes = downloadedBytes,
+    status = status,
+    bytesPerSecond = bytesPerSecond,
+    etaSeconds = etaSeconds,
+    retryAttempt = retryAttempt,
+    error = error,
+    summary = "Adds image input to the selected model",
+    icon = Icons.Default.Image,
+)
+
+/**
+ * The progress block every artifact shares: bar, transferred bytes, live rate and
+ * ETA, and an explanation while queued so a stalled download never looks stuck for
+ * no reason.
+ */
+@Composable
+private fun ArtifactProgress(artifact: DownloadableArtifact, allowMeteredDownloads: Boolean) {
+    val total = artifact.expectedBytes ?: 0L
+    LinearProgressIndicator(
+        progress = {
+            if (total > 0) {
+                (artifact.downloadedBytes.toFloat() / total).coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "${artifact.status.name.lowercase().replaceFirstChar(Char::uppercase)} · " +
+            "${formatBytes(artifact.downloadedBytes)} of ${formatBytes(total)}",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    when {
+        artifact.bytesPerSecond > 0 -> Text(
+            formatTransferRate(artifact.bytesPerSecond) +
+                (artifact.etaSeconds?.let { " · ${formatEta(it)} remaining" } ?: ""),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        artifact.status == DownloadStatus.QUEUED && artifact.retryAttempt > 0 -> Text(
+            "Retry ${artifact.retryAttempt} scheduled · tap Retry now to skip the delay",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        artifact.status == DownloadStatus.QUEUED -> Text(
+            if (allowMeteredDownloads) {
+                "Waiting for a network connection and Android's download scheduler"
+            } else {
+                "Waiting for an unmetered network and Android's download scheduler"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * The shared card. [badge] and [readyActions] are the only points of variation:
+ * the chat model is selectable, the other two are not.
+ */
+@Composable
+private fun ArtifactDownloadCard(
+    artifact: DownloadableArtifact,
+    allowMeteredDownloads: Boolean,
+    onDownload: () -> Unit,
+    onRetry: () -> Unit,
+    onPause: () -> Unit,
+    onDelete: () -> Unit,
+    containerColor: Color = MaterialTheme.colorScheme.surfaceContainer,
+    badge: @Composable () -> Unit = {},
+    readyActions: @Composable RowScope.() -> Unit = {},
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = containerColor)) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(artifact.icon, contentDescription = null)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(artifact.displayName, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        artifact.expectedBytes?.let(::formatBytes) ?: "Local GGUF",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    artifact.summary?.let { summary ->
+                        Text(
+                            summary,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                badge()
+            }
+            if (artifact.status in ACTIVE_TRANSFER_STATUSES) {
+                Spacer(Modifier.height(12.dp))
+                ArtifactProgress(artifact, allowMeteredDownloads)
+            }
+            artifact.error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                when (artifact.status) {
+                    DownloadStatus.NOT_DOWNLOADED,
+                    DownloadStatus.FAILED,
+                    DownloadStatus.PAUSED -> Button(onClick = onDownload) {
+                        Icon(Icons.Default.Download, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (artifact.downloadedBytes > 0) "Resume" else "Download")
+                    }
+                    DownloadStatus.DOWNLOADING,
+                    DownloadStatus.QUEUED -> OutlinedButton(onClick = onPause) {
+                        Icon(Icons.Default.Pause, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Pause")
+                    }
+                    DownloadStatus.READY -> {
+                        readyActions()
+                        OutlinedButton(onClick = onDelete) {
+                            Icon(Icons.Default.Delete, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Delete")
+                        }
+                    }
+                    DownloadStatus.VERIFYING -> Unit
+                }
+                if (artifact.status == DownloadStatus.QUEUED) {
+                    TextButton(onClick = onRetry) { Text("Retry now") }
+                }
+            }
+        }
+    }
+}
+
+private val ACTIVE_TRANSFER_STATUSES = setOf(
+    DownloadStatus.QUEUED,
+    DownloadStatus.DOWNLOADING,
+    DownloadStatus.VERIFYING,
+    DownloadStatus.PAUSED,
+)
+
 @Composable
 private fun ModelCard(
     model: ModelRecord,
@@ -3074,122 +3242,30 @@ private fun ModelCard(
     onSelect: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = if (model.selected) MaterialTheme.colorScheme.secondaryContainer
-            else MaterialTheme.colorScheme.surfaceContainer,
-        ),
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Storage, contentDescription = null)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(model.displayName, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        model.expectedBytes?.let(::formatBytes) ?: "Local GGUF",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    officialModelSummary(model.id)?.let { summary ->
-                        Text(
-                            summary,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                    contextProfile?.let {
-                        Text(
-                            modelContextSummary(it),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                if (model.selected) AssistChip(onClick = {}, label = { Text("Active") })
-            }
-            if (model.status in setOf(
-                    DownloadStatus.QUEUED,
-                    DownloadStatus.DOWNLOADING,
-                    DownloadStatus.VERIFYING,
-                    DownloadStatus.PAUSED,
+    ArtifactDownloadCard(
+        artifact = model.asArtifact().let { artifact ->
+            // Verified context is model-only, so it is appended to the shared summary
+            // rather than widening the artifact type for one case.
+            contextProfile?.let {
+                artifact.copy(
+                    summary = listOfNotNull(artifact.summary, modelContextSummary(it))
+                        .joinToString(" · "),
                 )
-            ) {
-                Spacer(Modifier.height(12.dp))
-                val total = model.expectedBytes ?: 0L
-                LinearProgressIndicator(
-                    progress = {
-                        if (total > 0) (model.downloadedBytes.toFloat() / total).coerceIn(0f, 1f) else 0f
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "${model.status.name.lowercase().replaceFirstChar(Char::uppercase)} · " +
-                        "${formatBytes(model.downloadedBytes)} of ${formatBytes(total)}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (model.bytesPerSecond > 0) {
-                    Text(
-                        "${formatTransferRate(model.bytesPerSecond)}" +
-                            (model.etaSeconds?.let { " · ${formatEta(it)} remaining" } ?: ""),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else if (model.status == DownloadStatus.QUEUED && model.retryAttempt > 0) {
-                    Text(
-                        "Retry ${model.retryAttempt} scheduled · tap Retry now to skip the delay",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else if (model.status == DownloadStatus.QUEUED) {
-                    Text(
-                        if (allowMeteredDownloads) {
-                            "Waiting for a network connection and Android's download scheduler"
-                        } else {
-                            "Waiting for an unmetered network and Android's download scheduler"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            model.error?.let {
-                Spacer(Modifier.height(8.dp))
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                when (model.status) {
-                    DownloadStatus.NOT_DOWNLOADED,
-                    DownloadStatus.FAILED,
-                    DownloadStatus.PAUSED -> Button(onClick = onDownload) {
-                        Icon(Icons.Default.Download, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (model.downloadedBytes > 0) "Resume" else "Download")
-                    }
-                    DownloadStatus.DOWNLOADING,
-                    DownloadStatus.QUEUED -> OutlinedButton(onClick = onPause) {
-                        Icon(Icons.Default.Pause, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Pause")
-                    }
-                    DownloadStatus.READY -> {
-                        if (!model.selected) Button(onClick = onSelect) { Text("Use model") }
-                        OutlinedButton(onClick = onDelete) {
-                            Icon(Icons.Default.Delete, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Delete")
-                        }
-                    }
-                    DownloadStatus.VERIFYING -> Unit
-                }
-                if (model.status == DownloadStatus.QUEUED) {
-                    TextButton(onClick = onRetry) { Text("Retry now") }
-                }
-            }
-        }
-    }
+            } ?: artifact
+        },
+        allowMeteredDownloads = allowMeteredDownloads,
+        onDownload = onDownload,
+        onRetry = onRetry,
+        onPause = onPause,
+        onDelete = onDelete,
+        containerColor = if (model.selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainer
+        },
+        badge = { if (model.selected) AssistChip(onClick = {}, label = { Text("Active") }) },
+        readyActions = { if (!model.selected) Button(onClick = onSelect) { Text("Use model") } },
+    )
 }
 
 private fun officialModelSummary(modelId: String): String? = when (modelId) {
@@ -3215,95 +3291,14 @@ private fun ProjectorCard(
     onPause: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Card {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Image, contentDescription = null)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(projector.displayName, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        formatBytes(projector.expectedBytes),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (projector.status == DownloadStatus.READY) {
-                    AssistChip(onClick = {}, label = { Text("Ready") })
-                }
-            }
-            if (projector.status in setOf(
-                    DownloadStatus.QUEUED,
-                    DownloadStatus.DOWNLOADING,
-                    DownloadStatus.VERIFYING,
-                    DownloadStatus.PAUSED,
-                )
-            ) {
-                Spacer(Modifier.height(10.dp))
-                LinearProgressIndicator(
-                    progress = {
-                        (projector.downloadedBytes.toFloat() / projector.expectedBytes)
-                            .coerceIn(0f, 1f)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    "${projector.status.name.lowercase().replaceFirstChar(Char::uppercase)} · " +
-                        "${formatBytes(projector.downloadedBytes)} of ${formatBytes(projector.expectedBytes)}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (projector.bytesPerSecond > 0) {
-                    Text(
-                        "${formatTransferRate(projector.bytesPerSecond)}" +
-                            (projector.etaSeconds?.let { " · ${formatEta(it)} remaining" } ?: ""),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else if (projector.status == DownloadStatus.QUEUED) {
-                    Text(
-                        when {
-                            projector.retryAttempt > 0 ->
-                                "Retry ${projector.retryAttempt} scheduled · tap Retry now to skip the delay"
-                            allowMeteredDownloads ->
-                                "Waiting for a network connection and Android's download scheduler"
-                            else ->
-                                "Waiting for an unmetered network and Android's download scheduler"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            projector.error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(10.dp))
-            when (projector.status) {
-                DownloadStatus.NOT_DOWNLOADED,
-                DownloadStatus.FAILED,
-                DownloadStatus.PAUSED -> Button(onClick = onDownload) {
-                    Icon(Icons.Default.Download, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (projector.downloadedBytes > 0) "Resume" else "Download")
-                }
-                DownloadStatus.QUEUED,
-                DownloadStatus.DOWNLOADING -> OutlinedButton(onClick = onPause) {
-                    Icon(Icons.Default.Pause, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Pause")
-                }
-                DownloadStatus.READY -> OutlinedButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Delete")
-                }
-                DownloadStatus.VERIFYING -> Unit
-            }
-            if (projector.status == DownloadStatus.QUEUED) {
-                TextButton(onClick = onRetry) { Text("Retry now") }
-            }
-        }
-    }
+    ArtifactDownloadCard(
+        artifact = projector.asArtifact(),
+        allowMeteredDownloads = allowMeteredDownloads,
+        onDownload = onDownload,
+        onRetry = onRetry,
+        onPause = onPause,
+        onDelete = onDelete,
+    )
 }
 
 @Composable

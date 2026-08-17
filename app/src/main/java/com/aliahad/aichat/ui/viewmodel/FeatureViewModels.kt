@@ -100,14 +100,7 @@ class ModelSetupViewModel internal constructor(
         collect(modelRepository.models) { models -> copy(models = models) }
         collect(modelRepository.projectors) { projectors -> copy(projectors = projectors) }
         collect(modelRepository.embeddingModel) { record ->
-            copy(
-                semanticRecall = SemanticRecallUiState(
-                    status = record?.status ?: DownloadStatus.NOT_DOWNLOADED,
-                    downloadedBytes = record?.downloadedBytes ?: 0,
-                    totalBytes = record?.expectedBytes ?: 0,
-                    error = record?.error,
-                ),
-            )
+            copy(semanticRecall = SemanticRecallUiState(record))
         }
         collect(settings.backendMode) { backendMode -> copy(backendMode = backendMode) }
         collect(settings.generationSettings) { generationSettings ->

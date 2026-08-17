@@ -92,11 +92,13 @@ data class AppShellUiState(
     val pendingNavigation: AppRoute? = null,
 )
 
-/** Download/readiness of the optional sentence embedder behind semantic recall. */
+/**
+ * The optional sentence embedder behind semantic recall.
+ *
+ * Carries the whole record rather than a flattened status/bytes pair, so it can be
+ * rendered by the same card as the chat model and the projector — the progress
+ * rate, ETA and retry-attempt were always present, they just had nowhere to go.
+ */
 data class SemanticRecallUiState(
-    val status: com.aliahad.aichat.core.DownloadStatus =
-        com.aliahad.aichat.core.DownloadStatus.NOT_DOWNLOADED,
-    val downloadedBytes: Long = 0,
-    val totalBytes: Long = 0,
-    val error: String? = null,
+    val record: com.aliahad.aichat.core.ModelRecord? = null,
 )
