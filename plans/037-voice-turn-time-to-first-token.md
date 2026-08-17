@@ -181,6 +181,47 @@ token from 7 tokens up to 745, and the first token costs 107 ms.
 Finding the trigger needs a scheduler-level tool (Perfetto, and a look at whether
 HyperOS is parking the inference threads between decodes), not more logging.
 
+### The regime is page-table warm-up, not throttling — 2026-08-18
+
+The owner supplied the reproduction condition this needed: *"if I close the app and
+open it, it's fast... sometimes it generates fast and sometimes it takes too long"*.
+Measured on a fresh process, with CPU sampled from `/proc/<pid>/stat` throughout:
+
+| decode | time | minor faults |
+|--------|------|--------------|
+| 22 prompt tokens | **7511 ms** | **52 769** |
+| 13 prompt tokens | **5099 ms** | **9 126** |
+| generated token 1 | **4109 ms** | 226 |
+| generated token 32 | **164 ms** | 0 |
+| generated token 64 | **170 ms** | 1 |
+| generated token 128 | **172 ms** | 104 |
+
+**The app is never starved.** It held ~2530 CPU ticks per 5 s window — 5.06 cores
+saturated — for the whole run, in the `top-app` cpuset. So the slow decodes are not
+throttling, not the scheduler, and not HyperOS restricting a long-running app.
+
+They are **minor** faults: pages already in the page cache being mapped into this
+process's page tables for the first time. The opening decodes map ~250 MB and cost
+4-7 s; once mapped, every token costs ~170 ms and faults fall to zero.
+
+That explains the whole bimodal pattern recorded above, and corrects the emphasis of
+the eviction section: **major** faults (storage reads) do occur and do cost time, but
+the dominant, reproducible cost at the start of a session is the *minor*-fault
+mapping of an mmap'd 4.9 GB model. It also explains why the earlier
+`MADV_WILLNEED` experiment made things worse rather than better — that hints
+readahead into the page cache, which was not the missing step. The pages were
+usually already cached; they were not *mapped*.
+
+**What to try next, in order.** None of this is audio work:
+1. `MAP_POPULATE` at mmap time, or a rate-limited sequential touch of the mapping on
+   a background thread once the model is resident, so the mapping cost is paid while
+   the user is opening the app rather than mid-turn.
+2. Measure `llama_model_params.use_mlock`, which llama.cpp already exposes.
+3. Only then reconsider warming hints, and only bounded — see the refuted attempt.
+
+Anything here must be measured against the numbers in this table, not against
+intuition: the last attempt looked obviously right and was 11x slower.
+
 ### Two smaller findings
 
 1. **Thermal throttling is real but modest.** Across a sustained generation the

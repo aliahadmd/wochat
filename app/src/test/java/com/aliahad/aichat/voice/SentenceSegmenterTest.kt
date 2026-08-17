@@ -66,3 +66,68 @@ class SentenceSegmenterTest {
         assertEquals(listOf("Second answer."), segmenter.accept("Second answer. "))
     }
 }
+
+/**
+ * The first chunk may end at a clause boundary; later ones may not. Step 8 measured
+ * 17 s of generation between the first token and the first full sentence, which is
+ * what these buy back.
+ */
+class FirstChunkClauseTest {
+
+    @Test
+    fun `first chunk ends at a comma once it is long enough`() {
+        val segmenter = SentenceSegmenter()
+        assertEquals(
+            listOf("The capital of France is Paris,"),
+            segmenter.accept("The capital of France is Paris, and it is known for "),
+        )
+    }
+
+    @Test
+    fun `a short opening clause is not spoken alone`() {
+        val segmenter = SentenceSegmenter()
+        // "Well," on its own reads as a stutter, not a faster reply.
+        assertEquals(emptyList<String>(), segmenter.accept("Well, the answer "))
+    }
+
+    @Test
+    fun `later chunks wait for a real sentence`() {
+        val segmenter = SentenceSegmenter()
+        segmenter.accept("The capital of France is Paris, ")
+        // A second comma must not split; only sentence ends do from here on.
+        assertEquals(
+            emptyList<String>(),
+            segmenter.accept("The capital of France is Paris, a large city, with "),
+        )
+        assertEquals(
+            listOf("a large city, with many museums."),
+            segmenter.accept("The capital of France is Paris, a large city, with many museums. Next"),
+        )
+    }
+
+    @Test
+    fun `a thousands separator never breaks a chunk`() {
+        val segmenter = SentenceSegmenter()
+        assertEquals(
+            emptyList<String>(),
+            segmenter.accept("The population is about 2,100,000 people in the "),
+        )
+    }
+
+    @Test
+    fun `a sentence still wins over a clause when it comes first`() {
+        val segmenter = SentenceSegmenter()
+        assertEquals(listOf("Paris is the capital."), segmenter.accept("Paris is the capital. It is "))
+    }
+
+    @Test
+    fun `reset restores clause-breaking for the next answer`() {
+        val segmenter = SentenceSegmenter()
+        segmenter.accept("The capital of France is Paris, and ")
+        segmenter.reset()
+        assertEquals(
+            listOf("The capital of Japan is Tokyo,"),
+            segmenter.accept("The capital of Japan is Tokyo, and "),
+        )
+    }
+}
