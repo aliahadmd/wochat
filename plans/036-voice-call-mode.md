@@ -448,6 +448,49 @@ Reduced-motion must be honoured; the animation is feedback, not decoration.
 **Verify**: on the device — all three states animate distinctly, the transcript
 toggles, and the memory state matches the setting.
 
+### Re-measured after the 037 mapping fix, 2026-08-18
+
+Plan 037 found that `load_model()` was discarding the model's mmap immediately
+after llama.cpp had populated it, so every session re-faulted 4.9 GB one decode at
+a time. Removing that call changed this plan's numbers completely:
+
+| transcript -> first audio | before | after |
+|---|---|---|
+| first turn of a call | 50.5 s | **7.4 s** |
+| warm turn | 37.1 s | **1.7 s** |
+
+A warm turn now runs transcription 347 ms, prefill 762 ms, **first token 113 ms**,
+synthesis 215 ms. With the VAD's 0.6 s end-of-turn silence that is **~2.6 s from
+the user stopping to hearing a reply** — inside this plan's original 6 s budget,
+where Step 8 had measured 37-50 s. `first-token` is now 85-113 ms with zero faults,
+against 4109 ms before.
+
+Three further defects surfaced while testing this, all found by using it:
+
+1. **The call answered itself.** `AudioTrack.write` returns when samples are
+   buffered, not played, so the microphone reopened into the tail of the reply:
+   "The capital of France is Paris." came back as a new user turn "Harris.", whose
+   answer echoed as "information.", and so on. Fixed by waiting on *cumulative*
+   `playbackHeadPosition` plus a 300 ms settle — the first attempt compared it
+   against one sentence's frame count, which the head is always already past, so it
+   drained nothing.
+2. **Utterances were silently dropped.** If a turn was still running, the session
+   logged "a turn was already running; dropping this utterance" and went back to
+   listening — the owner saw their words appear and vanish with no answer. Speaking
+   while the assistant is busy is **barge-in**: it now cancels the running turn and
+   answers the new utterance, and says so on screen if it still cannot start.
+3. **The transcript was wiped on every listen.** The user's own words were cleared
+   the moment listening resumed, so a misheard question could not be read back.
+   Both halves of the exchange now stay on screen.
+
+**MIUI `SwipeUpClean` kills the app** if it is swiped from recents mid-call, which
+during testing produced three orphaned processes and a confusing run of transcripts
+with no answers. Known HyperOS behaviour (plan 032 recorded it), not a defect, but
+it makes call testing look broken if it happens unnoticed.
+
+Remaining cost is prefill: 4734 ms on the first turn of a conversation, 762 ms warm.
+That is plan 037's territory, and the memory preamble is its biggest lever.
+
 ### Step 8: DONE — and it fires this plan's STOP condition, 2026-08-18
 
 Measured on the device with a fresh conversation, from the transcript arriving to

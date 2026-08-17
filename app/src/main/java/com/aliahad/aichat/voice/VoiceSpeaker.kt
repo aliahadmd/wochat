@@ -35,6 +35,17 @@ class VoiceSpeaker(
     private var engine: OfflineTts? = null
     private var track: AudioTrack? = null
 
+    /**
+     * Frames handed to the track since it was created or flushed.
+     *
+     * `playbackHeadPosition` counts cumulatively for the life of the track, so it
+     * has to be compared against a cumulative total. Comparing it against a single
+     * sentence's frame count — the first version of this — meant the head was
+     * always already past it and the drain returned instantly, which let the
+     * microphone reopen mid-sentence and transcribe the app's own voice.
+     */
+    private var framesWritten = 0L
+
     /** True when the extracted voice is present, i.e. call mode can speak. */
     fun isInstalled(): Boolean = voiceFile("en_US-libritts_r-medium.onnx").isFile &&
         voiceFile("tokens.txt").isFile &&
@@ -68,6 +79,9 @@ class VoiceSpeaker(
         runCatching {
             track?.pause()
             track?.flush()
+            // flush() resets the playback head, so the written total must reset with
+            // it or every later drain compares against a stale, unreachable target.
+            framesWritten = 0L
         }
     }
 
@@ -130,6 +144,35 @@ class VoiceSpeaker(
             .also { track = it }
         if (player.playState != AudioTrack.PLAYSTATE_PLAYING) player.play()
         player.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+        framesWritten += samples.size
+        awaitPlayback(player)
+    }
+
+    /**
+     * Blocks until the speaker has actually finished, not merely until the samples
+     * were handed to it.
+     *
+     * `write` returns once the data is buffered, so without this the call resumes
+     * listening while the tail of the answer is still audible — and the recogniser
+     * transcribes the phone's own voice. Measured before the fix: "The capital of
+     * France is Paris." came back as a new user turn "Harris.", whose answer echoed
+     * as "information.", whose answer echoed as "on to." — the call talking to
+     * itself. That loop is what half-duplex exists to prevent.
+     */
+    private fun awaitPlayback(player: AudioTrack) {
+        val played = player.playbackHeadPosition.toLong().coerceAtLeast(0L)
+        val remaining = framesWritten - played
+        if (remaining <= 0L) return
+        val deadline = System.nanoTime() +
+            remaining * NANOS_PER_SECOND / player.sampleRate + DRAIN_GRACE_NANOS
+        while (System.nanoTime() < deadline) {
+            if (player.playbackHeadPosition.toLong() >= framesWritten) break
+            Thread.sleep(PLAYBACK_POLL_MILLIS)
+        }
+        // The speaker keeps sounding for a moment after the last frame, and a room
+        // adds its own tail. Reopening the microphone into that is what starts the
+        // loop, so pay a fixed settle before listening again.
+        Thread.sleep(SETTLE_MILLIS)
     }
 
     private fun voiceFile(name: String) = File(File(modelsDirectory(), VOICE_DIRECTORY), name)
@@ -137,5 +180,15 @@ class VoiceSpeaker(
     private companion object {
         const val TAG = "AIchatVoice"
         val VOICE_DIRECTORY: String = requireNotNull(ModelConstants.PIPER_VOICE_EN_US.archiveRootDirectory)
+
+        const val NANOS_PER_SECOND = 1_000_000_000L
+
+        /** Covers the speaker's own latency after the last frame is consumed. */
+        const val DRAIN_GRACE_NANOS = 150_000_000L
+
+        const val PLAYBACK_POLL_MILLIS = 10L
+
+        /** Room tail and speaker decay, before the microphone is trusted again. */
+        const val SETTLE_MILLIS = 300L
     }
 }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.time.TimeSource
 
@@ -94,17 +95,42 @@ class VoiceCallSession(
     private suspend fun run() {
         while (scope.isActive && currentJobActive()) {
             val utterance = listenForUtterance() ?: continue
-            if (!sendTurn(utterance)) {
-                Log.i(TAG, "A turn was already running; dropping this utterance")
-                continue
-            }
+            if (!startTurnForUtterance(utterance)) continue
             speakAnswer()
         }
     }
 
+    /**
+     * Starts a turn for what the user just said, interrupting one already running.
+     *
+     * This used to give up and log "a turn was already running; dropping this
+     * utterance", which meant the transcript appeared on screen and vanished a
+     * moment later with no explanation and no answer — the owner reported exactly
+     * that. Speaking while the assistant is busy is barge-in, not an error: the
+     * newest thing the user said is the thing they want answered.
+     */
+    private suspend fun startTurnForUtterance(text: String): Boolean {
+        if (sendTurn(text)) return true
+        Log.i(TAG, "Barging in: cancelling the running turn to answer the new utterance")
+        speaker.stop()
+        cancelTurn()
+        repeat(BARGE_IN_ATTEMPTS) {
+            delay(BARGE_IN_RETRY_MILLIS)
+            if (sendTurn(text)) return true
+        }
+        // Never fail silently: if it still cannot start, say so rather than
+        // returning to a listening screen as though nothing had been said.
+        Log.w(TAG, "Could not start a turn for a ${text.length}-character utterance")
+        _state.update { it.copy(error = "That did not go through — please say it again.") }
+        return false
+    }
+
     /** Collects until the recogniser's endpoint produces a non-blank final. */
     private suspend fun listenForUtterance(): String? {
-        _state.update { it.copy(phase = VoiceCallPhase.LISTENING, heard = "", spoken = "") }
+        // `heard` is deliberately left alone: blanking it here made the transcript
+        // flash up and disappear the moment listening resumed. It is replaced when
+        // the next utterance is recognised, so the last thing said stays readable.
+        _state.update { it.copy(phase = VoiceCallPhase.LISTENING, spoken = "", error = null) }
         var finalText: String? = null
         listener.listen().collectUntil { heard ->
             when (heard) {
@@ -169,6 +195,10 @@ class VoiceCallSession(
 
     private companion object {
         const val TAG = "AIchatVoice"
+
+        /** Cancellation is asynchronous; the runner needs a moment to let go. */
+        const val BARGE_IN_ATTEMPTS = 20
+        const val BARGE_IN_RETRY_MILLIS = 100L
     }
 }
 

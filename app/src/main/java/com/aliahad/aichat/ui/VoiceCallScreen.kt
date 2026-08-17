@@ -85,18 +85,27 @@ fun VoiceCallScreen(
             )
 
             if (showTranscript) {
+                // Both halves stay on screen. Showing only one meant the user's own
+                // words were replaced by the reply the instant it began, so a
+                // misheard question was impossible to read back.
                 Spacer(Modifier.height(24.dp))
-                val transcript = when {
-                    state.phase == VoiceCallPhase.SPEAKING && state.spoken.isNotBlank() -> state.spoken
-                    state.heard.isNotBlank() -> state.heard
-                    else -> ""
+                if (state.heard.isNotBlank()) {
+                    Text(
+                        text = state.heard,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                    )
                 }
-                Text(
-                    text = transcript,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
+                if (state.spoken.isNotBlank()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = state.spoken,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
 
             state.error?.let { error ->
