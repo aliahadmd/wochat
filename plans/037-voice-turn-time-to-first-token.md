@@ -34,15 +34,178 @@ built on a 2-3 s TTFT is a different product from one built on 6.
 From `e4e1630` and the work after it, measured on the owner's Redmi K80 Pro
 (Gemma 4 E4B, CPU backend):
 
-- **Prefill runs at ~21 tok/s.** So `TTFT ≈ (tokens decoded this turn) / 21`.
-  That single relation is the whole lever: fewer tokens in, less waiting.
+- **"Prefill runs at ~21 tok/s" is right, but only when the weights are
+  resident.** Prefill is not one rate. Measured on identical 63-token prompts:
+  **2858 ms (22 tok/s) with 26 major page faults**, and **4981-5242 ms
+  (12 tok/s) with 16 875-21 461 major faults**. A major fault is a read from
+  storage. The rate is a function of how much of the 4.9 GB mapping the kernel
+  has evicted since the last forward pass.
 - **KV cache reuse already works.** A warm turn appends at the current position
   instead of re-decoding from 0. Do not break this — the invariant is that
   anything volatile stays out of the system prompt. Putting per-turn content in
   the stable prefix costs a full re-prefill and takes TTFT from ~5 s to ~30 s.
-- **A warm turn measured 54 prompt tokens -> ~5.2 s.** Note the implication:
-  54 tokens at 21 tok/s is ~2.6 s, so **roughly half the 5.2 s is not prefill**.
-  Find out what it is before optimising the half that is already understood.
+  (Confirmed: measured **33.4 s** for a 380-token replay, see below.)
+- **The "missing half" of the 5.2 s is page eviction.** It was never a separate
+  phase. It is the same prefill and the same first token running at half speed
+  or worse because the weights had to be re-read from storage. This is the
+  headline result of Step 1 and it is not something prompt trimming addresses.
+
+## Step 1 results (measured 2026-08-17, release build, Redmi K80 Pro)
+
+Method: `TurnTrace` (JVM phase marks, `AIchatTurn` tag) plus the existing
+`AIchatNative` logs, over 15 turns. Attribution of a **warm** turn (KV reuse
+accepted), in a process behaving normally:
+
+| Phase | Cost | Share of a 1.3 s turn |
+|-------|------|-----------------------|
+| setup, history load (DB reads) | 0-2 ms | <1 % |
+| `residencyController.ensureLoaded` | 0-1 ms | <1 % |
+| **prompt planning** (`PromptContextPlanner.plan`) | **31-62 ms** | ~3 % |
+| — of which the query embedding | 11-18 ms | ~1 % |
+| — of which ~8 `countTokens` calls | 0-5 ms total | <1 % |
+| persist user + assistant rows | 1-3 ms | <1 % |
+| `restoreSession` (reuse hit) | 1-2 ms | <1 % |
+| **prefill** | **45 ms/token resident, 80-170 ms/token evicted** | **86 %** |
+| **first generated token** | **80-206 ms resident, seconds when evicted** | ~10 % |
+
+Steady-state generation afterwards: 81-117 ms/token (8.5-12 tok/s) on a settled
+device, degrading to ~150-220 ms/token under the sustained load of a long answer.
+
+Best warm turns measured end to end: **1222 ms** and **1253 ms** — both already
+inside the plan's 2-3 s target. The same shape of turn measured **5.5-6.1 s**
+when the weights had been evicted. That spread, not the prompt, is the story.
+
+**The embedder is exonerated.** The suspect named in Step 1 costs 11-18 ms per
+turn — about 1 % of TTFT. Prompt planning as a whole never exceeded 191 ms.
+
+The 2-3 s target is already met when the prompt is short *and* the weights are
+resident. The plan's lever (fewer prompt tokens) is real and priced below, but it
+is the second-largest term — see the eviction section.
+
+### What a retrieved memory costs (the Step 2 lever, measured)
+
+Same conversation, same process, Memory chip toggled:
+
+| Condition | Prompt tokens | Prefill | Turn total |
+|-----------|---------------|---------|------------|
+| Memory ON | 63-68 | 5.34-5.39 s | ~5.6 s |
+| Memory OFF | 13 | 1.43 s | ~1.6 s |
+
+A ~50-token memory preamble cost **~3.9 s of TTFT**. At the current caps
+(4 memories, 192 tokens) the worst case is ~17 s of prefill from memory alone.
+Retrieval is also less selective than assumed: "Name one animal." pulled a
+~50-token preamble.
+
+### The dominant term: the kernel evicts the model between turns
+
+This is the finding the plan was missing, and it outweighs everything else here.
+
+The 4.9 GB model is a file-backed `mmap`. While the app is idle the kernel
+reclaims those pages, so the next forward pass re-reads the evicted weights from
+storage. Measured with `getrusage` fault counters around each decode:
+
+| Prompt | Prefill | minor faults | **major faults** |
+|--------|---------|--------------|------------------|
+| 63 tokens | **2858 ms** | 9 162 | **26** |
+| 63 tokens | **4981 ms** | 65 093 | **16 875** |
+| 63 tokens | **5242 ms** | 67 116 | **21 461** |
+| 63 tokens | **5064 ms** | 60 447 | **21 281** |
+
+Identical prompt size, ~2x the time, and the difference is ~21 000 reads from
+storage (~84 MB) per turn. `RssFile` measured **2.0 GB immediately before** one
+of those turns and **2.9 GB immediately after** — the turn faulted ~856 MB of
+weights back in. The model never reaches full residency; the kernel keeps
+trimming it.
+
+The app is **not** the culprit: exactly one "Released N MiB of file-backed model
+pages" appears in the whole session, the deliberate one at model load.
+`restoreSession`'s existing comment already warned about the app-initiated
+version of this; what remains is the kernel doing it unbidden.
+
+This subsumes the "unexplained first token" seen earlier in the session (3.7-7.5 s
+on token 1 while token 32 of the same generation cost 155 ms): the first pass of
+a turn pays the eviction bill, later passes run on warm pages. Sampling was
+measured at ≤3 ms throughout, so it was never the sampler.
+
+### Warming the pages was tried and it made things far worse — do not retry naively
+
+The obvious consequence of the above is that a turn has a free warming window
+(the user typing, or speaking in call mode), so the evicted pages could be read
+back off the critical path. That was implemented and measured, and the result is
+**strongly negative**.
+
+Implementation: `madvise(MADV_WILLNEED)` over every VMA of the model file
+(the mirror of the existing `release_file_pages`), issued from the composer's
+`setInput` on a 20 s throttle, dispatched to IO. Issuing it is genuinely cheap —
+"Warm requested for 4901 MiB ... in 7 ms".
+
+Then the same conversation replayed, with and without it:
+
+| Prompt tokens | With warming | Without (control) |
+|---------------|--------------|-------------------|
+| 7 | 4852 ms | **419 ms** |
+| 9 | 5391 ms | **536 ms** |
+| 12 | 5438 ms | **~540 ms** |
+| 745 | 55 785 ms | **36 154 ms** |
+| first token | ~5000 ms | **107 ms** |
+
+**Up to 11x slower.** Advising 4.9 GB of readahead on a device that cannot hold
+4.9 GB starts a read/evict storm that competes with the decode for memory
+bandwidth; small decodes suffer worst because the fixed cost swamps them. Note
+the faults during the slow decodes were ~0, so the decodes were not themselves
+waiting on storage — they were being starved by the kernel's background work.
+
+The code has been removed rather than left unwired: an unused primitive that
+halves throughput if someone wires it up is worse than a documented result.
+
+If anyone retries this, it must be **bounded and rate-limited** — a slice of the
+mapping, or `readahead()` on a byte range, throttled well below the device's
+bandwidth — and it must be measured against the control column above, not
+against intuition.
+
+### A fixed per-decode cost is the real target
+
+The control run also sharpens what the slow regime actually is. Fitting the
+"with warming" column: cost ≈ **4.5 s fixed per `llama_decode` call + ~70 ms per
+token**. A 7-token decode and a 12-token decode cost the same, because both are
+dominated by the fixed term. That is the same shape as the "first token costs
+3.7-7.5 s while token 32 costs 155 ms" observation from earlier in the plan: it
+was never about the first token, it is a per-`llama_decode` cost that appears
+when the app is in the bad regime, and a continuous generation only pays it once
+because its decodes are back to back.
+
+In the healthy regime the fixed term is absent: prefill is a clean ~50-60 ms per
+token from 7 tokens up to 745, and the first token costs 107 ms.
+
+**This is what `036` should be built against, and it is not a prompt problem.**
+Finding the trigger needs a scheduler-level tool (Perfetto, and a look at whether
+HyperOS is parking the inference threads between decodes), not more logging.
+
+### Two smaller findings
+
+1. **Thermal throttling is real but modest.** Across a sustained generation the
+   CPU went 41 °C -> 92 °C and per-token time drifted 81 ms -> ~105 ms, about
+   25 %. It is not the explanation for the 2-4x swings; eviction is.
+2. **The Memory chip invalidates the KV prefix.** Toggling it mid-conversation
+   changes the system prompt (`MEMORY_DISABLED_NOTICE` is appended there), which
+   declines session reuse and forces a full replay — **33.4 s measured** on a
+   380-token conversation. Same trap the plan warns about, reachable from the UI
+   in one tap.
+
+Also worth carrying into `036`: the first turn after app start replays the whole
+conversation (15.4 s for ~170 tokens, 33.4 s for ~380), so the first turn of a
+call pays a cold-session cost that no prompt trimming touches.
+
+### Why Steps 2 and 3 did not proceed
+
+Both are specified as *voice-specific* — "fewer retrieved memories for voice",
+"a terser system prompt in voice mode", "lower `maxNewTokens` for voice turns".
+**There is no voice turn to specialise.** `TurnOrigin` has exactly one value,
+`TYPED`, and the voice path is built by `036`, which is unimplemented. Adding a
+`TurnOrigin.VOICE` that nothing sets and no measurement can exercise would be
+speculative scaffolding, and applying the trims to *every* turn is the silent
+quality trade this plan's own STOP condition forbids. The lever is priced above;
+spending it belongs with `036`.
 
 ## Steps
 
@@ -102,12 +265,21 @@ levers did not move it.
 
 ## Done criteria
 
-- [ ] The 5.2 s is attributed, not assumed
-- [ ] Voice turns measurably faster, or a recorded null result
-- [ ] KV-cache reuse still works — check for `Session reuse accepted` in logcat
-- [ ] Memory recall still works for a question that should hit
-- [ ] Unit + lint + detekt green
-- [ ] Real numbers in `plans/README.md`
+- [x] The 5.2 s is attributed, not assumed — it is prefill, at ~90 ms/token
+- [~] Voice turns measurably faster — **not attempted**: there is no voice turn
+      yet (see "Why Steps 2 and 3 did not proceed"). The lever is priced instead
+- [x] KV-cache reuse still works — `Session reuse accepted` on every warm turn,
+      restore 1-2 ms
+- [x] Memory recall still works — "What do I like to drink after lunch?" ->
+      "You like green tea after lunch.", recalled in a *different* conversation
+      from the one it was stated in
+- [x] Unit + lint + detekt green; `ChatViewModelInstrumentedTest` 14/14 on device
+      (the class covering `ChatTurnRunner`). The **full 57 was not completed**:
+      it died with `Process crashed` on `AppInstrumentedTest`, the MIUI
+      background-activity-start restriction documented in `032`. Gradle
+      reinstalled `com.aliahad.aichat.debug`, which resets MIUI's "Display
+      pop-up windows while running in background" — a human has to re-grant it
+- [x] Real numbers in `plans/README.md`
 
 ## STOP conditions
 

@@ -2,6 +2,7 @@ package com.aliahad.aichat.inference
 
 import android.content.Context
 import android.os.PowerManager
+import android.util.Log
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.BackendFailureStage
 import com.aliahad.aichat.core.ChatTurn
@@ -391,7 +392,13 @@ class NativeInferenceEngine(
 
     override suspend fun embed(text: String): FloatArray? = withContext(dispatcher) {
         if (embeddingDimensions == 0 || text.isBlank()) return@withContext null
-        nativeEmbed(text)
+        // Timed because the embedder shares this single-threaded dispatcher with the
+        // chat model, so a query embedding is dead time before prefill can start.
+        // Lengths only, never the text itself.
+        val mark = TimeSource.Monotonic.markNow()
+        nativeEmbed(text).also {
+            Log.i(TRACE_TAG, "embed chars=${text.length} in ${mark.elapsedNow().inWholeMilliseconds}ms")
+        }
     }
 
     override suspend fun unload() = withContext(dispatcher) {
@@ -483,6 +490,9 @@ class NativeInferenceEngine(
 
     override fun systemInfo(): String = nativeSystemInfo()
 
+    // Deliberately not traced. Plan 037 measured the ~8 calls a turn makes at 0-5 ms
+    // in total, and the trace's `plan` phase already bounds them; a line per call was
+    // eight lines of logcat per turn for a term that rounds to zero.
     override suspend fun countTokens(text: String): Int = withContext(dispatcher) {
         nativeCountTokens(text).coerceAtLeast(0)
     }
@@ -645,6 +655,9 @@ private fun Int.toStopReason(): GenerationStopReason = when (this) {
 
 /** `nativeSessionPrefixLength` sentinel: the KV cache cannot be reused. */
 private const val REBUILD_SESSION = -1
+
+/** Shares the JVM-side turn trace tag; see `ui/viewmodel/TurnTrace.kt`. */
+private const val TRACE_TAG = "AIchatTurn"
 
 private const val TOKEN_CHANNEL_THOUGHT = 1
 private const val TOKEN_CHANNEL_ANSWER = 2

@@ -11,6 +11,7 @@ import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.GenerationEvent
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.InferenceExecutionProfile
+import com.aliahad.aichat.core.InferenceState
 import com.aliahad.aichat.core.MessageRole
 import com.aliahad.aichat.core.MessageStatus
 import com.aliahad.aichat.core.ModelRecord
@@ -178,6 +179,7 @@ class ChatTurnRunner(
         var assistant: ChatMessage? = null
         var keepThinking = false
         var inferenceUseStarted = false
+        val trace = TurnTrace("send")
         val content = StringBuilder()
         val thinkingBuffer = StringBuilder()
         fun flushThinking() {
@@ -198,6 +200,7 @@ class ChatTurnRunner(
             val activeSkills = skillRepository.promptBlocksForSelection(
                 request.selectedSkillIds.take(MAX_SELECTED_SKILLS),
             )
+            trace.mark("setup")
             val previous = chatRepository.getMessages(request.conversationId)
                 .filter { it.status != MessageStatus.STREAMING }
             val previousContexts = attachmentRepository.contextsForMessages(
@@ -224,14 +227,12 @@ class ChatTurnRunner(
                 hasImages = visualCount > 0 || historyHasImages,
                 hasAudio = audioCount > 0 || historyHasAudio,
             )
-            val allHistoryImageBudget = previousTurns.maxOfOrNull { turn ->
-                turn.attachments.filter { it.imagePaths.isNotEmpty() }
-                    .maxOfOrNull { it.imageTokenBudget } ?: 0
-            } ?: 0
+            val allHistoryImageBudget = maxImageTokenBudget(previousTurns)
             val allHistoryAudioTokenEstimate = previousTurns.sumOf { turn ->
                 turn.attachments.sumOf { it.audioTokenEstimate }
             }
             val userText = prompt.ifEmpty { attachmentOnlyPrompt(draft) }
+            trace.mark("history")
 
             residencyController.beginInferenceUse()
             inferenceUseStarted = true
@@ -250,6 +251,7 @@ class ChatTurnRunner(
                 requirement = mediaRequirement,
                 imageTokenBudget = maxOf(initialVisualBudget, allHistoryImageBudget),
             )
+            trace.mark("load")
             val planningContextTokens = loadConfiguration.contextTokens - allHistoryAudioTokenEstimate
             require(planningContextTokens > 512) {
                 "Audio history cannot fit in the active context. Start a new conversation."
@@ -263,11 +265,9 @@ class ChatTurnRunner(
                 memoryEnabled = request.memoryEnabled && !request.conversationTemporary,
                 skillBlocks = activeSkills,
             )
+            trace.mark("plan")
             val plannedTurns = contextPlan.history
-            val historyImageBudget = plannedTurns.maxOfOrNull { turn ->
-                turn.attachments.filter { it.imagePaths.isNotEmpty() }
-                    .maxOfOrNull { it.imageTokenBudget } ?: 0
-            } ?: 0
+            val historyImageBudget = maxImageTokenBudget(plannedTurns)
             val historyAudioTokenEstimate = plannedTurns.sumOf { turn ->
                 turn.attachments.sumOf { it.audioTokenEstimate }
             }
@@ -290,6 +290,7 @@ class ChatTurnRunner(
                 )
             }
             val adjustedContexts = contexts.map { it.copy(imageTokenBudget = visualBudget) }
+            trace.mark("budget")
             val user = chatRepository.addMessage(
                 request.conversationId,
                 MessageRole.USER,
@@ -319,6 +320,7 @@ class ChatTurnRunner(
                 visualBudget.takeIf { visualCount > 0 },
             )
             request.onDraftCommitted()
+            trace.mark("persist-user")
             assistant = chatRepository.addMessage(
                 request.conversationId,
                 MessageRole.ASSISTANT,
@@ -336,8 +338,10 @@ class ChatTurnRunner(
                     usedMemoryCount = contextPlan.memories.size,
                 )
             }
+            trace.mark("persist-assistant")
             val plannedSettings = settings.copy(systemPrompt = contextPlan.systemPrompt)
             inferenceEngine.restoreSession(request.conversationId, plannedTurns, plannedSettings)
+            trace.mark("restore")
             if (visualCount > 0 && historyImageBudget > visualBudget) {
                 residencyController.ensureLoaded(mediaRequirement, maxOf(visualBudget, historyImageBudget))
             }
@@ -356,6 +360,7 @@ class ChatTurnRunner(
             ).collect { event ->
                 when (event) {
                     is GenerationEvent.ThoughtDelta -> {
+                        trace.firstToken()
                         val messageId = assistant?.id ?: return@collect
                         thinkingBuffer.append(event.text)
                         val now = System.currentTimeMillis()
@@ -374,6 +379,7 @@ class ChatTurnRunner(
                         }
                     }
                     is GenerationEvent.AnswerDelta -> {
+                        trace.firstToken()
                         content.append(event.text)
                         _state.update { state ->
                             val thinking = state.thinking
@@ -414,7 +420,9 @@ class ChatTurnRunner(
                         }
                     }
                     is GenerationEvent.Completed -> completion = event
-                    is GenerationEvent.Phase -> Unit
+                    is GenerationEvent.Phase -> if (event.state is InferenceState.Generating) {
+                        trace.mark("prefill")
+                    }
                 }
             }
             flushThinking()
@@ -526,10 +534,7 @@ class ChatTurnRunner(
                     ChatTurn(message, turnContexts[message.id].orEmpty())
                 }
             } + ChatTurn(target.copy(status = MessageStatus.COMPLETE))
-            val historyImageBudget = turns.maxOfOrNull { turn ->
-                turn.attachments.filter { it.imagePaths.isNotEmpty() }
-                    .maxOfOrNull { it.imageTokenBudget } ?: 0
-            } ?: 0
+            val historyImageBudget = maxImageTokenBudget(turns)
             val historyHasImages = turns.any { turn ->
                 turn.attachments.any { it.imagePaths.isNotEmpty() }
             }
@@ -715,6 +720,16 @@ class ChatTurnRunner(
         const val MAX_AUDIO_DURATION_MILLIS = 90_000L
     }
 }
+
+/**
+ * Largest per-image token budget any turn in [turns] was rendered with, so a
+ * reload keeps history images at the detail they were already encoded at.
+ */
+private fun maxImageTokenBudget(turns: List<ChatTurn>): Int =
+    turns.maxOfOrNull { turn ->
+        turn.attachments.filter { it.imagePaths.isNotEmpty() }
+            .maxOfOrNull { it.imageTokenBudget } ?: 0
+    } ?: 0
 
 private fun GenerationStopReason.toMessageStatus(): MessageStatus = when (this) {
     GenerationStopReason.EOG -> MessageStatus.COMPLETE

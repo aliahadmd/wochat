@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <thread>
 #include <vector>
 
@@ -78,6 +79,26 @@ long long elapsed_ms(const std::chrono::steady_clock::time_point & start) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start
     ).count();
+}
+
+/**
+ * Page-fault counters, used to tell storage I/O apart from compute.
+ *
+ * Plan 037 measured a first generated token costing 3.7-7.5 s while token 32 of
+ * the same generation cost 155 ms, and could not say why. A *major* fault reads
+ * from storage, so a slow decode carrying thousands of them is the 4.9 GB of
+ * weights being faulted back in; a slow decode carrying none is compute or
+ * scheduling. Cheap enough to leave on the first token of every turn.
+ */
+struct fault_counts {
+    long minor = 0;
+    long major = 0;
+};
+
+fault_counts read_fault_counts() {
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) return {};
+    return {usage.ru_minflt, usage.ru_majflt};
 }
 
 std::string from_jstring(JNIEnv * env, jstring value) {
@@ -327,6 +348,7 @@ int decode_text(const std::string & text, bool add_special, bool parse_special, 
         logits_last
     );
     if (current_position + static_cast<int>(tokens.size()) >= context_size - 8) return 1;
+    const fault_counts faults_before = read_fault_counts();
     for (size_t offset = 0; offset < tokens.size(); offset += batch_capacity) {
         const int count = std::min<int>(batch_capacity, tokens.size() - offset);
         common_batch_clear(batch);
@@ -337,7 +359,14 @@ int decode_text(const std::string & text, bool add_special, bool parse_special, 
         if (llama_decode(context, batch) != 0) return 2;
         current_position += count;
     }
-    LOGI("Decoded %zu prompt tokens in %lld ms", tokens.size(), elapsed_ms(start));
+    const fault_counts faults_after = read_fault_counts();
+    LOGI(
+        "Decoded %zu prompt tokens in %lld ms (faults minor=%ld major=%ld)",
+        tokens.size(),
+        elapsed_ms(start),
+        faults_after.minor - faults_before.minor,
+        faults_after.major - faults_before.major
+    );
     return 0;
 }
 
@@ -1081,7 +1110,12 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeNextToken(
             last_stop_reason = 3;
             return nullptr;
         }
+        // Split sampling from decoding: the first token of a turn costs seconds while
+        // every later token costs ~150 ms, and the two halves point at different
+        // causes (logit processing over a 262k vocab vs. the forward pass itself).
+        const auto sample_start = std::chrono::steady_clock::now();
         const llama_token token = common_sampler_sample(sampler, context, -1);
+        const long long sample_ms = elapsed_ms(sample_start);
         common_sampler_accept(sampler, token, true);
         if (llama_vocab_is_eog(llama_model_get_vocab(model), token)) {
             last_stop_reason = 1;
@@ -1092,18 +1126,27 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeNextToken(
         }
         common_batch_clear(batch);
         common_batch_add(batch, token, current_position, {0}, true);
+        const auto decode_start = std::chrono::steady_clock::now();
+        const fault_counts faults_before = read_fault_counts();
         if (llama_decode(context, batch) != 0) {
             last_stop_reason = 4;
             return nullptr;
         }
+        const long long decode_ms = elapsed_ms(decode_start);
+        const fault_counts faults_after = read_fault_counts();
         current_position++;
         generated_tokens++;
         if (generated_tokens == 1 || generated_tokens % 32 == 0) {
             LOGI(
-                "Generated token %d at position %d in %lld ms",
+                "Generated token %d at position %d in %lld ms "
+                "(sample %lld ms, decode %lld ms, faults minor=%ld major=%ld)",
                 generated_tokens,
                 current_position,
-                elapsed_ms(start)
+                elapsed_ms(start),
+                sample_ms,
+                decode_ms,
+                faults_after.minor - faults_before.minor,
+                faults_after.major - faults_before.major
             );
         }
         const std::string piece = common_token_to_piece(context, token, true);
