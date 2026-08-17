@@ -312,8 +312,20 @@ std::string load_model(const std::string & path, int backend, int requested_cont
         return "Unable to initialize sampling";
     }
     clear_session();
-    // Build the decode graph during preload, then release clean file-backed pages.
-    // The model and context stay loaded while HyperOS gets room for projector work.
+    // Build the decode graph during preload.
+    //
+    // This used to end by releasing the model's file-backed pages, to leave HyperOS
+    // room for projector work. Measured, that was self-defeating: llama.cpp maps the
+    // whole file with MAP_POPULATE (llama-mmap.cpp, prefetch defaults to the entire
+    // file), and dropping it here meant the first decodes of every session had to
+    // map it all back. Plan 037 measured the bill on a fresh process — 22 prompt
+    // tokens in 7511 ms with 52 769 minor faults, then 5099 ms with 9 126, while
+    // generated tokens 32+ cost 164-172 ms with essentially none. The app was
+    // throwing away the mapping it had just paid for and buying it again mid-turn.
+    //
+    // The two releases that remain are the ones with a reason: before projector
+    // initialisation, which genuinely competes for the same budget, and onTrimMemory,
+    // which is real memory pressure.
     const auto warmup_start = std::chrono::steady_clock::now();
     const auto * vocab = llama_model_get_vocab(model);
     std::vector<llama_token> warmup_tokens;
@@ -328,7 +340,6 @@ std::string load_model(const std::string & path, int backend, int requested_cont
         llama_memory_clear(llama_get_memory(context), true);
         LOGI("Warmup decode finished in %lld ms", elapsed_ms(warmup_start));
     }
-    release_model_file_pages();
     LOGI(
         "Model and context ready with backend=%d, batch=%d in %lld ms",
         backend,

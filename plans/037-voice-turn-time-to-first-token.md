@@ -181,6 +181,34 @@ token from 7 tokens up to 745, and the first token costs 107 ms.
 Finding the trigger needs a scheduler-level tool (Perfetto, and a look at whether
 HyperOS is parking the inference threads between decodes), not more logging.
 
+### FIXED: the app was discarding the mapping it had just paid for — 2026-08-18
+
+`load_model()` ended with `release_model_file_pages()`, an unconditional
+`MADV_DONTNEED` over the whole model mapping, to "leave HyperOS room for projector
+work". But llama.cpp maps the entire file with **`MAP_POPULATE`** already
+(`llama-mmap.cpp:455`; `llama_mmap`'s `prefetch` defaults to the whole file). So the
+loader was throwing away a fully populated mapping and then re-faulting it, one
+decode at a time, during the user's first turn.
+
+Removing that one call, measured identically on a fresh process:
+
+| | before | after |
+|---|---|---|
+| first 22-token prefill | **7511 ms**, 52 769 minor faults | **2013 ms**, 2 088 |
+| **first generated token** | **4109 ms** | **164 ms**, then **97 ms** next turn |
+
+**The first-token penalty is gone** — 164 ms is ordinary steady-state speed, reached
+immediately rather than after seconds of mapping. That penalty was the single
+largest term in voice-call latency.
+
+The two releases with an actual reason are kept: before projector initialisation,
+which genuinely competes for the same budget, and `onTrimMemory`, which is real
+memory pressure. `RssFile` settled at 3.27-3.36 GB and the process stayed alive
+across turns, so holding the mapping did not trip HyperOS's reclaim.
+
+This also retires the "warming" idea entirely. The pages never needed hinting,
+prefetching or touching — they only needed to not be thrown away.
+
 ### The regime is page-table warm-up, not throttling — 2026-08-18
 
 The owner supplied the reproduction condition this needed: *"if I close the app and
