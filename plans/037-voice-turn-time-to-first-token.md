@@ -375,6 +375,72 @@ against, so this raises the stakes on [[wochat-prompt-prefix-must-stay-stable]] 
 any drift in the system prompt or memory block invalidates the file as surely as it
 invalidates the live cache.
 
+### The KV cache now survives a model reload — 2026-08-18
+
+`llama_state_seq_save_file` / `llama_state_seq_load_file` were vendored and never
+called. They are now, and the 72.6 s re-decode is gone.
+
+Measured on the device, release build, with `am force-stop` between the two turns so
+the model genuinely reloaded:
+
+    turn 1   Session saved: 130 tokens, 7.1 MB in 6 ms
+    force-stop, relaunch, Model weights loaded in 2091 ms
+    turn 2   Session loaded: 130 tokens, 7.1 MB in 6 ms
+             restore=8ms
+
+**restore: 72,624 ms -> 8 ms** across a process death. The sequence costs ~56 KB per
+token, so a full 4096-token context is ~225 MB, and writing it is single-digit
+milliseconds — it lands in page cache, not on the UFS critical path.
+
+Design points worth keeping:
+
+- **Only the most recent conversation is kept**, in `cacheDir`. Per-conversation
+  history would trade a latency problem for a storage one, and the system clearing
+  the cache is a supported outcome: a missing file costs exactly what today cost.
+- **Media conversations decline to save.** Image chunks occupy positions without
+  being text tokens, so `session_tokens` could not honestly describe the sequence.
+  A length that disagrees with its contents would restore a corrupt session.
+- **The save is gated by the existing prefix check.** `persistSession` refuses
+  unless `nativeSessionPrefixLength` reports the cache holds every message being
+  described, so a descriptor can never claim more than the cache contains.
+- **Descriptor is written after the sequence**, so a crash mid-save leaves an
+  ignored file rather than a descriptor pointing at a truncated one.
+
+Two build traps this hit, both invisible to the gate:
+
+- The `kotlinx-serialization` **compiler plugin was never applied** — only the
+  runtime library was a dependency, so `@Serializable` generated nothing and the
+  first release run failed with "Serializer for class 'xp2' is not found". Unit
+  tests could not catch it: they exercise the same code with the plugin equally
+  absent, and the failure only appears where a serializer is actually resolved.
+- Serializers are now **named explicitly** rather than reified, so R8 renaming
+  cannot break the lookup.
+
+### Conversation history is ignored whenever a memory is retrieved — 2026-08-18
+
+Found while verifying the above, and worse than the latency bug it was hiding behind.
+
+Same conversation, same question, only the Memory toggle differing:
+
+| Memory | Answer to "Which of those three rivers is the longest?" |
+|---|---|
+| on | "The personal office memory you provided does not contain a list of rivers, so I cannot tell you which of those three is the longest." |
+| off | "The Ganges is generally considered the longest among the three rivers you listed (Ganges, Brahmaputra, Meghna)" |
+
+The log for the failing turn reads `Session reuse accepted: 10 of 10 history messages
+already decoded` — the history was in the KV cache the whole time. The model was not
+missing the context, it was declining to look at it.
+
+The cause is the preamble's own wording, which the model quoted back:
+
+    Personal Office Memory follows. Treat it as user-owned context, prefer
+    corrected or pinned items, and do not claim it came from model training.
+
+Attached immediately before the user's message, that reads as a declaration of what
+context *is*, so the model scopes its answer to the memory block and treats the
+conversation above as absent. With memory enabled by default, every multi-turn
+conversation that retrieves anything is effectively single-turn.
+
 ### Step 2 DONE, with a partly negative result — 2026-08-18
 
 Unblocked once `036` introduced `TurnOrigin.VOICE`. A spoken turn now plans with

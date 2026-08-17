@@ -172,6 +172,17 @@ class VulkanInferenceClient @OptIn(ExperimentalCoroutinesApi::class) constructor
         loadedCapabilities = null
     }
 
+    /**
+     * Not carried over the remote protocol. The saved sequence exists to survive a
+     * model reload in *this* process, and the remote backend owns a separate
+     * context whose cache this process cannot write out.
+     */
+    override suspend fun persistSession(
+        conversationId: String,
+        settings: GenerationSettings,
+        history: List<ChatTurn>,
+    ) = Unit
+
     override suspend fun restoreSession(
         conversationId: String,
         history: List<ChatTurn>,

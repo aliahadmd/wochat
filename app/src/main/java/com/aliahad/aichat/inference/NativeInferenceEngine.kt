@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.time.TimeSource
 
 /**
@@ -71,6 +72,7 @@ class NativeInferenceEngine(
     private var loadedBackend = BackendMode.CPU
     private var activeConversationId: String? = null
     private var activeRestoreFingerprint: String? = null
+    private val sessionStates = SessionStateStore(File(context.cacheDir, "session-state"))
 
     init {
         require(nativeBackend != BackendMode.AUTO) { "A native engine must use one concrete backend." }
@@ -188,16 +190,12 @@ class NativeInferenceEngine(
         _state.value = InferenceState.PreparingHistory
         holdCpu()
         val mark = TimeSource.Monotonic.markNow()
-        val prompt = if (settings.thinkingEnabled) {
-            "${settings.systemPrompt}\nUse your internal reasoning before answering."
-        } else {
-            "${settings.systemPrompt}\nAnswer directly without displaying hidden reasoning."
-        }
+        val prompt = systemPromptFor(settings)
         // A follow-up turn is almost always the previous turn's history plus the
         // exchange just finished, which the live KV cache already holds. Ask the
         // session how much of it is still valid and decode only the remainder;
         // rebuilding instead cost 29.3 s for 764 tokens on every single turn.
-        val reusablePrefix = if (previousConversationId == conversationId) {
+        val livePrefix = if (previousConversationId == conversationId) {
             nativeSessionPrefixLength(
                 prompt,
                 settings.thinkingEnabled,
@@ -206,6 +204,15 @@ class NativeInferenceEngine(
             )
         } else {
             REBUILD_SESSION
+        }
+        // No live session means the model was reloaded — HyperOS trims this app
+        // whenever it is backgrounded — and rebuilding from nothing is what cost
+        // 72.6 s for 929 history tokens. The sequence on disk, if it still matches,
+        // turns that into a file read.
+        val reusablePrefix = if (livePrefix == REBUILD_SESSION) {
+            restoreFromDisk(conversationId, prompt, settings, history)
+        } else {
+            livePrefix
         }
         try {
             if (reusablePrefix == REBUILD_SESSION) {
@@ -243,6 +250,103 @@ class NativeInferenceEngine(
             historyRestoreMillis = mark.elapsedNow().inWholeMilliseconds,
         )
         _state.value = InferenceState.Ready(requireNotNull(loadedModelName), loadedBackend)
+    }
+
+    /**
+     * Adopts the saved sequence when it is a prefix of where this conversation now
+     * stands, returning how many history messages it covers — or [REBUILD_SESSION],
+     * in which case the caller decodes everything exactly as it does today.
+     */
+    private fun restoreFromDisk(
+        conversationId: String,
+        prompt: String,
+        settings: GenerationSettings,
+        history: List<ChatTurn>,
+    ): Int {
+        val saved = sessionStates.read() ?: return REBUILD_SESSION
+        val prefix = savedSessionPrefixLength(
+            saved = saved,
+            conversationId = conversationId,
+            modelPath = loadedModelPath,
+            systemPrompt = prompt,
+            thinkingEnabled = settings.thinkingEnabled,
+            history = history.map { SavedMessage(it.message.role.nativeRole, it.withAttachmentText()) },
+        )
+        if (prefix == REBUILD_SESSION) {
+            // Never the message text — only how far the saved sequence reached, which
+            // is what distinguishes a stale file from a mismatched prompt.
+            Log.i(
+                TRACE_TAG,
+                "Saved session not usable: holds ${saved.messages.size} messages for ${history.size}",
+            )
+            return REBUILD_SESSION
+        }
+        val position = nativeLoadSession(
+            sessionStates.sequenceFile.path,
+            prompt,
+            saved.messages.map { it.role }.toTypedArray(),
+            saved.messages.map { it.content }.toTypedArray(),
+            settings.thinkingEnabled,
+        )
+        if (position <= 0) {
+            // Whatever is on disk cannot be read back. Drop it rather than paying
+            // for the same failed attempt again on the next turn.
+            sessionStates.clear()
+            return REBUILD_SESSION
+        }
+        return prefix
+    }
+
+    /**
+     * Writes the live cache out so the next model reload does not re-decode it.
+     *
+     * [history] must be the conversation as it now stands, which is exactly what the
+     * next `restoreSession` will be handed. That is enforced rather than assumed:
+     * the same prefix check that governs reuse has to report that the session holds
+     * every message, so a descriptor can never claim more than the cache contains.
+     */
+    override suspend fun persistSession(
+        conversationId: String,
+        settings: GenerationSettings,
+        history: List<ChatTurn>,
+    ) = withContext(dispatcher) {
+        val modelPath = loadedModelPath ?: return@withContext
+        if (activeConversationId != conversationId || history.isEmpty()) return@withContext
+        val prompt = systemPromptFor(settings)
+        val held = nativeSessionPrefixLength(
+            prompt,
+            settings.thinkingEnabled,
+            history.map { it.message.role.nativeRole }.toTypedArray(),
+            history.map { it.withAttachmentText() }.toTypedArray(),
+        )
+        if (held != history.size) {
+            Log.i(TRACE_TAG, "Session not persisted: cache holds $held of ${history.size} messages")
+            return@withContext
+        }
+        if (!sessionStates.prepareDirectory()) return@withContext
+        val bytes = nativeSaveSession(sessionStates.sequenceFile.path)
+        if (bytes <= 0L) {
+            sessionStates.clear()
+            return@withContext
+        }
+        // Descriptor last: it is what makes the sequence discoverable, so writing it
+        // only after the bytes have landed means a crash mid-save leaves an ignored
+        // file rather than a descriptor pointing at a truncated one.
+        sessionStates.write(
+            SavedSession(
+                conversationId = conversationId,
+                modelPath = modelPath,
+                systemPrompt = prompt,
+                thinkingEnabled = settings.thinkingEnabled,
+                messages = history.map { SavedMessage(it.message.role.nativeRole, it.withAttachmentText()) },
+            ),
+        )
+    }
+
+    private fun systemPromptFor(settings: GenerationSettings): String = if (settings.thinkingEnabled) {
+        "${settings.systemPrompt}\nUse your internal reasoning before answering."
+    } else {
+        "${settings.systemPrompt}\nAnswer directly without displaying hidden reasoning."
     }
 
     override fun generate(
@@ -598,6 +702,14 @@ class NativeInferenceEngine(
         roles: Array<String>,
         contents: Array<String>,
     ): Int
+    private external fun nativeSaveSession(path: String): Long
+    private external fun nativeLoadSession(
+        path: String,
+        systemPrompt: String,
+        roles: Array<String>,
+        contents: Array<String>,
+        enableThinking: Boolean,
+    ): Int
     private external fun nativeSystemInfo(): String
     private external fun nativeShutdown()
 
@@ -654,7 +766,7 @@ private fun Int.toStopReason(): GenerationStopReason = when (this) {
 }
 
 /** `nativeSessionPrefixLength` sentinel: the KV cache cannot be reused. */
-private const val REBUILD_SESSION = -1
+internal const val REBUILD_SESSION = -1
 
 /** Shares the JVM-side turn trace tag; see `ui/viewmodel/TurnTrace.kt`. */
 private const val TRACE_TAG = "AIchatTurn"

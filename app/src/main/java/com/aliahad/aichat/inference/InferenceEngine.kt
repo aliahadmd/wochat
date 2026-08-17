@@ -52,6 +52,23 @@ interface InferenceEngine {
     suspend fun loadProjector(path: String, imageTokenBudget: Int): ModelCapabilities
     suspend fun unloadProjector()
     suspend fun restoreSession(conversationId: String, history: List<ChatTurn>, settings: GenerationSettings)
+
+    /**
+     * Writes the live KV cache to disk so it survives a model reload.
+     *
+     * HyperOS trims this app whenever it is backgrounded, which unloads the model
+     * and takes the cache with it; the next turn then re-decodes the whole
+     * conversation, measured at 72.6 s for 929 history tokens against 5 ms when the
+     * cache had survived. [history] must be the conversation as it now stands, so
+     * that it matches what the next [restoreSession] will pass.
+     *
+     * Best-effort by design: failing to save costs exactly what today costs.
+     */
+    suspend fun persistSession(
+        conversationId: String,
+        settings: GenerationSettings,
+        history: List<ChatTurn>,
+    )
     fun generate(
         turn: UserTurn,
         settings: GenerationSettings,

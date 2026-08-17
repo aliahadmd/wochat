@@ -1,6 +1,11 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    // The runtime library was already a dependency, but without this plugin
+    // @Serializable generates nothing and serializer lookup fails at run time --
+    // in release only, since the failure is a missing generated class rather than
+    // anything a unit test exercises.
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.detekt)
     alias(libs.plugins.baselineprofile)

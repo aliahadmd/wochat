@@ -49,6 +49,12 @@ std::string generated_raw_text;
 common_chat_parser_params generation_parser_params;
 common_chat_msg parsed_assistant_message;
 std::deque<std::pair<int, std::string>> pending_generation_output;
+// Every token currently held in sequence 0, in order, so the KV cache can be
+// written to disk and read back after a model reload. Text-only: image chunks
+// occupy positions without being text tokens, so a conversation that has ever
+// carried media cannot produce an honest record and declines to save.
+std::vector<llama_token> session_tokens;
+bool session_has_media = false;
 // Gemma vision chunks decode with non-causal attention, so a whole image must fit
 // in one ubatch (llama_context::decode asserts n_ubatch >= n_tokens). Batch capacity
 // must therefore stay >= the largest image budget used by the active model.
@@ -165,6 +171,8 @@ void unload_projector() {
 
 void clear_session() {
     chat_messages.clear();
+    session_tokens.clear();
+    session_has_media = false;
     assistant_text.clear();
     utf8_cache.clear();
     generated_raw_text.clear();
@@ -369,6 +377,11 @@ int decode_text(const std::string & text, bool add_special, bool parse_special, 
         }
         if (llama_decode(context, batch) != 0) return 2;
         current_position += count;
+        session_tokens.insert(
+            session_tokens.end(),
+            tokens.begin() + offset,
+            tokens.begin() + offset + count
+        );
     }
     const fault_counts faults_after = read_fault_counts();
     LOGI(
@@ -524,6 +537,10 @@ std::string eval_media_message(
     release_file_pages(projector_file_name);
     if (eval_result != 0) return "Model failed while encoding attached media";
     current_position = new_position;
+    // Image chunks hold positions that are not text tokens, so session_tokens can no
+    // longer describe the sequence. Persisting it would restore a cache whose length
+    // disagrees with its contents, so this conversation stops being saveable.
+    session_has_media = true;
     chat_messages.push_back({role, content});
     LOGI(
         "Encoded %zu media item(s) in %lld ms",
@@ -862,6 +879,143 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeRestore(
     }
 }
 
+/**
+ * Write sequence 0 to disk so it survives a model reload.
+ *
+ * Measured 2026-08-18: HyperOS trims this app whenever it is backgrounded, the
+ * model reloads on return, and the in-RAM KV cache goes with it. The next turn
+ * then re-decodes the whole conversation — 929 history tokens took 68.6 s, while
+ * the same turn against a live cache restored in 5 ms. The prefix reuse in
+ * nativeSessionPrefixLength cannot bridge that, because after a reload there is
+ * no live session left to reuse.
+ *
+ * Returns bytes written, or 0 when there is nothing worth saving. Refusing is
+ * always safe: the caller simply re-decodes as it does today.
+ */
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeSaveSession(
+    JNIEnv * env,
+    jobject,
+    jstring path
+) {
+    try {
+        if (model == nullptr || context == nullptr) return 0;
+        if (chat_messages.empty() || current_position == 0) return 0;
+        if (session_has_media) {
+            LOGI("Session save declined: conversation carries media");
+            return 0;
+        }
+        // Cheap guard against any drift between the cache and our record of it.
+        // Writing a file whose token count disagrees with its KV data would
+        // restore a corrupt session, which is far worse than re-decoding.
+        if (session_tokens.size() != static_cast<size_t>(current_position)) {
+            LOGI(
+                "Session save declined: %zu tokens recorded for position %d",
+                session_tokens.size(),
+                current_position
+            );
+            return 0;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        const std::string file = from_jstring(env, path);
+        const size_t written = llama_state_seq_save_file(
+            context,
+            file.c_str(),
+            0,
+            session_tokens.data(),
+            session_tokens.size()
+        );
+        if (written == 0) {
+            LOGE("Session save failed for %zu tokens", session_tokens.size());
+            return 0;
+        }
+        LOGI(
+            "Session saved: %zu tokens, %.1f MB in %lld ms",
+            session_tokens.size(),
+            static_cast<double>(written) / (1024.0 * 1024.0),
+            elapsed_ms(start)
+        );
+        return static_cast<jlong>(written);
+    } catch (const std::exception & error) {
+        LOGE("Session save failed: %s", error.what());
+        return 0;
+    }
+}
+
+/**
+ * Read a sequence back and adopt it as the live session.
+ *
+ * The caller has already checked that [roles]/[contents] are the conversation the
+ * file was written against; this trusts that and rebuilds the native bookkeeping
+ * to match, taking the token count from llama itself rather than from the caller.
+ *
+ * Returns the restored position, or -1 when the file could not be used — in which
+ * case the session is left cleared and the caller re-decodes normally.
+ */
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeLoadSession(
+    JNIEnv * env,
+    jobject,
+    jstring path,
+    jstring system_prompt,
+    jobjectArray roles,
+    jobjectArray contents,
+    jboolean enable_thinking
+) {
+    try {
+        if (model == nullptr || context == nullptr) return -1;
+        const jsize count = env->GetArrayLength(roles);
+        if (count != env->GetArrayLength(contents)) return -1;
+        const std::string file = from_jstring(env, path);
+        const auto start = std::chrono::steady_clock::now();
+        // clear_session() wipes the cache, so it has to happen before the load,
+        // never after.
+        clear_session();
+        std::vector<llama_token> restored(context_size);
+        size_t restored_count = 0;
+        const size_t read = llama_state_seq_load_file(
+            context,
+            file.c_str(),
+            0,
+            restored.data(),
+            restored.size(),
+            &restored_count
+        );
+        if (read == 0 || restored_count == 0) {
+            LOGI("Session load declined: file unusable");
+            clear_session();
+            return -1;
+        }
+        restored.resize(restored_count);
+        session_tokens = std::move(restored);
+        current_position = static_cast<int>(restored_count);
+        thinking_enabled = enable_thinking;
+        session_has_media = false;
+        chat_messages.push_back({"system", from_jstring(env, system_prompt)});
+        for (jsize index = 0; index < count; ++index) {
+            auto role_value = static_cast<jstring>(env->GetObjectArrayElement(roles, index));
+            auto content_value = static_cast<jstring>(env->GetObjectArrayElement(contents, index));
+            chat_messages.push_back({
+                from_jstring(env, role_value),
+                from_jstring(env, content_value),
+            });
+            env->DeleteLocalRef(role_value);
+            env->DeleteLocalRef(content_value);
+        }
+        LOGI(
+            "Session loaded: %zu tokens, %.1f MB in %lld ms",
+            restored_count,
+            static_cast<double>(read) / (1024.0 * 1024.0),
+            elapsed_ms(start)
+        );
+        return static_cast<jint>(current_position);
+    } catch (const std::exception & error) {
+        LOGE("Session load failed: %s", error.what());
+        clear_session();
+        return -1;
+    }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeBeginUserPrompt(
     JNIEnv * env,
@@ -1146,6 +1300,7 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeNextToken(
         const long long decode_ms = elapsed_ms(decode_start);
         const fault_counts faults_after = read_fault_counts();
         current_position++;
+        session_tokens.push_back(token);
         generated_tokens++;
         if (generated_tokens == 1 || generated_tokens % 32 == 0) {
             LOGI(

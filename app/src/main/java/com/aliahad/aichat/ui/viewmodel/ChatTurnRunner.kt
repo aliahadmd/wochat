@@ -443,6 +443,16 @@ class ChatTurnRunner(
             )?.let { completed ->
                 assistant = completed
                 chatRepository.updateMessage(completed)
+                // Write the cache out now that it holds the finished exchange. The
+                // model is unloaded whenever HyperOS trims this app in the
+                // background, and rebuilding from nothing cost 72.6 s for 929
+                // history tokens. The list handed over is what the next turn's
+                // restore will pass, so the saved sequence lines up with it.
+                inferenceEngine.persistSession(
+                    request.conversationId,
+                    plannedSettings,
+                    plannedTurns + ChatTurn(user, contexts) + ChatTurn(completed),
+                )
             }
         } catch (cancelled: CancellationException) {
             assistant?.let {

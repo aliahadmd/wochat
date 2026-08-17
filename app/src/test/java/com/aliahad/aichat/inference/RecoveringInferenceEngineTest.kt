@@ -351,6 +351,18 @@ private class FakeInferenceEngine(
         loadedCapabilities = null
     }
 
+    var persistCount = 0
+    var persistFailure: Throwable? = null
+
+    override suspend fun persistSession(
+        conversationId: String,
+        settings: GenerationSettings,
+        history: List<ChatTurn>,
+    ) {
+        persistCount++
+        persistFailure?.let { throw it }
+    }
+
     override suspend fun restoreSession(
         conversationId: String,
         history: List<ChatTurn>,

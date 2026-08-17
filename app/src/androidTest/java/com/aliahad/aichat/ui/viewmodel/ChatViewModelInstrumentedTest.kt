@@ -473,6 +473,7 @@ private class FakeInferenceEngine : InferenceEngine {
         ModelCapabilities(true, true, modelContextLimit)
     override suspend fun unloadProjector() = Unit
     override suspend fun restoreSession(conversationId: String, history: List<ChatTurn>, settings: GenerationSettings) = Unit
+    override suspend fun persistSession(conversationId: String, settings: GenerationSettings, history: List<ChatTurn>) = Unit
     override fun generate(turn: UserTurn, settings: GenerationSettings, profile: InferenceExecutionProfile): Flow<GenerationEvent> =
         flowOf(GenerationEvent.Completed(com.aliahad.aichat.core.GenerationStopReason.EOG, 0, 0))
     override suspend fun countTokens(text: String): Int = text.length

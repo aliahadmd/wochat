@@ -391,6 +391,12 @@ private class ScriptedSummarizationEngine(
     override val modelContextLimit: Int = 8_192
     override val activeContextSize: Int = 0
 
+    override suspend fun persistSession(
+        conversationId: String,
+        settings: GenerationSettings,
+        history: List<ChatTurn>,
+    ) = Unit
+
     override suspend fun restoreSession(
         conversationId: String,
         history: List<ChatTurn>,

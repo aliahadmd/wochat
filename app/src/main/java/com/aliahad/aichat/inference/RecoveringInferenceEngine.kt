@@ -1,5 +1,6 @@
 package com.aliahad.aichat.inference
 
+import android.util.Log
 import com.aliahad.aichat.BuildConfig
 import com.aliahad.aichat.core.BackendBenchmark
 import com.aliahad.aichat.core.BackendFailureStage
@@ -201,6 +202,20 @@ class RecoveringInferenceEngine(
         projectorCapabilities = null
         session = null
         syncFromActive()
+    }
+
+    /**
+     * Persisting is best-effort and must never take the recovery gate: it runs after
+     * a turn has already succeeded, so blocking on it would add its cost to the next
+     * turn for no benefit, and a failure to save is not a backend failure.
+     */
+    override suspend fun persistSession(
+        conversationId: String,
+        settings: GenerationSettings,
+        history: List<ChatTurn>,
+    ) {
+        runCatching { active.persistSession(conversationId, settings, history) }
+            .onFailure { Log.w("RecoveringInferenceEngine", "Could not persist the session", it) }
     }
 
     override suspend fun restoreSession(

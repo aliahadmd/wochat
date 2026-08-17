@@ -668,6 +668,12 @@ private class FakeInferenceEngine(
 
     override suspend fun unloadProjector(): Unit = error("unused")
 
+    override suspend fun persistSession(
+        conversationId: String,
+        settings: GenerationSettings,
+        history: List<ChatTurn>,
+    ) = Unit
+
     override suspend fun restoreSession(
         conversationId: String,
         history: List<ChatTurn>,
