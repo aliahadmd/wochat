@@ -444,6 +444,54 @@ class PromptContextPlannerTest {
     }
 
     @Test
+    fun aSpokenTurnCarriesTheFactWithoutTheWrapperAroundIt() = runTest {
+        // Measured: the full header is ~35 tokens and "[preference; source: Chat
+        // message] " another ~9, around a ~7-token fact. That wrapper was the largest
+        // single piece of a spoken turn's prompt, and none of it is the answer.
+        val typed = PromptContextPlanner(
+            FakeInferenceEngine(),
+            FakeMemoryRepository(listOf(memoryHit())),
+            summariesDatabase(),
+        ).plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "what do I like",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+            budget = ContextBudget.FULL,
+        )
+        val spoken = PromptContextPlanner(
+            FakeInferenceEngine(),
+            FakeMemoryRepository(listOf(memoryHit())),
+            summariesDatabase(),
+        ).plan(
+            conversationId = "chat",
+            history = emptyList(),
+            currentText = "what do I like",
+            settings = settings,
+            contextTokens = 60_000,
+            memoryEnabled = true,
+            budget = ContextBudget.COMPACT,
+        )
+
+        // The fact itself survives in both; only the packaging differs.
+        assertTrue(typed.turnPreamble.contains("remembered fact"))
+        assertTrue(spoken.turnPreamble.contains("remembered fact"))
+
+        assertTrue(typed.turnPreamble.contains("source: Chat"))
+        assertFalse("provenance is for the Memory screen, not the model", spoken.turnPreamble.contains("source:"))
+        assertFalse(spoken.turnPreamble.contains("[fact;"))
+
+        // The compact preamble must keep the instruction that changes answers.
+        assertTrue(spoken.turnPreamble.contains("not from training"))
+        assertTrue(
+            "the compact preamble should be markedly smaller",
+            spoken.turnPreamble.length < typed.turnPreamble.length / 2,
+        )
+    }
+
+    @Test
     fun aSpokenTurnStillRetrievesTheMemoryItNeeds() = runTest {
         // The trade this plan forbids is a faster assistant that forgot the user.
         // A compact budget must still carry the top-ranked memory into the prompt.

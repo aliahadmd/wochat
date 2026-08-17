@@ -42,6 +42,27 @@ enum class ContextBudget {
      */
     val includesSummary: Boolean get() = this != COMPACT
 
+    /**
+     * Whether each memory carries its type and source.
+     *
+     * Measured: `- [preference; source: Chat message] ` is ~9 tokens of wrapper on a
+     * ~7-token fact. That provenance is what the Memory screen is for; the model
+     * answering out loud does not need it.
+     */
+    val includesProvenance: Boolean get() = this != COMPACT
+
+    /**
+     * The line introducing retrieved memories.
+     *
+     * The full header is ~35 tokens, which with provenance meant **45 tokens of
+     * wrapper around 7 tokens of fact** — the single largest piece of a spoken
+     * turn's prompt. The compact form keeps the one instruction that changes
+     * answers, that this is the user's own context rather than something the model
+     * knows, and drops the rest.
+     */
+    val memoryHeader: String
+        get() = if (this == COMPACT) COMPACT_MEMORY_HEADER else FULL_MEMORY_HEADER
+
     companion object {
         /** Talking buys less context than typing; see the class comment for why. */
         fun forOrigin(origin: TurnOrigin): ContextBudget =
@@ -55,6 +76,12 @@ enum class ContextBudget {
         // retrieval is ranked, so the top 2 are the ones worth having.
         private const val COMPACT_MEMORIES = 2
         private const val COMPACT_MEMORY_TOKENS = 96
+
+        private const val FULL_MEMORY_HEADER =
+            "\n\nPersonal Office Memory follows. Treat it as user-owned context, " +
+                "prefer corrected or pinned items, and do not claim it came from model training.\n"
+
+        private const val COMPACT_MEMORY_HEADER = "\n\nKnown about the user, not from training:\n"
     }
 }
 
@@ -120,15 +147,18 @@ class PromptContextPlanner(
         var memoryHeaderReserved = false
         var memoryTokens = 0
         for (hit in memoryHits) {
-            val provenance = hit.sources
-                .mapNotNull { source -> source.label?.takeIf(String::isNotBlank) }
-                .distinct()
-                .joinToString()
-                .ifBlank { "Office Memory" }
-            val line =
+            val line = if (budget.includesProvenance) {
+                val provenance = hit.sources
+                    .mapNotNull { source -> source.label?.takeIf(String::isNotBlank) }
+                    .distinct()
+                    .joinToString()
+                    .ifBlank { "Office Memory" }
                 "- [${hit.memory.type.name.lowercase()}; source: $provenance] " +
                     "${hit.memory.content}\n"
-            val block = if (memoryHeaderReserved) line else MEMORY_HEADER + line
+            } else {
+                "- ${hit.memory.content}\n"
+            }
+            val block = if (memoryHeaderReserved) line else budget.memoryHeader + line
             val tokens = inferenceEngine.countTokens(block).coerceAtLeast(1)
             if (tokens > remaining / 3 || tokens > remaining) continue
             // Hard backstop independent of scoring: time to first token is roughly
@@ -179,7 +209,7 @@ class PromptContextPlanner(
         // its KV cache instead of re-decoding the entire conversation each time.
         val turnPreamble = buildString {
             if (selectedMemories.isNotEmpty()) {
-                append(MEMORY_HEADER)
+                append(budget.memoryHeader)
                 append(memoryText)
             }
             summary?.content?.takeIf(String::isNotBlank)?.let {
@@ -222,9 +252,6 @@ class PromptContextPlanner(
     }
 
     private companion object {
-        const val MEMORY_HEADER =
-            "\n\nPersonal Office Memory follows. Treat it as user-owned context, " +
-                "prefer corrected or pinned items, and do not claim it came from model training.\n"
         const val TOKEN_SUM_SLACK = 16
 
         /**

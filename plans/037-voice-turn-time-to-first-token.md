@@ -265,6 +265,49 @@ Also worth carrying into `036`: the first turn after app start replays the whole
 conversation (15.4 s for ~170 tokens, 33.4 s for ~380), so the first turn of a
 call pays a cold-session cost that no prompt trimming touches.
 
+### The memory block was mostly wrapper — 2026-08-18
+
+Following the Step 2 result, retrieval selectivity was investigated and **found not
+to be the problem**. A general-knowledge question spoken into a call — "can you tell
+me 10 African countries names?", 40 characters — carried **19 prompt tokens** and
+finished in **1237 ms**; the next turn 14 tokens and 692 ms. The relevance floor
+correctly retrieved nothing. The earlier "Name one animal." observation was a
+near-duplicate of a past user message stored as an episode, not a loose floor.
+
+The real waste was in how a memory is *packaged*:
+
+| part of the block | size |
+|---|---|
+| header | 143 chars, ~35 tokens |
+| `- [preference; source: Chat message] ` | 37 chars, ~9 tokens |
+| **the fact itself** | **30 chars, ~7 tokens** |
+
+**45 tokens of wrapper around 7 tokens of fact.** A compact turn now uses a short
+header that keeps the one instruction which changes answers — that this is the
+user's own context, not something the model knows — and drops the type and source,
+which exist for the Memory screen rather than for the model.
+
+Measured on device, same question, fresh conversation so the fact had to come from
+retrieval: **67 -> 39 prompt tokens**, and the answer was still "Yes, you prefer
+green tea after lunch." with `Memory · 1`. This costs no recall at all, because the
+facts are untouched.
+
+**Caveat on that run's clock, so nobody quotes it as a latency win**: first audio
+took 71.8 s, with `major=640` and `847` faults. Fewer tokens, but each paid storage
+latency. The token count is the clean signal here; the timing measured eviction.
+
+### Major faults are back, and the mapping fix does not cover them
+
+The load-path fix above cured *minor* faults — mapping pages already in the page
+cache. It cannot stop the kernel evicting the pages themselves, and eviction is now
+more likely, not less: the model holds ~5 GB mapped and no longer releases it, while
+Whisper (208 MB), Piper and the embedder compete for the same memory. Turns
+alternate between ~70 ms/token and ~210 ms/token accordingly.
+
+That is the next thing worth attacking, and `use_mlock` is the obvious candidate to
+measure — with the caveat that locking ~5 GB on a phone may simply fail or provoke
+the low-memory killer, which is exactly why it needs measuring rather than assuming.
+
 ### Step 2 DONE, with a partly negative result — 2026-08-18
 
 Unblocked once `036` introduced `TurnOrigin.VOICE`. A spoken turn now plans with
