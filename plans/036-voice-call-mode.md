@@ -89,6 +89,34 @@ one, and voice choice is exactly what the owner will want to tune. Vendor Pi 4
 numbers put the two within 0.001 RTF of each other, but that is an inference —
 re-run the benchmark on `libritts_r` before shipping it.
 
+### Curate 6 voices, not 904
+
+The owner does not want a 904-entry picker: **3 male and 3 female**, chosen for
+quality. That is the right call — a long unlabelled list is a worse experience
+than a short curated one.
+
+**These six cannot be guessed, and must not be invented.** The model exposes
+speaker IDs as bare integers with no gender or quality metadata. Deriving them:
+
+1. Gender comes from the **LibriTTS corpus** `SPEAKERS.txt` (reader ID -> M/F),
+   not from the model. Map corpus reader IDs to the model's speaker indices via
+   the `libritts_r` training speaker list — verify the mapping on a couple of
+   known voices rather than trusting it blindly, because an off-by-one here
+   ships a "male" voice that is female.
+2. Quality has to be **listened to**. Synthesise one identical sentence across a
+   sample of candidates, then have the owner pick. The sherpa-onnx TTS APK used
+   for the benchmark takes a Speaker ID directly and is the fastest way to
+   audition without writing any app code.
+
+Ship the six as a named, ordered list in `ModelConstants` with a short label
+each, and keep the raw integer out of the UI entirely. Leave a comment
+recording *why* those six, so the next person does not silently reshuffle them.
+
+If auditioning proves expensive, a defensible fallback is to ship a smaller
+single-speaker Piper voice (for example `en_US-lessac-medium`, already
+benchmarked at RTF 0.15) for v1 and add the six-voice picker once someone has
+actually listened. Do not ship six arbitrary IDs.
+
 ### Second language: Bangla
 
 Requested as a secondary language, English primary. Verified to exist by HTTP
