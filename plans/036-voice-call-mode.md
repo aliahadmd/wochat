@@ -448,6 +448,24 @@ Reduced-motion must be honoured; the animation is feedback, not decoration.
 **Verify**: on the device — all three states animate distinctly, the transcript
 toggles, and the memory state matches the setting.
 
+### The call was reading markdown aloud — 2026-08-18
+
+Reported by the owner from their own use: the answer to a capital-city question was
+spoken as **"asterisk asterisk Dhaka asterisk asterisk"**. The model writes for a
+screen — `**bold**`, `[text](url)`, `- bullets` — and Piper reads every one of those
+characters.
+
+`speakableText()` now strips markup on its way to the speaker: emphasis, headings,
+bullets, numbering, blockquotes, horizontal rules, inline code and fences, link text
+without the URL, and table pipes as pauses. 15 unit tests, including the two things
+that must *not* be stripped — `file_name` staying intact rather than becoming
+"filename", and `2 * 3` not being read as emphasis.
+
+Applied **per finished chunk**, not to the growing answer, and the reason matters:
+the segmenter tracks what it has already spoken by index, and cleaning a growing
+string moves those indices — "the capital is **Dhaka" and "the capital is **Dhaka**"
+clean to different lengths, which would make the call repeat or skip words.
+
 ### Re-measured after the 037 mapping fix, 2026-08-18
 
 Plan 037 found that `load_model()` was discarding the model's mmap immediately

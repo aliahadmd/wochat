@@ -165,7 +165,14 @@ class VoiceCallSession(
         }
     }
 
-    private suspend fun say(sentence: String) {
+    private suspend fun say(chunk: String) {
+        // The model writes for a screen. Piper reads punctuation aloud, so "**Dhaka**"
+        // was heard as "asterisk asterisk Dhaka asterisk asterisk" during a call.
+        // Cleaned per finished chunk rather than over the growing answer, because the
+        // segmenter tracks spoken text by index and cleaning a growing string moves
+        // those indices.
+        val sentence = speakableText(chunk)
+        if (sentence.isBlank()) return
         _state.update {
             it.copy(phase = VoiceCallPhase.SPEAKING, spoken = (it.spoken + " " + sentence).trim())
         }
