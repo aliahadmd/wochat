@@ -9,6 +9,10 @@
       VAD, recognition and speech all run locally through sherpa-onnx.
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Normal permission, granted at install with no runtime prompt. Without it
+         AlarmClock.ACTION_SET_ALARM throws SecurityException even though the
+         intent resolves: "requires com.android.alarm.permission.SET_ALARM". -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -21,6 +25,20 @@
          the screen locked while capture ran on unaware. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Package visibility, API 30+. Without this resolveActivity() returns null
+         for the clock even though it is installed and handles these actions, and
+         a perfectly good alarm request fails with "I couldn't find a clock app".
+         Declaring intents rather than package names keeps this working on any
+         phone, whichever clock app it ships. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.SET_ALARM" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SET_TIMER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".AiChatApplication"
         android:allowBackup="false"

@@ -1,11 +1,13 @@
 package com.aliahad.aichat.actions
 
 import android.content.Context
+import android.content.Intent
 import android.hardware.camera2.CameraManager
+import android.provider.AlarmClock
 import android.util.Log
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import com.aliahad.aichat.actions.ActionArguments.boolean
+import com.aliahad.aichat.actions.ActionArguments.int
+import com.aliahad.aichat.actions.ActionArguments.text
 
 /**
  * Things the assistant can do to the device.
@@ -30,16 +32,26 @@ class DeviceActions(private val context: Context) {
     fun declarations(): String = TOOLS
 
     /** Runs [name] with [arguments], returning what to tell the user. */
-    fun execute(name: String, arguments: String): ActionResult = when (name) {
-        TOGGLE_FLASHLIGHT -> toggleFlashlight(arguments)
-        else -> ActionResult(false, "I don't know how to do that yet.")
+    fun execute(name: String, arguments: String): ActionResult {
+        val args = ActionArguments.read(arguments)
+            ?: return ActionResult(false, "I couldn't read what you asked for.")
+        val result = when (name) {
+            TOGGLE_FLASHLIGHT -> toggleFlashlight(args)
+            SET_ALARM -> setAlarm(args)
+            SET_TIMER -> setTimer(args)
+            else -> ActionResult(false, "I don't know how to do that yet.")
+        }
+        // Logged for every call, because a model that merely *claims* to have set an
+        // alarm produces a reply indistinguishable from one that really did. Without
+        // this line there is no way to tell the two apart from outside the process.
+        // Arguments are device settings, not conversation, so they are safe to log.
+        Log.i(TAG, "Action $name($arguments) -> ${if (result.succeeded) "ok" else "failed"}: ${result.message}")
+        return result
     }
 
-    private fun toggleFlashlight(arguments: String): ActionResult {
-        val on = runCatching {
-            val parsed = Json.parseToJsonElement(arguments) as? JsonObject
-            parsed?.get("on")?.jsonPrimitive?.content?.toBooleanStrictOrNull()
-        }.getOrNull() ?: return ActionResult(false, "I couldn't tell whether to switch it on or off.")
+    private fun toggleFlashlight(args: kotlinx.serialization.json.JsonObject): ActionResult {
+        val on = args.boolean("on")
+            ?: return ActionResult(false, "I couldn't tell whether to switch it on or off.")
 
         return runCatching {
             val manager = context.getSystemService(CameraManager::class.java)
@@ -60,6 +72,59 @@ class DeviceActions(private val context: Context) {
         }
     }
 
+    private fun setAlarm(args: kotlinx.serialization.json.JsonObject): ActionResult {
+        val (hour, minute) = validTimeOfDay(args.int("hour"), args.int("minute"))
+            ?: return ActionResult(false, "That isn't a time I can set — I need an hour between 0 and 23.")
+        val label = args.text("label")
+        val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(AlarmClock.EXTRA_HOUR, hour)
+            putExtra(AlarmClock.EXTRA_MINUTES, minute)
+            label?.let { putExtra(AlarmClock.EXTRA_MESSAGE, it) }
+            // Create it outright rather than dropping the user into the clock app
+            // mid-conversation. The confirmation below is what they check instead.
+            putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+        }
+        // The time is echoed in 12-hour form on purpose: the way this goes wrong is
+        // 3 AM for "three in the afternoon", and that is only catchable if the
+        // confirmation says which one it picked.
+        val spoken = spokenTime(hour, minute)
+        return start(intent, "Alarm set for $spoken${label?.let { ", $it" } ?: "" }.")
+    }
+
+    private fun setTimer(args: kotlinx.serialization.json.JsonObject): ActionResult {
+        val seconds = validTimerSeconds(args.int("seconds"))
+            ?: return ActionResult(false, "That isn't a length I can time — give me between a second and a day.")
+        val label = args.text("label")
+        val intent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
+            putExtra(AlarmClock.EXTRA_LENGTH, seconds)
+            label?.let { putExtra(AlarmClock.EXTRA_MESSAGE, it) }
+            putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+        }
+        return start(intent, "Timer started for ${spokenDuration(seconds)}.")
+    }
+
+    /**
+     * Fires [intent] at whatever clock app the phone has, reporting [success] only
+     * if something actually took it.
+     *
+     * NEW_TASK because this is launched from an application context, and the
+     * resolve check first because a phone with no clock app should be told so
+     * rather than throwing ActivityNotFoundException into a chat turn.
+     */
+    private fun start(intent: Intent, success: String): ActionResult {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (intent.resolveActivity(context.packageManager) == null) {
+            return ActionResult(false, "I couldn't find a clock app on this phone to do that.")
+        }
+        return runCatching {
+            context.startActivity(intent)
+            ActionResult(true, success)
+        }.getOrElse { error ->
+            Log.w(TAG, "Could not start ${intent.action}", error)
+            ActionResult(false, "The clock app wouldn't open just now.")
+        }
+    }
+
     /** Best-effort record of the torch, so "turn it off" works without querying. */
     var torchOn: Boolean = false
         private set
@@ -67,6 +132,8 @@ class DeviceActions(private val context: Context) {
     companion object {
         private const val TAG = "DeviceActions"
         const val TOGGLE_FLASHLIGHT = "toggle_flashlight"
+        const val SET_ALARM = "set_alarm"
+        const val SET_TIMER = "set_timer"
 
         private val TOOLS = """
             [
@@ -82,6 +149,46 @@ class DeviceActions(private val context: Context) {
                     }
                   },
                   "required": ["on"]
+                }
+              },
+              {
+                "name": "$SET_ALARM",
+                "description": "Set an alarm for a specific clock time. Use for a time of day such as 7 in the morning or half past three. For a countdown from now, use $SET_TIMER instead.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "hour": {
+                      "type": "integer",
+                      "description": "Hour on a 24-hour clock, 0 to 23. Three in the afternoon is 15, not 3."
+                    },
+                    "minute": {
+                      "type": "integer",
+                      "description": "Minute past the hour, 0 to 59. Defaults to 0."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "What the alarm is for, if the user said."
+                    }
+                  },
+                  "required": ["hour"]
+                }
+              },
+              {
+                "name": "$SET_TIMER",
+                "description": "Start a countdown timer for a length of time from now, such as ten minutes. For a specific clock time, use $SET_ALARM instead.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "seconds": {
+                      "type": "integer",
+                      "description": "How long the timer runs, in seconds. Ten minutes is 600."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "What the timer is for, if the user said."
+                    }
+                  },
+                  "required": ["seconds"]
                 }
               }
             ]

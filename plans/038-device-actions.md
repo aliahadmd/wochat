@@ -126,7 +126,51 @@ and measure it before believing either way.
    Gated by an **Actions** chip beside Thinking and Memory, off by default.
 2. **Measure the prompt cost.** Tokens added by the schema, and first-turn prefill
    with tools on versus off. Numbers, not estimates.
-3. **Add the no-permission set:** alarm, timer, dial, calendar, directions.
+3. ~~**Add the no-permission set:**~~ **alarm and timer done.** Verified in the
+   clock app, not just our log: `set_alarm({"hour":7})` produced a real 07:00 AM
+   alarm ("Alarm in 8 hours 32 minutes"), and `set_timer({"seconds":600})` a real
+   10-minute timer. The model converts "7 in the morning" and "10 minute" itself.
+   Dial, calendar and directions remain.
+
+   **Two things were wrong in the research above, both found by measuring.** The
+   table said alarms need no permission; `ACTION_SET_ALARM` in fact throws
+   `SecurityException: requires com.android.alarm.permission.SET_ALARM`. It is a
+   normal permission, so declaring it is enough and no prompt appears — but it is
+   not "none". And `resolveActivity()` returned null for a clock that was plainly
+   installed: API 30+ package visibility hides it unless the manifest declares
+   `<queries>` for those intent actions. Both cost a build each and neither was
+   guessable from reading.
+
+### The model will claim it did things it cannot do — 2026-08-18
+
+Worth its own heading, because it wasted more time than either bug and is a
+property of the design rather than a defect to be fixed once.
+
+With **Actions off**, "please create an alarm at 3 o'clock in the evening"
+answered **"Alarm set for 3:00 PM."** No tool existed, no call was made, nothing
+happened. The sentence was simply generated, and it is indistinguishable from the
+real confirmation — which is the same sentence, because the real one is phrased
+naturally too.
+
+It then got worse in a way worth understanding: those invented confirmations sat
+in the conversation as context, and the next turn — now *with* tools available —
+**imitated them instead of calling the tool**. Three hallucinated examples had
+taught the model that answering an alarm request means saying "Alarm set for". A
+clean conversation called the tool correctly on the first try.
+
+Consequences for the rest of this plan:
+
+- **Every action logs**, success or failure. Without `DeviceActions: Action
+  set_alarm(...) -> ok` there is no way from outside the process to tell a real
+  action from a sentence about one, and the reply text cannot be trusted as
+  evidence. This is what turned an hour of confusion into a two-minute diagnosis.
+- **Verify in the target app, never in the chat.** The clock app is the authority
+  on whether an alarm exists.
+- Step 4's confirmations should describe what the *tool returned*, not what the
+  model says it did.
+- Open question worth an experiment: when actions are off, should the preamble
+  tell the model it cannot act? Untested, and it costs prompt tokens on turns that
+  will never use them.
 4. **Add the confirm-first set:** place a call, send a message.
 5. **Voice.** This is where it earns its keep — "turn on the torch" mid-call, hands
    busy. Reuses the existing call pipeline entirely.
