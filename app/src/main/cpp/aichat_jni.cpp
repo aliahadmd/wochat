@@ -160,8 +160,11 @@ std::vector<int> fastest_cores(int count) {
         if (!(file >> frequency)) frequency = 0;
         ranked.emplace_back(frequency, core);
     }
-    // Descending by clock, then by index so the choice is deterministic when a
-    // device reports every core identically.
+    // Descending by clock, then by *descending* index among equals. ARM numbers
+    // the little cluster first, and Android puts system and IRQ work on the low
+    // cores, so when several report the same maximum the higher ones are the
+    // quieter ones to occupy. Deterministic either way; this tie-break just
+    // leaves cpu0/cpu1 alone.
     std::stable_sort(ranked.begin(), ranked.end(), [](const auto & left, const auto & right) {
         if (left.first != right.first) return left.first > right.first;
         return left.second < right.second;

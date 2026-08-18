@@ -566,10 +566,25 @@ Caveat, in the honest direction: this run came *later* in the session than the
 unpinned baseline, so the device was warmer, not cooler. If anything the measurement
 understates the gain.
 
-One loose end worth knowing about: cores 0-5 all report the same
-`cpuinfo_max_freq`, so the tie-break picks 0-3 by index, which includes the cores
-Android tends to use for system and IRQ work. Choosing 2-5 instead might do slightly
-better and has not been measured.
+**The tie-break between equal cores was tried and is not resolvable this way.**
+Cores 0-5 all report the same `cpuinfo_max_freq`, so the tie-break picks 0-3 by
+index, including the cores Android tends to use for system and IRQ work. Preferring
+the higher indices instead (pinning 7 6 5 4 3 2, leaving cpu0/cpu1 free) is the same
+argument that made 6 threads beat 8, so it was built and measured.
+
+It cannot be separated from thermal drift. The variant measured 51.8 ms/token
+against 46.5, but at a lower clock (2079 vs 2489 MHz mean), and flipping back for a
+matched back-to-back gave **144.8 ms/token for the config that had measured 46.5 an
+hour earlier** — the device had throttled to 1555 MHz by then. Clock-normalising does
+not rescue it either: the same configuration yields normalised figures a factor of
+two apart across that range, so something beyond core clock degrades as the phone
+heats.
+
+Kept the tie-break that the 2x result was actually measured with. The alternative may
+well be slightly better on principle, but "may well be" is not a measurement, and the
+difference between the two is smaller than the drift available to hide it. Anyone
+returning to this needs a genuinely cold device and a single interleaved session, not
+a rebuild between arms.
 
 **The throttling matters more than the tweak did.** The cap outlives the load: after
 ten minutes fully idle the prime cores had recovered only to 2.25 GHz, in slow steps
