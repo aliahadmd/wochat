@@ -493,15 +493,53 @@ The device was thermally capped by then:
     Thermal Status     1                       (0 during the baseline)
 
 Sustained inference makes HyperOS cap the prime cores at ~1.7 GHz, 39% of their
-4.32 GHz maximum. Re-running the *original* 6-thread build under that cap produced
-**143 ms/token** — against 55.7 for the same build cold. A 2.57x slowdown against a
-2.56x clock reduction: prefill cost tracks clock almost exactly, which independently
-confirms it is compute-bound, and means every run taken after a warm-up measures
-temperature rather than the change under test. The baseline ran cold and the
-8-thread runs ran hot, so the comparison is worthless in both directions.
+4.32 GHz maximum, and re-running the *original* 6-thread build under that cap gave
+**143 ms/token** against 55.7 cold. The baseline ran cold and the 8-thread runs ran
+hot, so that comparison is worthless in both directions.
 
-Reverted to 6. **Not because 8 was shown to be worse — it was not shown to be
-anything.**
+**Correction to the first write-up of this.** It said prefill cost "tracks that cap
+almost exactly", on a 2.57x slowdown against a 2.56x change in `scaling_max_freq`.
+That arithmetic was a coincidence and the reasoning was wrong: `scaling_max_freq` is
+a *ceiling*, not what the cores run at. Later, at a 3.07 GHz cap, prefill measured
+148-161 ms/token — slower than the run at a 1.69 GHz cap, which a cap-based model
+cannot explain. Sampling `scaling_cur_freq` instead resolved it: prefill does scale
+with the *achieved* clock (29-token batches, zero faults, 95-97 ms/token at 2.34-2.40
+GHz against 53-54 ms/token in the cold baseline). Read the achieved clock, never the
+cap.
+
+Reverted to 6 at that point, explicitly not because 8 was shown to be worse — it
+had not been shown to be anything.
+
+### The retry, with the mechanism this time — 2026-08-18
+
+Sampling `scaling_cur_freq` per core during a turn turned up something the timings
+alone never would: **with 6 threads the two prime cores sit at 1017 MHz — their idle
+floor — for the whole turn.** Six threads land on the six slower cores and the
+4.32 GHz pair never wakes. That makes handing prefill all 8 look like free speed,
+and justified re-running the experiment properly.
+
+It is still not a win, and now the reason is visible:
+
+| | cpu2 (working core) | cpu7 (prime) | 29-token batch |
+|---|---|---|---|
+| 6 threads | 2400 MHz | **1017 MHz** (idle) | 95-97 ms/token |
+| 8 threads | **1996 MHz** | **2016 MHz** (awake) | 151-158 ms/token |
+
+The change does exactly what it claims — cpu7 wakes, 1017 -> 2016 MHz. But the power
+budget is fixed, so the cores already working drop from 2400 to 1996 MHz. Two extra
+cores at a lower clock lose to six at a higher one, because llama.cpp's threads sync
+at a barrier between graph nodes and the whole graph advances at the slower rate.
+
+Caveat kept deliberately: the 8-thread samples also carried more major faults
+(30-140 against 0-2), so some of that 1.6x is paging rather than clock. The
+direction is not in doubt; the exact size is.
+
+**Reverted to 6, this time on evidence.** The idle prime cores remain real, though —
+what this rules out is *adding* threads, not *using better cores*. Six threads
+pinned to include the prime pair would raise the clock without splitting the power
+budget further. llama.cpp supports thread affinity through its threadpool cpumask;
+that is the next thing worth trying, and unlike this attempt it now has a
+measurement that would show whether it worked.
 
 **The throttling matters more than the tweak did.** The cap outlives the load: after
 ten minutes fully idle the prime cores had recovered only to 2.25 GHz, in slow steps

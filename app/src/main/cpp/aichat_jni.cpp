@@ -296,21 +296,26 @@ std::string load_model(const std::string & path, int backend, int requested_cont
         2,
         6
     );
-    // Prefill shares generation's thread count. Raising it was tried and the
-    // experiment could not be trusted -- see plan 037.
+    // Prefill shares generation's thread count. Raising it to 8 was tried twice
+    // and measured worse both times; the second attempt found the mechanism.
     //
     // Prefill is compute-bound where generation is bandwidth-bound: 39 prompt
     // tokens took 2047 ms with *zero* page faults, so that time is arithmetic,
-    // not I/O. That argues for handing prefill the two prime cores this clamp
-    // excludes. Measuring it on this device is the hard part: sustained inference
-    // drives HyperOS to cap the prime cores at ~1.7-2.2 GHz against a 4.32 GHz
-    // maximum, and the cap outlives the load by more than ten minutes. Prefill
-    // cost tracks that cap almost exactly (55.7 ms/token cold, 143 ms/token
-    // capped -- a 2.57x change against a 2.56x clock change), so a run taken
-    // after a warm-up measures temperature rather than whatever was changed.
-    // Anyone retrying this must read scaling_max_freq alongside every sample and
-    // discard the capped ones, or interleave configurations via
-    // llama_set_n_threads inside one session.
+    // not I/O. And with 6 threads the two 4.32 GHz prime cores sit at their
+    // 1.02 GHz idle floor for a whole turn while six threads crowd the six slower
+    // cores, which makes handing prefill all 8 look like free speed.
+    //
+    // It is not. Raising n_threads_batch to 8 does wake them -- cpu7 went
+    // 1017 -> 2016 MHz, so the change does what it says -- but the power budget is
+    // fixed, so the cores already working dropped 2400 -> 1996 MHz and per-token
+    // cost rose from ~96 ms to ~151 ms on matched 29-token batches. Two more cores
+    // at a lower clock lose to six at a higher one, because llama.cpp's threads
+    // sync at a barrier and the whole graph advances at the slower rate.
+    //
+    // Measuring this needs care, and an earlier attempt got it wrong:
+    // scaling_max_freq is a *cap*, not what the cores actually run at. Sample
+    // scaling_cur_freq on a working core alongside every timing, and check the
+    // major-fault counts match before believing any pair of numbers.
     llama_context_params context_params = llama_context_default_params();
     context_params.n_ctx = context_size;
     context_params.n_batch = batch_capacity;
