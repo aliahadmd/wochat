@@ -6,6 +6,7 @@ import com.aliahad.aichat.core.TurnOrigin
 import com.aliahad.aichat.data.ChatRepository
 import com.aliahad.aichat.voice.AnswerProgress
 import com.aliahad.aichat.voice.VoiceCallSession
+import com.aliahad.aichat.voice.VoiceCallPhase
 import com.aliahad.aichat.voice.VoiceCallState
 import com.aliahad.aichat.voice.VoiceListener
 import com.aliahad.aichat.voice.VoiceSpeaker
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.dropWhile
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /**
  * Binds a [VoiceCallSession] to this app's chat plumbing.
@@ -35,6 +37,14 @@ class VoiceCallCoordinator(
     scope: CoroutineScope,
     private val conversationId: () -> String?,
     private val memoryEnabled: () -> Boolean,
+    /**
+     * Holds and releases the microphone foreground service around a call.
+     *
+     * Lambdas rather than a Context so this stays testable, and because the only
+     * thing the coordinator needs to know is that a call has begun or ended.
+     */
+    private val holdMicrophone: () -> Unit = {},
+    private val releaseMicrophone: () -> Unit = {},
 ) {
     private val _available = MutableStateFlow(false)
     val available: StateFlow<Boolean> = _available
@@ -49,6 +59,19 @@ class VoiceCallCoordinator(
     )
 
     val state: StateFlow<VoiceCallState> = session.state
+
+    init {
+        // Release on *any* return to idle, not just an explicit hang-up. A call can
+        // also end by error or by the pack being unavailable, and a microphone
+        // service left running after that would sit in the notification shade
+        // claiming to listen.
+        scope.launch {
+            session.state
+                .map { it.phase == VoiceCallPhase.IDLE }
+                .distinctUntilChanged()
+                .collect { idle -> if (idle) releaseMicrophone() }
+        }
+    }
 
     /**
      * True once every part of the speech pack is on disk.
@@ -66,6 +89,10 @@ class VoiceCallCoordinator(
     fun start() {
         refreshAvailability()
         if (_available.value) {
+            // Before the session, not after: Android hands a backgrounded app silence
+            // instead of an error, so the microphone has to be held from the first
+            // window rather than from whenever the screen happens to lock.
+            holdMicrophone()
             session.start()
         } else {
             // Never fail silently: an unavailable pack used to look identical to a
@@ -76,7 +103,10 @@ class VoiceCallCoordinator(
         }
     }
 
-    fun hangUp() = session.hangUp()
+    fun hangUp() {
+        session.hangUp()
+        releaseMicrophone()
+    }
 
     fun interrupt() = session.interrupt()
 

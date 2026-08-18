@@ -16,6 +16,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Without this a backgrounded call receives silence from the microphone
+         rather than an error: measured, peak fell to exactly 0.0 two seconds after
+         the screen locked while capture ran on unaware. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <application
         android:name=".AiChatApplication"
@@ -46,6 +50,11 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+        <service
+            android:name=".voice.VoiceCallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <service
             android:name=".residency.ModelResidencyService"
             android:exported="false"

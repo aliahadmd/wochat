@@ -105,6 +105,8 @@ class ChatViewModel internal constructor(
             scope = viewModelScope,
             conversationId = { _uiState.value.selectedConversationId },
             memoryEnabled = { memoryEnabled },
+            holdMicrophone = { com.aliahad.aichat.voice.VoiceCallService.start(application) },
+            releaseMicrophone = { com.aliahad.aichat.voice.VoiceCallService.stop(application) },
         )
     }
     private val initialDraftKey = savedStateHandle.get<String>(KEY_DRAFT_KEY)
