@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Not just main. The voice work landed on an advisor/* branch and broke the
+    # androidTest sources for a day without anyone noticing, because CI never ran
+    # on it -- the compileDebugAndroidTestKotlin step below would have caught it
+    # the same afternoon.
+    branches: [main, 'advisor/**']
   pull_request:
 
 concurrency:
@@ -61,29 +65,44 @@ jobs:
       - name: Run Android lint
         run: ./gradlew lint
 
+      # Uploads are diagnostics, not verdicts. "Artifact storage quota has been
+      # hit" failed the Release 1.2.1 run *after* every build, test and compile
+      # step had passed, which is exactly how a red CI stops meaning anything.
+      #
+      # Note the instrumented-test comment below warns that continue-on-error
+      # once made a permanently broken job look green. That was on a job which
+      # *verified* something; this is on steps that only publish reports. A
+      # failed upload says nothing about the code, and no verification step here
+      # carries it.
       - name: Upload test results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: app/build/reports/tests/
+          retention-days: 7
 
       - name: Upload lint reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: lint-report
           path: app/build/reports/lint-results.html
+          retention-days: 7
 
       - name: Run detekt
         run: ./gradlew detekt
 
       - name: Upload detekt reports
         if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: detekt-reports
           path: app/build/reports/detekt/
+          retention-days: 7
 
   # Instrumented tests are deliberately NOT run in CI.
   #
