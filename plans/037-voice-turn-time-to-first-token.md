@@ -441,6 +441,33 @@ context *is*, so the model scopes its answer to the memory block and treats the
 conversation above as absent. With memory enabled by default, every multi-turn
 conversation that retrieves anything is effectively single-turn.
 
+**Fixed by rewording both headers** to say outright that the conversation is still
+there, rather than implying the block is all there is:
+
+    Notes about the user from earlier sessions. They add to the conversation
+    above, never replace it. Prefer corrected or pinned items, and do not
+    present them as training knowledge.
+
+Re-measured on the device with memory back on and a memory actually retrieved
+(`Memory · 1`), same conversation, same question:
+
+| | answer |
+|---|---|
+| before | "The personal office memory you provided does not contain a list of rivers" |
+| after | "The Ganges is generally considered the longest among the three rivers you listed (Ganges, Brahmaputra, Meghna)" |
+
+— word for word what the memory-*off* control produced, so history is fully back.
+And recall itself still works in the same session: "what is my favourite drink?"
+returns "Your favorite drink is green tea after lunch." The compact header keeps
+the "not from training" instruction, which a unit test protects: the first attempt
+dropped it and the test caught it.
+
+Worth noting for anything else that touches these strings: this failure is invisible
+to the whole gate. Nothing in unit tests, lint, detekt or the build can see a prompt
+that quietly changes what the model pays attention to. Only an A/B on the device
+found it, and only because a restore that *looked* successful produced an answer
+that was not.
+
 ### Step 2 DONE, with a partly negative result — 2026-08-18
 
 Unblocked once `036` introduced `TurnOrigin.VOICE`. A spoken turn now plans with

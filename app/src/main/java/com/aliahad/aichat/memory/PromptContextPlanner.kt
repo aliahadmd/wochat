@@ -77,11 +77,22 @@ enum class ContextBudget {
         private const val COMPACT_MEMORIES = 2
         private const val COMPACT_MEMORY_TOKENS = 96
 
+        // "Personal Office Memory follows. Treat it as user-owned context..." read to
+        // the model as a declaration of what context *is*. Measured 2026-08-18 on the
+        // same conversation with only this toggle changed: with memory on, "which of
+        // those three rivers is the longest?" got "the personal office memory you
+        // provided does not contain a list of rivers"; with memory off it answered
+        // from the list correctly. The history was in the KV cache throughout
+        // ("Session reuse accepted: 10 of 10"), so the model was not missing context,
+        // it was scoping itself to this block. Both headers now say outright that the
+        // conversation is still there.
         private const val FULL_MEMORY_HEADER =
-            "\n\nPersonal Office Memory follows. Treat it as user-owned context, " +
-                "prefer corrected or pinned items, and do not claim it came from model training.\n"
+            "\n\nNotes about the user from earlier sessions. They add to the conversation " +
+                "above, never replace it. Prefer corrected or pinned items, and do not " +
+                "present them as training knowledge.\n"
 
-        private const val COMPACT_MEMORY_HEADER = "\n\nKnown about the user, not from training:\n"
+        private const val COMPACT_MEMORY_HEADER =
+            "\n\nUser notes, not from training, alongside the conversation above:\n"
     }
 }
 

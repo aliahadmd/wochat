@@ -188,7 +188,7 @@ class PromptContextPlannerTest {
         )
 
         assertEquals(1, withMemory.memories.size)
-        assertTrue(withMemory.turnPreamble.contains("Personal Office Memory follows"))
+        assertTrue(withMemory.turnPreamble.contains("Notes about the user from earlier sessions"))
         assertTrue(withMemory.turnPreamble.contains("remembered fact"))
         assertEquals(1, repository.searchCalls)
 
@@ -207,7 +207,7 @@ class PromptContextPlannerTest {
         )
 
         assertTrue(withoutMemory.memories.isEmpty())
-        assertFalse(withoutMemory.turnPreamble.contains("Personal Office Memory follows"))
+        assertFalse(withoutMemory.turnPreamble.contains("Notes about the user from earlier sessions"))
         assertEquals(0, repository2.searchCalls)
     }
 
