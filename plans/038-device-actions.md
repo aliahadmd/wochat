@@ -2,7 +2,7 @@
 
 ## Status
 
-Researched 2026-08-18, not started. The headline finding is that **nothing needs
+Step 1 **done and verified on the device**, 2026-08-18. Researched the same day. The headline finding is that **nothing needs
 to be added to llama.cpp for this** — the tool-calling machinery is already
 vendored and completely unused.
 
@@ -109,9 +109,21 @@ and measure it before believing either way.
 
 ## Steps
 
-1. **Prove the loop with one tool.** `toggle_flashlight` — no permission, instantly
-   observable, no confirmation needed. Wire `inputs.tools`, read `msg.tool_calls`,
-   fire `setTorchMode`. If this works the rest is repetition.
+1. ~~**Prove the loop with one tool.**~~ **Done.** "Turn on the flashlight" →
+   `Tools available to the model: 1` → and Android's own camera service, not our
+   logging, reporting `Torch for camera id 0 turned on for client PID 14541`.
+   "Now turn it off please" turned it off again, so the model reads the argument
+   rather than pattern-matching the word *flashlight*. The reply reads
+   "Flashlight on."
+
+   What was needed natively: `inputs.tools` and `tool_choice` in `chat_inputs()`,
+   `parse_tool_calls` flipped from the hardcoded `false`, and the template's
+   tool-call grammar handed to the sampler as `COMMON_GRAMMAR_TYPE_TOOL_CALLS`
+   with its lazy triggers — that last one is what makes a call valid by
+   construction rather than parsed hopefully. Two JNI calls carry it: `setTools`
+   in, `lastToolCalls` out.
+
+   Gated by an **Actions** chip beside Thinking and Memory, off by default.
 2. **Measure the prompt cost.** Tokens added by the schema, and first-turn prefill
    with tools on versus off. Numbers, not estimates.
 3. **Add the no-permission set:** alarm, timer, dial, calendar, directions.

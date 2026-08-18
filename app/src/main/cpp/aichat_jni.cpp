@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "chat.h"
+#include <nlohmann/json.hpp>
 #include "common.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
@@ -56,6 +57,10 @@ std::deque<std::pair<int, std::string>> pending_generation_output;
 // carried media cannot produce an honest record and declines to save.
 std::vector<llama_token> session_tokens;
 bool session_has_media = false;
+// Tools the assistant may call this turn, empty when device actions are off.
+// Vendored llama.cpp has carried the whole tool-calling path since before this
+// app used any of it; this is the switch that turns it on.
+std::vector<common_chat_tool> active_tools;
 // Threads run pinned to the fastest cores; see the affinity comment in load_model.
 ggml_threadpool * threadpool = nullptr;
 void (*threadpool_free_fn)(ggml_threadpool *) = nullptr;
@@ -514,6 +519,10 @@ common_chat_templates_inputs chat_inputs(
     inputs.enable_thinking = thinking_enabled;
     inputs.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
     inputs.chat_template_kwargs["enable_thinking"] = thinking_enabled ? "true" : "false";
+    if (!active_tools.empty()) {
+        inputs.tools = active_tools;
+        inputs.tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
+    }
     return inputs;
 }
 
@@ -668,6 +677,15 @@ std::string configure_sampler(const common_chat_params & chat_params) {
     common_params_sampling params;
     params.temp = sampling_temperature;
     params.generation_prompt = chat_params.generation_prompt;
+    // Constrain sampling to the template's tool-call grammar. This is what makes a
+    // call valid by construction rather than parsed hopefully and repaired: the
+    // sampler cannot emit a name or an argument shape the schema does not allow.
+    // Lazy, so ordinary prose is unconstrained until a trigger appears.
+    if (!chat_params.grammar.empty()) {
+        params.grammar = common_grammar(COMMON_GRAMMAR_TYPE_TOOL_CALLS, chat_params.grammar);
+        params.grammar_lazy = chat_params.grammar_lazy;
+        params.grammar_triggers = chat_params.grammar_triggers;
+    }
     if (!chat_params.thinking_end_tag.empty()) {
         const auto * vocab = llama_model_get_vocab(model);
         // Leave room in every generation segment for a visible answer. An
@@ -690,7 +708,7 @@ std::string configure_sampler(const common_chat_params & chat_params) {
 
     generation_parser_params = common_chat_parser_params(chat_params);
     generation_parser_params.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
-    generation_parser_params.parse_tool_calls = false;
+    generation_parser_params.parse_tool_calls = !active_tools.empty();
     if (!chat_params.parser.empty()) {
         generation_parser_params.parser.load(chat_params.parser);
     }
@@ -1123,6 +1141,77 @@ Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeLoadSession(
         LOGE("Session load failed: %s", error.what());
         clear_session();
         return -1;
+    }
+}
+
+/**
+ * Declares the tools the assistant may call, or clears them when given "[]".
+ *
+ * Takes JSON rather than a parallel-array JNI signature because a tool's
+ * `parameters` is itself a JSON schema, and round-tripping that through strings
+ * would only mean re-serialising it here.
+ *
+ * Changing this changes the prompt the template builds, so it invalidates the KV
+ * cache exactly like a system-prompt change. Set it once for a conversation
+ * rather than per turn.
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeSetTools(
+    JNIEnv * env,
+    jobject,
+    jstring tools_json
+) {
+    try {
+        const std::string raw = from_jstring(env, tools_json);
+        std::vector<common_chat_tool> parsed;
+        if (!raw.empty()) {
+            const auto array = nlohmann::json::parse(raw);
+            if (!array.is_array()) return to_jstring(env, "Tools must be a JSON array");
+            for (const auto & entry : array) {
+                common_chat_tool tool;
+                tool.name = entry.value("name", "");
+                tool.description = entry.value("description", "");
+                // Kept as a string: this is a schema, not data to be interpreted.
+                tool.parameters = entry.contains("parameters")
+                    ? entry["parameters"].dump()
+                    : "{}";
+                if (tool.name.empty()) return to_jstring(env, "Every tool needs a name");
+                parsed.push_back(std::move(tool));
+            }
+        }
+        active_tools = std::move(parsed);
+        LOGI("Tools available to the model: %zu", active_tools.size());
+        return nullptr;
+    } catch (const std::exception & error) {
+        LOGE("Could not set tools: %s", error.what());
+        return to_jstring(env, error.what());
+    }
+}
+
+/**
+ * Whatever the finished turn asked to call, as a JSON array, or "[]".
+ *
+ * Read after generation ends. Arguments arrive already shaped by the tool-call
+ * grammar, so this is reporting a parse rather than guessing at loose text.
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_aliahad_aichat_inference_NativeInferenceEngine_nativeLastToolCalls(
+    JNIEnv * env,
+    jobject
+) {
+    try {
+        auto array = nlohmann::json::array();
+        for (const auto & call : parsed_assistant_message.tool_calls) {
+            array.push_back({
+                {"name", call.name},
+                {"arguments", call.arguments},
+                {"id", call.id},
+            });
+        }
+        return to_jstring(env, array.dump());
+    } catch (const std::exception & error) {
+        LOGE("Could not read tool calls: %s", error.what());
+        return to_jstring(env, "[]");
     }
 }
 

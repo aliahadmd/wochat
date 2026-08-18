@@ -209,6 +209,10 @@ class RecoveringInferenceEngine(
      * a turn has already succeeded, so blocking on it would add its cost to the next
      * turn for no benefit, and a failure to save is not a backend failure.
      */
+    override suspend fun setTools(toolsJson: String) = active.setTools(toolsJson)
+
+    override suspend fun lastToolCalls(): String = active.lastToolCalls()
+
     override suspend fun persistSession(
         conversationId: String,
         settings: GenerationSettings,

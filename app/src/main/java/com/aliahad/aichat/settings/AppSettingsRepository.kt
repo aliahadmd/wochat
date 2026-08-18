@@ -39,6 +39,7 @@ class AppSettingsRepository(
         val systemPrompt = stringPreferencesKey("system_prompt")
         val lastQualityMode = stringPreferencesKey("last_quality_mode")
         val memoryEnabled = booleanPreferencesKey("memory_enabled")
+        val actionsEnabled = booleanPreferencesKey("actions_enabled")
         val allowMeteredModelDownloads = booleanPreferencesKey("allow_metered_model_downloads")
         val themeMode = stringPreferencesKey("theme_mode")
         val dynamicColor = booleanPreferencesKey("dynamic_color")
@@ -99,6 +100,17 @@ class AppSettingsRepository(
 
     val memoryEnabled: Flow<Boolean> = store.data.map {
         it[Keys.memoryEnabled] ?: true
+    }
+
+    /**
+     * Whether the assistant may act on the device.
+     *
+     * Off by default. Tool schemas ride in the prompt prefix, so they cost prefill
+     * on the first turn of every conversation, and someone who never asks for an
+     * action should not pay for the option.
+     */
+    val actionsEnabled: Flow<Boolean> = store.data.map {
+        it[Keys.actionsEnabled] ?: false
     }
 
 
@@ -215,6 +227,10 @@ class AppSettingsRepository(
 
     suspend fun setMemoryEnabled(enabled: Boolean) {
         store.edit { it[Keys.memoryEnabled] = enabled }
+    }
+
+    suspend fun setActionsEnabled(enabled: Boolean) {
+        store.edit { it[Keys.actionsEnabled] = enabled }
     }
 
 

@@ -39,6 +39,7 @@ import com.aliahad.aichat.core.SkillPromptBlock
 import com.aliahad.aichat.core.SkillRecord
 import com.aliahad.aichat.core.TurnOrigin
 import com.aliahad.aichat.core.UserTurn
+import com.aliahad.aichat.actions.DeviceActions
 import com.aliahad.aichat.data.AppDatabase
 import com.aliahad.aichat.data.ChatRepository
 import com.aliahad.aichat.data.ChatSearchResult
@@ -133,6 +134,7 @@ class ChatViewModelInstrumentedTest {
             residencyController = residencyController,
             inferenceEngine = fakeInferenceEngine,
             settingsRepository = settings,
+            deviceActions = DeviceActions(ApplicationProvider.getApplicationContext()),
             messages = uiMessages,
             // The runner owns the turn's scope now; the test drives it directly so it
             // stays deterministic rather than racing a background launch.
@@ -484,6 +486,8 @@ private class FakeInferenceEngine : InferenceEngine {
         ModelCapabilities(true, true, modelContextLimit)
     override suspend fun unloadProjector() = Unit
     override suspend fun restoreSession(conversationId: String, history: List<ChatTurn>, settings: GenerationSettings) = Unit
+    override suspend fun setTools(toolsJson: String) = Unit
+    override suspend fun lastToolCalls(): String = "[]"
     override suspend fun persistSession(conversationId: String, settings: GenerationSettings, history: List<ChatTurn>) = Unit
     override fun generate(turn: UserTurn, settings: GenerationSettings, profile: InferenceExecutionProfile): Flow<GenerationEvent> =
         flowOf(GenerationEvent.Completed(com.aliahad.aichat.core.GenerationStopReason.EOG, 0, 0))

@@ -414,6 +414,10 @@ class AppContainer(val application: Application) {
      * exactly one thing driving it: a per-Activity runner meant a relaunched UI had
      * no idea a turn was in flight and would start a second one on the same engine.
      */
+    val deviceActions: com.aliahad.aichat.actions.DeviceActions by lazy {
+        com.aliahad.aichat.actions.DeviceActions(application)
+    }
+
     val chatTurnRunner: ChatTurnRunner by lazy {
         ChatTurnRunner(
             chatRepository = chatRepository,
@@ -425,6 +429,7 @@ class AppContainer(val application: Application) {
             residencyController = residencyController,
             inferenceEngine = inferenceEngine,
             settingsRepository = settings,
+            deviceActions = deviceActions,
             messages = uiMessages,
             scope = turnScope,
         )

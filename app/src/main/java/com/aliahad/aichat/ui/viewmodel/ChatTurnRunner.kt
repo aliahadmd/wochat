@@ -1,6 +1,7 @@
 package com.aliahad.aichat.ui.viewmodel
 
 import com.aliahad.aichat.ThinkingUiState
+import com.aliahad.aichat.actions.DeviceActions
 import com.aliahad.aichat.attachment.AttachmentRepository
 import com.aliahad.aichat.core.Attachment
 import com.aliahad.aichat.core.AttachmentKind
@@ -34,6 +35,10 @@ import com.aliahad.aichat.residency.ModelResidencyState
 import com.aliahad.aichat.settings.AppSettingsRepository
 import com.aliahad.aichat.skill.MAX_SELECTED_SKILLS
 import com.aliahad.aichat.skill.SkillRepository
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -82,6 +87,7 @@ class ChatTurnRunner(
     private val residencyController: ModelResidencyController,
     private val inferenceEngine: InferenceEngine,
     private val settingsRepository: AppSettingsRepository,
+    private val deviceActions: DeviceActions,
     private val messages: UiMessageManager,
     private val scope: CoroutineScope,
 ) {
@@ -339,6 +345,9 @@ class ChatTurnRunner(
             val plannedSettings = settings
                 .copy(systemPrompt = contextPlan.systemPrompt)
                 .cappedFor(ContextBudget.forOrigin(request.origin))
+            // Before the restore, because tools change the prompt the template
+            // builds and therefore what the restore has to match.
+            inferenceEngine.offerTools(deviceActions, settingsRepository.actionsEnabled.first())
             inferenceEngine.restoreSession(request.conversationId, plannedTurns, plannedSettings)
             trace.mark("restore")
             if (visualCount > 0 && historyImageBudget > visualBudget) {
@@ -447,8 +456,8 @@ class ChatTurnRunner(
                 promptTokens = contextPlan.estimatedTokens,
                 generatedTokens = result.answerTokens,
             )?.let { completed ->
-                assistant = completed
-                chatRepository.updateMessage(completed)
+                assistant = runDeviceActions(inferenceEngine, deviceActions, completed)
+                chatRepository.updateMessage(requireNotNull(assistant))
                 // Write the cache out now that it holds the finished exchange. The
                 // model is unloaded whenever HyperOS trims this app in the
                 // background, and rebuilding from nothing cost 72.6 s for 929
@@ -457,7 +466,7 @@ class ChatTurnRunner(
                 inferenceEngine.persistTurnQuietly(
                     request.conversationId,
                     plannedSettings,
-                    plannedTurns + ChatTurn(user, contexts) + ChatTurn(completed),
+                    plannedTurns + ChatTurn(user, contexts) + ChatTurn(requireNotNull(assistant)),
                 )
             }
         } catch (cancelled: CancellationException) {
@@ -711,19 +720,6 @@ class ChatTurnRunner(
         return null
     }
 
-    private fun visionDetailProfile(@Suppress("UNUSED_PARAMETER") model: ModelRecord) =
-        VisionDetailProfile.MOBILE
-
-    private fun attachmentOnlyPrompt(attachments: List<Attachment>) =
-        "Describe and analyze ${attachments.joinToString { it.displayName }}."
-
-    private fun multimodalRequirement(hasImages: Boolean, hasAudio: Boolean) = when {
-        hasImages && hasAudio -> MultimodalRequirement.BOTH
-        hasImages -> MultimodalRequirement.VISION
-        hasAudio -> MultimodalRequirement.AUDIO
-        else -> MultimodalRequirement.NONE
-    }
-
     companion object {
         const val MAX_AUDIO_ATTACHMENTS = 3
         const val MAX_AUDIO_DURATION_MILLIS = 90_000L
@@ -776,6 +772,72 @@ private suspend fun InferenceEngine.persistTurnQuietly(
     runCatching { persistSession(conversationId, settings, history) }
 }
 
+
+/**
+ * Runs whatever the finished turn asked to call, and says what happened.
+ *
+ * The result is appended to the reply rather than replacing it, because a turn
+ * can legitimately be both words and an action ("Sure, here you go" plus the
+ * call). Failures are appended too: a tool that fails silently is worse than no
+ * tool, since the user is left believing the thing happened.
+ *
+ * Plan 038 step 1 stops here rather than feeding results back for a second pass.
+ * That is the honest scope — this proves the loop end to end, and the confirming
+ * reply in the model's own words is the next step, not this one.
+ */
+// Pure helpers, kept at file level rather than as members. ChatTurnRunner sits on
+// detekt's LargeClass threshold and has crossed it four times while this plan and
+// the last were built; anything that does not need the runner's state should not
+// add to its size.
+
+private fun visionDetailProfile(@Suppress("UNUSED_PARAMETER") model: ModelRecord) =
+    VisionDetailProfile.MOBILE
+
+private fun attachmentOnlyPrompt(attachments: List<Attachment>) =
+    "Describe and analyze ${attachments.joinToString { it.displayName }}."
+
+private fun multimodalRequirement(hasImages: Boolean, hasAudio: Boolean) = when {
+    hasImages && hasAudio -> MultimodalRequirement.BOTH
+    hasImages -> MultimodalRequirement.VISION
+    hasAudio -> MultimodalRequirement.AUDIO
+    else -> MultimodalRequirement.NONE
+}
+
+/**
+ * Hands the model its tools, or clears them when actions are off.
+ *
+ * Always called, including to clear: leaving a previous conversation's tools in
+ * place would put schemas in a prompt the user has switched actions off for, and
+ * silently cost them the prefill they opted out of.
+ */
+private suspend fun InferenceEngine.offerTools(actions: DeviceActions, enabled: Boolean) {
+    setTools(if (enabled) actions.declarations() else "[]")
+}
+
+private suspend fun runDeviceActions(
+    engine: InferenceEngine,
+    actions: DeviceActions,
+    message: ChatMessage,
+): ChatMessage {
+    val calls = runCatching {
+        Json.parseToJsonElement(engine.lastToolCalls()).jsonArray
+    }.getOrElse { return message }
+    if (calls.isEmpty()) return message
+
+    val outcomes = calls.mapNotNull { element ->
+        val call = element as? JsonObject ?: return@mapNotNull null
+        val name = call["name"]?.jsonPrimitive?.content ?: return@mapNotNull null
+        val arguments = call["arguments"]?.jsonPrimitive?.content.orEmpty()
+        actions.execute(name, arguments).message
+    }
+    if (outcomes.isEmpty()) return message
+
+    return message.copy(
+        content = listOf(message.content, outcomes.joinToString(" "))
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n"),
+    )
+}
 
 private fun GenerationStopReason.toMessageStatus(): MessageStatus = when (this) {
     GenerationStopReason.EOG -> MessageStatus.COMPLETE

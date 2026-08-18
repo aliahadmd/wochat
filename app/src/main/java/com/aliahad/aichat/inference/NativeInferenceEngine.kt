@@ -345,11 +345,12 @@ class NativeInferenceEngine(
         )
     }
 
-    private fun systemPromptFor(settings: GenerationSettings): String = if (settings.thinkingEnabled) {
-        "${settings.systemPrompt}\nUse your internal reasoning before answering."
-    } else {
-        "${settings.systemPrompt}\nAnswer directly without displaying hidden reasoning."
+    override suspend fun setTools(toolsJson: String) = withContext(dispatcher) {
+        nativeSetTools(toolsJson)?.let { Log.w(TRACE_TAG, "Tools rejected: $it") }
+        Unit
     }
+
+    override suspend fun lastToolCalls(): String = withContext(dispatcher) { nativeLastToolCalls() }
 
     override fun generate(
         turn: UserTurn,
@@ -704,6 +705,8 @@ class NativeInferenceEngine(
         roles: Array<String>,
         contents: Array<String>,
     ): Int
+    private external fun nativeSetTools(toolsJson: String): String?
+    private external fun nativeLastToolCalls(): String
     private external fun nativeSaveSession(path: String): Long
     private external fun nativeLoadSession(
         path: String,
@@ -768,6 +771,19 @@ private fun Int.toStopReason(): GenerationStopReason = when (this) {
 }
 
 /** `nativeSessionPrefixLength` sentinel: the KV cache cannot be reused. */
+/**
+ * The system prompt as the model actually sees it, thinking instruction included.
+ *
+ * File-level because it is a pure function of the settings, and because
+ * NativeInferenceEngine sits at detekt's LargeClass threshold — its JNI surface
+ * grows every time the native API does.
+ */
+private fun systemPromptFor(settings: GenerationSettings): String = if (settings.thinkingEnabled) {
+    "${settings.systemPrompt}\nUse your internal reasoning before answering."
+} else {
+    "${settings.systemPrompt}\nAnswer directly without displaying hidden reasoning."
+}
+
 internal const val REBUILD_SESSION = -1
 
 /** Shares the JVM-side turn trace tag; see `ui/viewmodel/TurnTrace.kt`. */

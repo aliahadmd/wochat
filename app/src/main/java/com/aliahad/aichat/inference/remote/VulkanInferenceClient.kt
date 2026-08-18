@@ -177,6 +177,12 @@ class VulkanInferenceClient @OptIn(ExperimentalCoroutinesApi::class) constructor
      * model reload in *this* process, and the remote backend owns a separate
      * context whose cache this process cannot write out.
      */
+    // Not carried over the remote protocol yet; device actions run on the CPU
+    // engine, and a Vulkan turn simply offers the model no tools.
+    override suspend fun setTools(toolsJson: String) = Unit
+
+    override suspend fun lastToolCalls(): String = "[]"
+
     override suspend fun persistSession(
         conversationId: String,
         settings: GenerationSettings,

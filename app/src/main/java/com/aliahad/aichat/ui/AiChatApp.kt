@@ -125,6 +125,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -154,6 +155,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.aliahad.aichat.BuildConfig
 import com.aliahad.aichat.ThinkingUiState
 import com.aliahad.aichat.core.BackendMode
 import com.aliahad.aichat.core.Attachment
@@ -440,6 +442,7 @@ fun AiChatApp(
                     onToggleThinking = chatActions::toggleThinking,
                     onSetThinkingMode = chatActions::setThinkingMode,
                     onSetMemoryMode = chatActions::setMemoryMode,
+                    onSetActionsMode = chatActions::setActionsMode,
                     onOpenSettings = { navigateTo(AppRoute.SETTINGS) },
                     onToggleSkill = chatActions::toggleSelectedSkill,
                     onAddPhotos = onAddPhotos,
@@ -623,6 +626,7 @@ private fun ChatScreen(
     onToggleThinking: (String) -> Unit,
     onSetThinkingMode: (Boolean) -> Unit,
     onSetMemoryMode: (Boolean) -> Unit,
+    onSetActionsMode: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
     onToggleSkill: (String) -> Unit,
     onAddPhotos: () -> Unit,
@@ -716,8 +720,10 @@ private fun ChatScreen(
                 thinkingEnabled = state.thinkingEnabled,
                 memoryEnabled = state.memoryEnabled,
                 usedMemoryCount = state.usedMemoryCount,
+                actionsEnabled = state.actionsEnabled,
                 onThinkingChange = onSetThinkingMode,
                 onMemoryChange = onSetMemoryMode,
+                onActionsChange = onSetActionsMode,
             ),
             attachments = state.draftAttachments,
             skills = state.skills,
@@ -1298,8 +1304,10 @@ private data class ComposerModes(
     val thinkingEnabled: Boolean,
     val memoryEnabled: Boolean,
     val usedMemoryCount: Int,
+    val actionsEnabled: Boolean,
     val onThinkingChange: (Boolean) -> Unit,
     val onMemoryChange: (Boolean) -> Unit,
+    val onActionsChange: (Boolean) -> Unit,
 )
 
 @Composable
@@ -1481,6 +1489,17 @@ private fun Composer(
                         selected = modes.memoryEnabled,
                         enabled = !sending,
                         onClick = { modes.onMemoryChange(!modes.memoryEnabled) },
+                    )
+                }
+                item {
+                    // Off by default: tool schemas ride in the prompt prefix, so
+                    // they cost prefill on a conversation's first turn whether or
+                    // not an action is ever asked for.
+                    ComposerModeChip(
+                        label = "Actions",
+                        selected = modes.actionsEnabled,
+                        enabled = !sending,
+                        onClick = { modes.onActionsChange(!modes.actionsEnabled) },
                     )
                 }
                 items(selectedSkills, key = SkillRecord::id) { skill ->
@@ -2975,6 +2994,18 @@ private fun SettingsScreen(
                     Text("Export diagnostics JSON")
                 }
             }
+        }
+        // Last thing in every section, so "which build am I on?" is answerable
+        // without a terminal. versionCode is included because versionName repeats
+        // across a rebuild but the code never does.
+        item {
+            Text(
+                text = "wochat ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
         item {
             Spacer(Modifier.height(24.dp))

@@ -391,6 +391,9 @@ private class ScriptedSummarizationEngine(
     override val modelContextLimit: Int = 8_192
     override val activeContextSize: Int = 0
 
+    override suspend fun setTools(toolsJson: String) = Unit
+    override suspend fun lastToolCalls(): String = "[]"
+
     override suspend fun persistSession(
         conversationId: String,
         settings: GenerationSettings,

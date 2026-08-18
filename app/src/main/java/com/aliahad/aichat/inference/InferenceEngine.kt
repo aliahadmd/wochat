@@ -74,6 +74,17 @@ interface InferenceEngine {
         settings: GenerationSettings,
         profile: InferenceExecutionProfile = InferenceExecutionProfile.NORMAL,
     ): Flow<GenerationEvent>
+    /**
+     * Declares the tools the assistant may call, or clears them with "[]".
+     *
+     * Changes the prompt the chat template builds, so it invalidates the KV cache
+     * like any system-prompt change. Set once per conversation, not per turn.
+     */
+    suspend fun setTools(toolsJson: String)
+
+    /** Whatever the finished turn asked to call, as a JSON array, or "[]". */
+    suspend fun lastToolCalls(): String
+
     suspend fun countTokens(text: String): Int
     suspend fun verifyLoadedContext(): Int
 

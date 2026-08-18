@@ -674,6 +674,9 @@ private class FakeInferenceEngine(
 
     override suspend fun unloadProjector(): Unit = error("unused")
 
+    override suspend fun setTools(toolsJson: String) = Unit
+    override suspend fun lastToolCalls(): String = "[]"
+
     override suspend fun persistSession(
         conversationId: String,
         settings: GenerationSettings,

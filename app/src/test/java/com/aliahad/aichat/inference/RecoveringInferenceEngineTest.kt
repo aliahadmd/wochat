@@ -368,6 +368,9 @@ private class FakeInferenceEngine(
         loadedCapabilities = null
     }
 
+    override suspend fun setTools(toolsJson: String) = Unit
+    override suspend fun lastToolCalls(): String = "[]"
+
     var persistCount = 0
     var persistFailure: Throwable? = null
 

@@ -221,6 +221,11 @@ class ChatViewModel internal constructor(
             }
         }
         viewModelScope.launch {
+            settings.actionsEnabled.collectLatest { enabled ->
+                _uiState.update { it.copy(actionsEnabled = enabled) }
+            }
+        }
+        viewModelScope.launch {
             settings.thinkingEnabled.collectLatest { enabled ->
                 _uiState.update { it.copy(thinkingEnabled = enabled) }
             }
@@ -426,6 +431,10 @@ class ChatViewModel internal constructor(
      */
     fun setMemoryMode(enabled: Boolean) {
         launchCatching { settings.setMemoryEnabled(enabled) }
+    }
+
+    fun setActionsMode(enabled: Boolean) {
+        launchCatching { settings.setActionsEnabled(enabled) }
     }
 
     fun toggleSelectedSkill(id: String) {
