@@ -485,9 +485,15 @@ class PromptContextPlannerTest {
 
         // The compact preamble must keep the instruction that changes answers.
         assertTrue(spoken.turnPreamble.contains("not from training"))
+        // Compared without the spoken-style instruction, which is a deliberate
+        // addition rather than wrapper. What this test exists to protect is that the
+        // *memory block* stays small when spoken; the style note is measured
+        // separately, by SpokenTurnBudgetTest, for exactly the same reason.
+        val spokenMemoryBlock = spoken.turnPreamble
+            .replace(requireNotNull(ContextBudget.COMPACT.spokenStyle), "")
         assertTrue(
-            "the compact preamble should be markedly smaller",
-            spoken.turnPreamble.length < typed.turnPreamble.length / 2,
+            "the compact memory block should be markedly smaller",
+            spokenMemoryBlock.length < typed.turnPreamble.length / 2,
         )
     }
 

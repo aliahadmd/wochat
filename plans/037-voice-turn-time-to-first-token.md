@@ -522,6 +522,47 @@ here, so it is worth writing down:
 - A cold baseline that cannot be reproduced at the end of the session is not a
   baseline. Re-run it last and check it still holds.
 
+### Step 3 built: a spoken turn is capped and told to sound spoken — 2026-08-18
+
+Two changes, both hanging off the existing `ContextBudget` so "talking is cheaper
+than typing" stays in one place:
+
+- **`maxAnswerTokens` capped at 160 for voice** — roughly 20 seconds of speech.
+  Clamped, never assigned: someone who already chose a shorter limit meant it, and
+  a "cap" that raised their ceiling would be a bug.
+- **A style instruction in the per-turn preamble**: *"Spoken reply: two or three
+  plain sentences, no lists, code or formatting."*
+
+The plan said to put brevity in the voice *system prompt*. That would have been a
+mistake and this plan is why: a per-origin system prompt changes the cached prefix
+the moment a conversation mixes typing and talking, and re-prefilling the history
+costs far more than the instruction saves. It goes in the preamble, where the
+retrieved memories already live for the same reason.
+
+**The instruction was cut down after measuring it.** The first draft ran 187 chars,
+~46 tokens, ~2.6 s of prefill on every spoken turn at 56 ms/token — more than the
+memory wrapper this budget exists to have removed. Trimmed to 76 chars / ~19 tokens,
+keeping only what changes the output: length, plainness, and not dictating markup or
+code aloud. Anything added here is paid on every single spoken turn.
+
+The wording is deliberately about *form only*. The memory-header regression above is
+the reason: phrasing that reads as a declaration of the available context made the
+model stop using the conversation entirely. A unit test now asserts the style
+instruction contains no context-scoping words at all.
+
+An existing test asserted the spoken preamble was under half the typed one. It now
+compares the *memory block*, with the style instruction excluded, because that was
+always the property worth protecting — the style note is a deliberate addition
+rather than wrapper, and is size-checked separately.
+
+**Verified so far**: typed turns are unchanged — "list four fruits with a short note
+on each" still returns a numbered list with bold labels and full formatting.
+
+**Not yet verified**: the spoken side. A voice turn needs someone to actually speak,
+so audible brevity is the owner's check, not something the harness can make. Timing
+is also not measurable at present — the device is still holding the thermal cap from
+the prefill work above, and this step was never expected to move TTFT anyway.
+
 ### Step 2 DONE, with a partly negative result — 2026-08-18
 
 Unblocked once `036` introduced `TurnOrigin.VOICE`. A spoken turn now plans with

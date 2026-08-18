@@ -24,6 +24,7 @@ import com.aliahad.aichat.inference.VisionBudgetPlanner
 import com.aliahad.aichat.inference.VisionDetailProfile
 import com.aliahad.aichat.memory.MemoryRepository
 import com.aliahad.aichat.memory.ContextBudget
+import com.aliahad.aichat.memory.cappedFor
 import com.aliahad.aichat.memory.PromptContextPlanner
 import com.aliahad.aichat.model.ModelConstants
 import com.aliahad.aichat.model.ModelRepository
@@ -332,7 +333,11 @@ class ChatTurnRunner(
                 )
             }
             trace.mark("persist-assistant")
-            val plannedSettings = settings.copy(systemPrompt = contextPlan.systemPrompt)
+            // A spoken answer is capped shorter than a typed one. Tokens never
+            // generated are the one saving that survives the device's thermal cap.
+            val plannedSettings = settings
+                .copy(systemPrompt = contextPlan.systemPrompt)
+                .cappedFor(ContextBudget.forOrigin(request.origin))
             inferenceEngine.restoreSession(request.conversationId, plannedTurns, plannedSettings)
             trace.mark("restore")
             if (visualCount > 0 && historyImageBudget > visualBudget) {

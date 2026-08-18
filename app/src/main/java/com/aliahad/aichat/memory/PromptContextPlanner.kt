@@ -25,6 +25,21 @@ import com.aliahad.aichat.skill.formatSkillPromptBlocks
  * between a typed and a spoken turn decline session reuse and re-prefill the whole
  * conversation, trading ~4 s for ~30 s.
  */
+/**
+ * Applies [budget]'s answer ceiling, leaving the user's own setting alone when the
+ * budget does not impose one.
+ *
+ * Clamped rather than assigned: someone who has already chosen a shorter limit than
+ * the spoken cap meant it, and a "cap" that raised their ceiling would be a bug.
+ */
+internal fun GenerationSettings.cappedFor(budget: ContextBudget): GenerationSettings {
+    val ceiling = budget.maxAnswerTokens ?: return this
+    return copy(
+        maxNewTokens = minOf(maxNewTokens, ceiling),
+        maxAnswerTokens = minOf(maxAnswerTokens, ceiling),
+    ).normalized()
+}
+
 enum class ContextBudget {
     FULL,
     COMPACT,
@@ -63,6 +78,31 @@ enum class ContextBudget {
     val memoryHeader: String
         get() = if (this == COMPACT) COMPACT_MEMORY_HEADER else FULL_MEMORY_HEADER
 
+    /**
+     * Ceiling on the answer, or null to leave the user's own setting alone.
+     *
+     * A spoken answer wants to be shorter than a written one whatever the latency:
+     * a listener cannot skim, and there is no scrollback. It also happens to be the
+     * one saving that survives thermal throttling — the device caps its prime cores
+     * at ~1.7 GHz under sustained load, and no tuning recovers that, but tokens
+     * never generated cost nothing at any clock.
+     */
+    val maxAnswerTokens: Int? get() = if (this == COMPACT) COMPACT_ANSWER_TOKENS else null
+
+    /**
+     * Style instruction for an answer that will be read aloud, or null when typed.
+     *
+     * Deliberately about *style only*. The memory header taught this the hard way:
+     * wording that sounds like it defines the available context makes the model stop
+     * using the conversation. This says how to answer, never what to answer from.
+     *
+     * Lives in the per-turn preamble rather than the system prompt on purpose. A
+     * per-origin system prompt would change the cached prefix the moment a
+     * conversation mixed typing and talking, and re-prefilling the whole history
+     * costs far more than this instruction could ever save.
+     */
+    val spokenStyle: String? get() = if (this == COMPACT) SPOKEN_STYLE else null
+
     companion object {
         /** Talking buys less context than typing; see the class comment for why. */
         fun forOrigin(origin: TurnOrigin): ContextBudget =
@@ -76,6 +116,21 @@ enum class ContextBudget {
         // retrieval is ranked, so the top 2 are the ones worth having.
         private const val COMPACT_MEMORIES = 2
         private const val COMPACT_MEMORY_TOKENS = 96
+
+        // ~160 tokens is roughly 20 seconds of speech: long enough to answer a
+        // question properly, short enough that the listener can still interrupt.
+        private const val COMPACT_ANSWER_TOKENS = 160
+
+        // Kept short because it is prefilled on every spoken turn, and prefill is
+        // compute-bound at ~56 ms/token on a cold device -- an instruction that
+        // rambles costs more than the rambling it prevents.
+        // Every word here is prefilled on every spoken turn, and prefill is
+        // compute-bound at ~56 ms/token cold. The first draft ran 187 chars, ~46
+        // tokens, ~2.6 s a turn -- more than the memory wrapper this budget exists
+        // to have removed. Trimmed to the three things that actually change the
+        // output: length, plainness, and not dictating markup or code aloud.
+        private const val SPOKEN_STYLE =
+            "\n\nSpoken reply: two or three plain sentences, no lists, code or formatting.\n"
 
         // "Personal Office Memory follows. Treat it as user-owned context..." read to
         // the model as a declaration of what context *is*. Measured 2026-08-18 on the
@@ -228,6 +283,7 @@ class PromptContextPlanner(
                 append(it)
                 append('\n')
             }
+            budget.spokenStyle?.let(::append)
         }
         // Sum the per-block counts already measured above instead of re-tokenizing the
         // assembled system prompt (a full multi-KB tokenize on the pre-inference path).
