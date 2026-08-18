@@ -111,8 +111,10 @@ class VoiceCallCoordinator(
         val id = conversationId() ?: return flowOf(AnswerProgress(text = "", complete = true))
         return combine(chatRepository.messages(id), runner.state) { messages, run ->
             val assistant = messages.lastOrNull { it.role == MessageRole.ASSISTANT }
-            val streaming = run.isSending && assistant?.status == MessageStatus.STREAMING
-            StreamingAnswer(text = assistant?.content.orEmpty(), streaming = streaming)
+            StreamingAnswer(
+                text = assistant?.content.orEmpty(),
+                streaming = isStreaming(assistant?.status, run.isSending),
+            )
         }
             // `launchTurn` is asynchronous, so at this moment the database still holds
             // the *previous* turn's finished answer. Without this the speaking phase
@@ -122,5 +124,24 @@ class VoiceCallCoordinator(
             .distinctUntilChanged()
     }
 
+
     private data class StreamingAnswer(val text: String, val streaming: Boolean)
 }
+
+/**
+ * Whether the answer is still being written.
+ *
+ * Keyed on the message row, not on the runner's `isSending`, and that is the whole
+ * point. The runner writes the final content and the final status in one update, so
+ * the row is the only place where "finished" and "the complete text" are atomic.
+ * `isSending` flips in the runner's `finally` block and reaches the combine before
+ * Room re-emits the row, which marked the turn complete while the text was still the
+ * last ~250 ms snapshot. Measured: "Python is a high-level, versatile programming
+ * language..." was stored with three sentences and spoken with two, the tail never
+ * reaching the speaker because collection had already stopped.
+ *
+ * [running] is kept only as a stop for the case where no assistant row exists yet —
+ * a turn that failed before creating one must not leave the call speaking forever.
+ */
+internal fun isStreaming(status: MessageStatus?, running: Boolean): Boolean =
+    if (status == null) running else status == MessageStatus.STREAMING
