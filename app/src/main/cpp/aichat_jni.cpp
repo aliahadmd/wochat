@@ -251,10 +251,10 @@ void unload_model() {
         model = nullptr;
     }
     // After the context, which is what uses it.
-    if (threadpool != nullptr && threadpool_free_fn != nullptr) {
+    if (threadpool != nullptr) {
         threadpool_free_fn(threadpool);
+        threadpool = nullptr;
     }
-    threadpool = nullptr;
     model_file_name.clear();
 }
 
@@ -405,7 +405,10 @@ std::string load_model(const std::string & path, int backend, int requested_cont
         }
         pool_params.strict_cpu = true;
     }
-    threadpool = make_threadpool == nullptr ? nullptr : make_threadpool(&pool_params);
+    // Both halves or neither: creating a pool whose free function is missing would
+    // leak six OS threads on every model switch.
+    const bool threadpool_usable = make_threadpool != nullptr && threadpool_free_fn != nullptr;
+    threadpool = threadpool_usable ? make_threadpool(&pool_params) : nullptr;
     if (threadpool != nullptr) {
         llama_attach_threadpool(context, threadpool, threadpool);
         std::string placement;

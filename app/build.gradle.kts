@@ -100,6 +100,25 @@ android {
         }
     }
 
+    // Unmocked android.util.* calls throw by default, which makes a catch handler
+
+    // that logs able to defeat itself: RecoveringInferenceEngine.persistSession
+
+    // swallows save failures deliberately, and its Log.w turned that swallow back
+
+    // into a thrown RuntimeException under test while behaving correctly on the
+
+    // device. Returning defaults lets unit tests exercise code that logs, which is
+
+    // most of the error paths worth testing.
+
+    testOptions {
+
+        unitTests.isReturnDefaultValues = true
+
+    }
+
+
     buildTypes {
         debug {
             isMinifyEnabled = false

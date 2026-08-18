@@ -30,6 +30,23 @@ import org.junit.Test
 
 class RecoveringInferenceEngineTest {
     @Test
+    fun persistingTheSessionNeverPropagatesItsFailure() = runTest {
+        // Saving the KV cache is best-effort: the reply is already written and shown
+        // by the time it runs, and a cache that failed to save costs a re-decode next
+        // turn. Letting that surface would turn a finished answer into an error.
+        val cpu = FakeInferenceEngine(BackendMode.CPU).apply {
+            persistFailure = IllegalStateException("no space left on device")
+        }
+        val vulkan = FakeInferenceEngine(BackendMode.VULKAN)
+        val policy = FakeRecoveryPolicy(BackendMode.VULKAN)
+        val engine = RecoveringInferenceEngine(cpu, vulkan, policy)
+
+        engine.persistSession("chat", GenerationSettings(), emptyList())
+
+        assertEquals(1, cpu.persistCount)
+    }
+
+    @Test
     fun vulkanDecodeFailureDiscardsPartialAttemptAndReplaysOnceOnCpu() = runTest {
         val cpu = FakeInferenceEngine(BackendMode.CPU).apply {
             generation = {

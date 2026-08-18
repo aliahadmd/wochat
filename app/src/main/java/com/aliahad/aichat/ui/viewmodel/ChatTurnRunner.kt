@@ -9,6 +9,7 @@ import com.aliahad.aichat.core.ChatMessage
 import com.aliahad.aichat.core.ChatTurn
 import com.aliahad.aichat.core.DownloadStatus
 import com.aliahad.aichat.core.GenerationEvent
+import com.aliahad.aichat.core.GenerationSettings
 import com.aliahad.aichat.core.GenerationStopReason
 import com.aliahad.aichat.core.InferenceExecutionProfile
 import com.aliahad.aichat.core.InferenceState
@@ -453,7 +454,7 @@ class ChatTurnRunner(
                 // background, and rebuilding from nothing cost 72.6 s for 929
                 // history tokens. The list handed over is what the next turn's
                 // restore will pass, so the saved sequence lines up with it.
-                inferenceEngine.persistSession(
+                inferenceEngine.persistTurnQuietly(
                     request.conversationId,
                     plannedSettings,
                     plannedTurns + ChatTurn(user, contexts) + ChatTurn(completed),
@@ -758,6 +759,23 @@ internal fun audioAttachmentError(draft: List<Attachment>): String? {
         else -> null
     }
 }
+
+/**
+ * Writes the KV cache out without letting a failure reach the turn.
+ *
+ * Swallowed here as well as inside `RecoveringInferenceEngine`, because the guarantee
+ * matters more than where it comes from: by the time this runs the reply is written
+ * and on screen, and a cache that failed to save costs one re-decode next turn. That
+ * is not worth turning a finished answer into "Generation failed" for.
+ */
+private suspend fun InferenceEngine.persistTurnQuietly(
+    conversationId: String,
+    settings: GenerationSettings,
+    history: List<ChatTurn>,
+) {
+    runCatching { persistSession(conversationId, settings, history) }
+}
+
 
 private fun GenerationStopReason.toMessageStatus(): MessageStatus = when (this) {
     GenerationStopReason.EOG -> MessageStatus.COMPLETE
