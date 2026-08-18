@@ -646,6 +646,36 @@ so audible brevity is the owner's check, not something the harness can make. Tim
 is also not measurable at present — the device is still holding the thermal cap from
 the prefill work above, and this step was never expected to move TTFT anyway.
 
+### The instrumented suite has not compiled since call mode landed — 2026-08-18
+
+Went to run it as the release gate requires, and it did not build:
+
+    ChatViewModelInstrumentedTest.kt:155 No value passed for parameter 'voiceSpeaker'
+    FakeModelRepository does not implement 'voiceModels'
+
+Call mode added `voiceListener` and `voiceSpeaker` to `ChatViewModel` and
+`voiceModels` to `ModelRepository`, and the androidTest sources were never updated.
+So the gate has been quietly running on four legs instead of five since that work
+landed, including for every change made today. Repaired: the fakes now supply both
+voice dependencies pointed at an empty models directory, so `isInstalled()` is false
+and call mode reports itself unavailable rather than reaching for a microphone during
+a typed-turn test.
+
+**It still has not run.** HyperOS refuses the install:
+
+    INSTALL_FAILED_USER_RESTRICTED: Install canceled by user
+
+Narrowed down rather than guessed at. The release package updates over adb without
+complaint — it was reinstalled eight times today. What fails is *new* packages, and
+`applicationIdSuffix = ".debug"` means both the instrumented app
+(`com.aliahad.aichat.debug`) and its test APK are new. No dialog is waiting on screen;
+the refusal is silent policy.
+
+Unblocking it needs a human: **Developer options -> Install via USB**, which Xiaomi
+gates behind a signed-in Mi account and usually a SIM. It cannot be set over adb.
+Until then the suite compiles and is ready to run, but its 57 tests have not been
+executed against any of today's changes.
+
 ### Step 2 DONE, with a partly negative result — 2026-08-18
 
 Unblocked once `036` introduced `TurnOrigin.VOICE`. A spoken turn now plans with

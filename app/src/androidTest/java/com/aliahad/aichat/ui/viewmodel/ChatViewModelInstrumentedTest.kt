@@ -150,6 +150,16 @@ class ChatViewModelInstrumentedTest {
             settings = settings,
             inferenceEngine = fakeInferenceEngine,
             residencyController = residencyController,
+            // Neither is exercised here: these tests drive typed turns, and both only
+            // touch audio hardware once a call asks them to listen or speak. They
+            // point at an empty models directory, so isInstalled() is false and call
+            // mode reports itself unavailable rather than reaching for a microphone.
+            voiceListener = com.aliahad.aichat.voice.VoiceListener(
+                modelsDirectory = { ApplicationProvider.getApplicationContext<android.content.Context>().filesDir },
+            ),
+            voiceSpeaker = com.aliahad.aichat.voice.VoiceSpeaker(
+                modelsDirectory = { ApplicationProvider.getApplicationContext<android.content.Context>().filesDir },
+            ),
             runner = chatTurnRunner,
             projectorPrompts = projectorPrompts,
             uiMessages = uiMessages,
@@ -402,6 +412,7 @@ private class FakeChatRepository : ChatRepository {
 private class FakeModelRepository : ModelRepository {
     override val models: Flow<List<ModelRecord>> = flowOf(emptyList())
     override val embeddingModel: Flow<ModelRecord?> = flowOf(null)
+    override val voiceModels: Flow<List<ModelRecord>> = flowOf(emptyList())
     override val projectors: Flow<List<ProjectorRecord>> = flowOf(emptyList())
     override fun modelsDirectory(): File = File("/tmp/models")
     override suspend fun ensureOfficialRecords() = Unit

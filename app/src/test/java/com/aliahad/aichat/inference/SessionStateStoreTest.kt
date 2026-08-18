@@ -21,17 +21,19 @@ class SessionStateStoreTest {
         systemPrompt: String = "You are helpful.",
         thinkingEnabled: Boolean = false,
         messages: List<SavedMessage> = this.messages,
-    ) = SavedSession(conversationId, modelPath, systemPrompt, thinkingEnabled, messages)
+        contextSize: Int = 4096,
+    ) = SavedSession(conversationId, modelPath, systemPrompt, thinkingEnabled, messages, contextSize)
 
     private fun prefixOf(
         saved: SavedSession?,
         conversationId: String = "c1",
         modelPath: String? = "/models/gemma.gguf",
+        contextSize: Int = 4096,
         systemPrompt: String = "You are helpful.",
         thinkingEnabled: Boolean = false,
         history: List<SavedMessage> = this.messages,
     ) = savedSessionPrefixLength(
-        saved, conversationId, modelPath, systemPrompt, thinkingEnabled, history,
+        saved, conversationId, modelPath, contextSize, systemPrompt, thinkingEnabled, history,
     )
 
     @Test
@@ -70,6 +72,22 @@ class SessionStateStoreTest {
         // A different model means a different tokenizer and different KV geometry,
         // so these bytes are not stale, they are unreadable.
         assertEquals(REBUILD_SESSION, prefixOf(saved(modelPath = "/models/other.gguf")))
+    }
+
+    @Test
+    fun `a sequence built in a different context is refused`() {
+        // Context size is not fixed: the residency controller probes candidates and
+        // falls back to a smaller safe context under memory pressure, so the same
+        // model can be reloaded into different geometry than this was written for.
+        assertEquals(REBUILD_SESSION, prefixOf(saved(contextSize = 8192)))
+        assertEquals(REBUILD_SESSION, prefixOf(saved(), contextSize = 2048))
+    }
+
+    @Test
+    fun `a descriptor written before context size was recorded is refused`() {
+        // contextSize defaults to 0 so an older file still decodes rather than
+        // throwing, and then fails the match instead of being trusted.
+        assertEquals(REBUILD_SESSION, prefixOf(saved(contextSize = 0), contextSize = 0))
     }
 
     @Test

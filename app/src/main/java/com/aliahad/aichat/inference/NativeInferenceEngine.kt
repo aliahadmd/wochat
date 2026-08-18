@@ -268,6 +268,7 @@ class NativeInferenceEngine(
             saved = saved,
             conversationId = conversationId,
             modelPath = loadedModelPath,
+            contextSize = activeContextSize,
             systemPrompt = prompt,
             thinkingEnabled = settings.thinkingEnabled,
             history = history.map { SavedMessage(it.message.role.nativeRole, it.withAttachmentText()) },
@@ -336,6 +337,7 @@ class NativeInferenceEngine(
             SavedSession(
                 conversationId = conversationId,
                 modelPath = modelPath,
+                contextSize = activeContextSize,
                 systemPrompt = prompt,
                 thinkingEnabled = settings.thinkingEnabled,
                 messages = history.map { SavedMessage(it.message.role.nativeRole, it.withAttachmentText()) },

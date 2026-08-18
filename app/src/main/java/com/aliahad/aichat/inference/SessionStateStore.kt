@@ -76,6 +76,12 @@ internal data class SavedSession(
     val systemPrompt: String,
     val thinkingEnabled: Boolean,
     val messages: List<SavedMessage>,
+    /**
+     * The context the sequence was built in. Defaults to 0 so a descriptor written
+     * before this field existed still decodes, and then fails the match rather than
+     * being trusted.
+     */
+    val contextSize: Int = 0,
 )
 
 @Serializable
@@ -98,6 +104,7 @@ internal fun savedSessionPrefixLength(
     saved: SavedSession?,
     conversationId: String,
     modelPath: String?,
+    contextSize: Int,
     systemPrompt: String,
     thinkingEnabled: Boolean,
     history: List<SavedMessage>,
@@ -107,6 +114,11 @@ internal fun savedSessionPrefixLength(
     // A different model has a different tokenizer and a different KV geometry, so
     // the bytes on disk are not merely stale, they are unreadable as this model.
     if (saved.modelPath != modelPath) return REBUILD_SESSION
+    // The context size is not fixed: ModelResidencyController probes candidates and
+    // falls back to a smaller safe context under memory pressure, so the same model
+    // can be loaded into different geometry than the sequence was written for.
+    // Re-decoding is the cost of a mismatch; a mis-restored cache would be worse.
+    if (saved.contextSize <= 0 || saved.contextSize != contextSize) return REBUILD_SESSION
     if (saved.systemPrompt != systemPrompt) return REBUILD_SESSION
     if (saved.thinkingEnabled != thinkingEnabled) return REBUILD_SESSION
     if (saved.messages.isEmpty()) return REBUILD_SESSION
