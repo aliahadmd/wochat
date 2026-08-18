@@ -43,7 +43,7 @@ class VoiceCallCoordinator(
      * Lambdas rather than a Context so this stays testable, and because the only
      * thing the coordinator needs to know is that a call has begun or ended.
      */
-    private val holdMicrophone: () -> Unit = {},
+    private val holdMicrophone: (onHangUp: () -> Unit) -> Unit = {},
     private val releaseMicrophone: () -> Unit = {},
 ) {
     private val _available = MutableStateFlow(false)
@@ -92,7 +92,7 @@ class VoiceCallCoordinator(
             // Before the session, not after: Android hands a backgrounded app silence
             // instead of an error, so the microphone has to be held from the first
             // window rather than from whenever the screen happens to lock.
-            holdMicrophone()
+            holdMicrophone { hangUp() }
             session.start()
         } else {
             // Never fail silently: an unavailable pack used to look identical to a

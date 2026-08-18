@@ -105,7 +105,9 @@ class ChatViewModel internal constructor(
             scope = viewModelScope,
             conversationId = { _uiState.value.selectedConversationId },
             memoryEnabled = { memoryEnabled },
-            holdMicrophone = { com.aliahad.aichat.voice.VoiceCallService.start(application) },
+            holdMicrophone = { onHangUp ->
+                com.aliahad.aichat.voice.VoiceCallService.start(application, onHangUp)
+            },
             releaseMicrophone = { com.aliahad.aichat.voice.VoiceCallService.stop(application) },
         )
     }
