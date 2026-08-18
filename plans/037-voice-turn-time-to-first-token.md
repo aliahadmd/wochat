@@ -535,11 +535,41 @@ Caveat kept deliberately: the 8-thread samples also carried more major faults
 direction is not in doubt; the exact size is.
 
 **Reverted to 6, this time on evidence.** The idle prime cores remain real, though —
-what this rules out is *adding* threads, not *using better cores*. Six threads
-pinned to include the prime pair would raise the clock without splitting the power
-budget further. llama.cpp supports thread affinity through its threadpool cpumask;
-that is the next thing worth trying, and unlike this attempt it now has a
-measurement that would show whether it worked.
+what this ruled out is *adding* threads, not *using better cores*.
+
+### Pinning the same six threads to the fastest cores — roughly 2x, 2026-08-18
+
+The version of the idea that does not spend more power: keep six threads, place them
+on the best six cores. `ggml_threadpool_params.cpumask` with `strict_cpu`, attached
+via `llama_attach_threadpool`, with the core order read from
+`cpuinfo_max_freq` at runtime rather than hardcoded — core 0 is the slow one here and
+the fast pair is 6-7, but nothing guarantees that layout on another device.
+
+    Threads pinned to 6 core(s): 6 7 0 1 2 3
+
+Measured on matched 29-token batches with zero major faults:
+
+| | cpu2 | cpu7 | 29 tokens |
+|---|---|---|---|
+| unpinned | 2400 MHz | **1017 MHz** (idle) | 2766, 2812 ms |
+| pinned | 2400-2745 MHz | **2246-2565 MHz** | **1260, 1437 ms** |
+
+**~2x faster**, and this time the working cores did not have to give anything up —
+cpu2 held or rose while cpu7 went from idling to working. That is the difference
+between choosing better cores and simply claiming more of them.
+
+Generation improved as well, which was not expected of bandwidth-bound work:
+**111-114 ms/token** at position ~2500 against 210-280 ms/token before. A whole turn
+now reads `send total=4518ms ... restore=1766ms prefill=2547ms first-token=116ms`.
+
+Caveat, in the honest direction: this run came *later* in the session than the
+unpinned baseline, so the device was warmer, not cooler. If anything the measurement
+understates the gain.
+
+One loose end worth knowing about: cores 0-5 all report the same
+`cpuinfo_max_freq`, so the tie-break picks 0-3 by index, which includes the cores
+Android tends to use for system and IRQ work. Choosing 2-5 instead might do slightly
+better and has not been measured.
 
 **The throttling matters more than the tweak did.** The cap outlives the load: after
 ten minutes fully idle the prime cores had recovered only to 2.25 GHz, in slow steps

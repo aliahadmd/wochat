@@ -16,6 +16,7 @@
 #include "chat.h"
 #include "common.h"
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "llama.h"
 #include "sampling.h"
 #include "mtmd.h"
@@ -55,6 +56,9 @@ std::deque<std::pair<int, std::string>> pending_generation_output;
 // carried media cannot produce an honest record and declines to save.
 std::vector<llama_token> session_tokens;
 bool session_has_media = false;
+// Threads run pinned to the fastest cores; see the affinity comment in load_model.
+ggml_threadpool * threadpool = nullptr;
+void (*threadpool_free_fn)(ggml_threadpool *) = nullptr;
 // Gemma vision chunks decode with non-causal attention, so a whole image must fit
 // in one ubatch (llama_context::decode asserts n_ubatch >= n_tokens). Batch capacity
 // must therefore stay >= the largest image budget used by the active model.
@@ -136,6 +140,39 @@ bool valid_utf8(const std::string & value) {
     return true;
 }
 
+/**
+ * The [count] fastest CPU cores, fastest first.
+ *
+ * Read from sysfs rather than assumed: core 0 is the slow one on this phone and
+ * the fast pair is 6-7, but that layout is not guaranteed anywhere. Cores whose
+ * maximum frequency cannot be read sort last rather than being dropped, so a
+ * device without cpufreq still yields a usable list.
+ */
+std::vector<int> fastest_cores(int count) {
+    const int cores = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+    std::vector<std::pair<long, int>> ranked;
+    ranked.reserve(cores);
+    for (int core = 0; core < cores; ++core) {
+        const std::string path =
+            "/sys/devices/system/cpu/cpu" + std::to_string(core) + "/cpufreq/cpuinfo_max_freq";
+        std::ifstream file(path);
+        long frequency = 0;
+        if (!(file >> frequency)) frequency = 0;
+        ranked.emplace_back(frequency, core);
+    }
+    // Descending by clock, then by index so the choice is deterministic when a
+    // device reports every core identically.
+    std::stable_sort(ranked.begin(), ranked.end(), [](const auto & left, const auto & right) {
+        if (left.first != right.first) return left.first > right.first;
+        return left.second < right.second;
+    });
+    std::vector<int> chosen;
+    for (int index = 0; index < std::min(count, cores); ++index) {
+        chosen.push_back(ranked[index].second);
+    }
+    return chosen;
+}
+
 void release_file_pages(const std::string & file_name) {
     if (file_name.empty()) return;
     std::ifstream maps("/proc/self/maps");
@@ -210,6 +247,11 @@ void unload_model() {
         llama_model_free(model);
         model = nullptr;
     }
+    // After the context, which is what uses it.
+    if (threadpool != nullptr && threadpool_free_fn != nullptr) {
+        threadpool_free_fn(threadpool);
+    }
+    threadpool = nullptr;
     model_file_name.clear();
 }
 
@@ -326,6 +368,48 @@ std::string load_model(const std::string & path, int backend, int requested_cont
     if (context == nullptr) {
         unload_model();
         return "Unable to allocate the model context";
+    }
+    // Pin the threads to the fastest cores.
+    //
+    // Left to the scheduler, six threads land on the six *slower* cores and the
+    // 4.32 GHz prime pair idles at 1017 MHz for a whole turn -- measured. Adding
+    // threads to reach them backfires, because the power budget is fixed and every
+    // core drops (2400 -> 1996 MHz) for two more at a lower clock. Keeping the
+    // count and choosing better cores is the version of that idea which does not
+    // spend more power: same six threads, placed on the fastest six.
+    //
+    // Best-effort. If the pool cannot be created, llama.cpp builds its own from
+    // n_threads and behaves exactly as before.
+    // ggml_threadpool_new lives in whichever libggml-cpu-android_* variant the
+    // backend registry loaded for this CPU, so it is resolved through the
+    // registry rather than linked -- linking one variant directly would defeat
+    // the runtime dispatch that picks the right instruction set.
+    using threadpool_new_fn = ggml_threadpool * (*)(ggml_threadpool_params *);
+    threadpool_new_fn make_threadpool = nullptr;
+    if (auto * cpu_reg = ggml_backend_reg_by_name("CPU")) {
+        make_threadpool = reinterpret_cast<threadpool_new_fn>(
+            ggml_backend_reg_get_proc_address(cpu_reg, "ggml_threadpool_new")
+        );
+        threadpool_free_fn = reinterpret_cast<void (*)(ggml_threadpool *)>(
+            ggml_backend_reg_get_proc_address(cpu_reg, "ggml_threadpool_free")
+        );
+    }
+    const std::vector<int> cores = fastest_cores(threads);
+    ggml_threadpool_params pool_params = ggml_threadpool_params_default(threads);
+    if (!cores.empty()) {
+        for (int core : cores) {
+            if (core >= 0 && core < GGML_MAX_N_THREADS) pool_params.cpumask[core] = true;
+        }
+        pool_params.strict_cpu = true;
+    }
+    threadpool = make_threadpool == nullptr ? nullptr : make_threadpool(&pool_params);
+    if (threadpool != nullptr) {
+        llama_attach_threadpool(context, threadpool, threadpool);
+        std::string placement;
+        for (int core : cores) placement += std::to_string(core) + " ";
+        LOGI("Threads pinned to %d core(s): %s", static_cast<int>(cores.size()), placement.c_str());
+    } else {
+        LOGI("Threadpool unavailable; leaving thread placement to the scheduler");
     }
 
     batch = llama_batch_init(batch_capacity, 0, 1);
