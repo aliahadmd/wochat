@@ -77,3 +77,52 @@ class ActionArgumentsTest {
         assertEquals("45 seconds", spokenDuration(45))
     }
 }
+
+/**
+ * Dial and calendar arguments. Nothing here places a call or writes an event —
+ * both open a composer the user confirms — so these checks exist to keep obvious
+ * nonsense off the screen rather than to prevent harm.
+ */
+class DialAndCalendarArgumentsTest {
+
+    @Test
+    fun `ordinary numbers survive their punctuation`() {
+        assertEquals("+44 20 7946 0958", validPhoneNumber("+44 20 7946 0958"))
+        assertEquals("(555) 123-4567", validPhoneNumber("(555) 123-4567"))
+        assertEquals("07700900123", validPhoneNumber("  07700900123  "))
+    }
+
+    @Test
+    fun `a name is not a number`() {
+        // The failure worth catching: the model passing who to call instead of what
+        // to dial, which would otherwise put "Mum" into the dialer.
+        assertNull(validPhoneNumber("Mum"))
+        assertNull(validPhoneNumber("call the office"))
+    }
+
+    @Test
+    fun `punctuation alone is not a number`() {
+        assertNull(validPhoneNumber("()-"))
+        assertNull(validPhoneNumber("12"))
+        assertNull(validPhoneNumber(""))
+        assertNull(validPhoneNumber(null))
+    }
+
+    @Test
+    fun `days ahead default to today and are bounded`() {
+        assertEquals(0, validDaysAhead(null))
+        assertEquals(1, validDaysAhead(1))
+        assertEquals(MAX_DAYS_AHEAD, validDaysAhead(MAX_DAYS_AHEAD))
+        assertNull(validDaysAhead(-1))
+        assertNull(validDaysAhead(MAX_DAYS_AHEAD + 1))
+    }
+
+    @Test
+    fun `event length defaults to an hour and is bounded`() {
+        assertEquals(DEFAULT_EVENT_MINUTES, validDurationMinutes(null))
+        assertEquals(30, validDurationMinutes(30))
+        assertNull(validDurationMinutes(0))
+        // Minutes sent as seconds looks exactly like this.
+        assertNull(validDurationMinutes(3600))
+    }
+}

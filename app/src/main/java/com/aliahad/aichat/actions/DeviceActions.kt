@@ -2,6 +2,8 @@ package com.aliahad.aichat.actions
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.provider.CalendarContract
 import android.hardware.camera2.CameraManager
 import android.provider.AlarmClock
 import android.util.Log
@@ -39,6 +41,8 @@ class DeviceActions(private val context: Context) {
             TOGGLE_FLASHLIGHT -> toggleFlashlight(args)
             SET_ALARM -> setAlarm(args)
             SET_TIMER -> setTimer(args)
+            DIAL_NUMBER -> dialNumber(args)
+            CREATE_EVENT -> createEvent(args)
             else -> ActionResult(false, "I don't know how to do that yet.")
         }
         // Logged for every call, because a model that merely *claims* to have set an
@@ -104,6 +108,66 @@ class DeviceActions(private val context: Context) {
     }
 
     /**
+     * Opens the dialer with a number filled in. Deliberately does not call it.
+     *
+     * `ACTION_CALL` would place the call outright and needs CALL_PHONE; `ACTION_DIAL`
+     * needs no permission and leaves the last step to a human. For a 4B model
+     * reading a number out of conversation, that is the right division: a misheard
+     * digit becomes a wrong number visible on screen rather than a wrong call.
+     */
+    private fun dialNumber(args: kotlinx.serialization.json.JsonObject): ActionResult {
+        val number = validPhoneNumber(args.text("number"))
+            ?: return ActionResult(false, "That doesn't look like a phone number I can dial.")
+        val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number"))
+        return start(intent, "Dialer open with $number — press call when you're ready.")
+    }
+
+    /**
+     * Opens the calendar composer for a new event.
+     *
+     * The model supplies an hour and how many days ahead rather than a timestamp:
+     * epoch arithmetic is exactly the sort of thing it gets quietly wrong, and the
+     * device knows what "tomorrow at 3" means far better than a 4B model does.
+     * Saving is left to the user, so a misunderstood date is visible before it lands.
+     */
+    private fun createEvent(args: kotlinx.serialization.json.JsonObject): ActionResult {
+        val title = args.text("title")
+            ?: return ActionResult(false, "I need to know what the event is called.")
+        val (hour, minute) = validTimeOfDay(args.int("hour"), args.int("minute"))
+            ?: return ActionResult(false, "That isn't a time I can use — I need an hour between 0 and 23.")
+        val daysAhead = validDaysAhead(args.int("days_from_now"))
+            ?: return ActionResult(false, "That's further ahead than I can schedule.")
+        val minutes = validDurationMinutes(args.int("duration_minutes"))
+            ?: return ActionResult(false, "That isn't a length I can use for an event.")
+
+        val start = java.util.Calendar.getInstance().apply {
+            add(java.util.Calendar.DAY_OF_YEAR, daysAhead)
+            set(java.util.Calendar.HOUR_OF_DAY, hour)
+            set(java.util.Calendar.MINUTE, minute)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val intent = Intent(Intent.ACTION_INSERT)
+            .setData(CalendarContract.Events.CONTENT_URI)
+            .putExtra(CalendarContract.Events.TITLE, title)
+            .putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, start.timeInMillis)
+            .putExtra(
+                CalendarContract.EXTRA_EVENT_END_TIME,
+                start.timeInMillis + minutes * 60_000L,
+            )
+        args.text("location")?.let { intent.putExtra(CalendarContract.Events.EVENT_LOCATION, it) }
+        val whenText = when (daysAhead) {
+            0 -> "today"
+            1 -> "tomorrow"
+            else -> "in $daysAhead days"
+        }
+        return start(
+            intent,
+            "Calendar open for \"$title\" $whenText at ${spokenTime(hour, minute)} — save it to confirm.",
+        )
+    }
+
+    /**
      * Fires [intent] at whatever clock app the phone has, reporting [success] only
      * if something actually took it.
      *
@@ -134,6 +198,8 @@ class DeviceActions(private val context: Context) {
         const val TOGGLE_FLASHLIGHT = "toggle_flashlight"
         const val SET_ALARM = "set_alarm"
         const val SET_TIMER = "set_timer"
+        const val DIAL_NUMBER = "dial_number"
+        const val CREATE_EVENT = "create_event"
 
         private val TOOLS = """
             [
@@ -189,6 +255,54 @@ class DeviceActions(private val context: Context) {
                     }
                   },
                   "required": ["seconds"]
+                }
+              },
+              {
+                "name": "$DIAL_NUMBER",
+                "description": "Open the phone dialer with a number ready to call. The user still presses the call button. Only use a number the user actually gave; never invent one.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "number": {
+                      "type": "string",
+                      "description": "The phone number exactly as the user gave it."
+                    }
+                  },
+                  "required": ["number"]
+                }
+              },
+              {
+                "name": "$CREATE_EVENT",
+                "description": "Open the calendar to add an event at a given day and time. The user still saves it.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "title": {
+                      "type": "string",
+                      "description": "What the event is, such as Lunch with Sam."
+                    },
+                    "hour": {
+                      "type": "integer",
+                      "description": "Hour on a 24-hour clock, 0 to 23. Three in the afternoon is 15."
+                    },
+                    "minute": {
+                      "type": "integer",
+                      "description": "Minute past the hour, 0 to 59. Defaults to 0."
+                    },
+                    "days_from_now": {
+                      "type": "integer",
+                      "description": "0 for today, 1 for tomorrow, and so on. Defaults to 0."
+                    },
+                    "duration_minutes": {
+                      "type": "integer",
+                      "description": "How long it lasts in minutes. Defaults to 60."
+                    },
+                    "location": {
+                      "type": "string",
+                      "description": "Where it happens, if the user said."
+                    }
+                  },
+                  "required": ["title", "hour"]
                 }
               }
             ]

@@ -130,7 +130,23 @@ and measure it before believing either way.
    clock app, not just our log: `set_alarm({"hour":7})` produced a real 07:00 AM
    alarm ("Alarm in 8 hours 32 minutes"), and `set_timer({"seconds":600})` a real
    10-minute timer. The model converts "7 in the morning" and "10 minute" itself.
-   Dial, calendar and directions remain.
+   Dial and calendar are done too, both verified: `dial_number({"number":
+   "07700900123"})` opened the dialer with the number filled in — focus moved to
+   `com.android.contacts/TwelveKeyDialer` and **no call was placed** — and "add a
+   calendar event tomorrow at 2pm called Dentist" produced
+   `create_event({"days_from_now":1,"hour":14,"title":"Dentist"})`. Directions
+   remain.
+
+   Those two are the first of the confirm-first set, and the confirmation is the
+   platform's rather than ours: `ACTION_DIAL` fills the dialer but leaves the call
+   button to a human, and the calendar composer leaves saving to a human. That is
+   a better guarantee than a dialog of our own, because it cannot be bypassed by
+   a model that phrases things persuasively. `ACTION_CALL` — which would place the
+   call outright and needs CALL_PHONE — is deliberately not implemented.
+
+   The calendar tool takes an hour and a number of days ahead rather than a
+   timestamp. Epoch arithmetic is exactly what a 4B model gets quietly wrong, and
+   the device knows what "tomorrow at 2" means far better than the model does.
 
    **Two things were wrong in the research above, both found by measuring.** The
    table said alarms need no permission; `ACTION_SET_ALARM` in fact throws

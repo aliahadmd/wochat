@@ -79,3 +79,38 @@ internal fun spokenDuration(seconds: Int): String {
 }
 
 internal const val MAX_TIMER_SECONDS = 24 * 60 * 60
+
+/**
+ * A dialable number, or null.
+ *
+ * Permissive about punctuation because people say numbers with spaces, dashes and
+ * brackets, and strict about content: letters mean the model has produced a name
+ * or a placeholder rather than a number, and dialling that helps nobody. Nothing
+ * is *called* from here — [android.content.Intent.ACTION_DIAL] only fills the
+ * dialer in — so the worst case of a wrong number is a wrong number on screen.
+ */
+internal fun validPhoneNumber(raw: String?): String? {
+    val trimmed = raw?.trim().orEmpty()
+    if (trimmed.isEmpty()) return null
+    if (!trimmed.matches(Regex("""\+?[0-9 ()\-.]{3,20}"""))) return null
+    // At least three actual digits: "()-" alone satisfies the shape but is not a
+    // number, and a two-digit "number" is a mis-parse rather than a request.
+    if (trimmed.count(Char::isDigit) < 3) return null
+    return trimmed
+}
+
+/** Days ahead an event may be scheduled, or null. */
+internal fun validDaysAhead(days: Int?): Int? {
+    val value = days ?: 0
+    return if (value in 0..MAX_DAYS_AHEAD) value else null
+}
+
+/** Event length in minutes, or null. */
+internal fun validDurationMinutes(minutes: Int?): Int? {
+    val value = minutes ?: DEFAULT_EVENT_MINUTES
+    return if (value in 1..MAX_EVENT_MINUTES) value else null
+}
+
+internal const val MAX_DAYS_AHEAD = 365
+internal const val DEFAULT_EVENT_MINUTES = 60
+internal const val MAX_EVENT_MINUTES = 24 * 60
