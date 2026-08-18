@@ -468,6 +468,60 @@ that quietly changes what the model pays attention to. Only an A/B on the device
 found it, and only because a restore that *looked* successful produced an answer
 that was not.
 
+### Prefill is compute-bound, and this device throttles to half clock — 2026-08-18
+
+With the restore cost gone, prefill is what is left: 6-16 s per turn. Measured on a
+cold device, a fresh conversation and a fixed prompt, prefill runs at **55.7
+ms/token (18.0 tok/s)**. The fault-free subset is identical at 55.7, and one sample
+settles the mechanism outright:
+
+    Decoded 39 prompt tokens in 2047 ms (faults minor=0 major=0)
+
+Zero faults, 52 ms per token. That is arithmetic, not I/O — roughly 150 GFLOPS on
+six threads. Prefill is only ~4.4x cheaper per token than generation despite
+batching, which is what a compute limit looks like.
+
+**The thread experiment failed, and not because the answer was no.** Generation is
+bandwidth-bound and saturates early, so the `-2` core clamp costs it nothing;
+prefill is compute-bound, so the two excluded prime cores should have helped.
+`n_threads_batch` was raised to 8 and measured at 62.0 ms/token against 55.7 — an
+apparent 11% regression that reproduced on a second run. It is not a real result.
+
+The device was thermally capped by then:
+
+    scaling_max_freq   1555200 / 1689600      (hardware max 3532800 / 4320000)
+    Thermal Status     1                       (0 during the baseline)
+
+Sustained inference makes HyperOS cap the prime cores at ~1.7 GHz, 39% of their
+4.32 GHz maximum. Re-running the *original* 6-thread build under that cap produced
+**143 ms/token** — against 55.7 for the same build cold. A 2.57x slowdown against a
+2.56x clock reduction: prefill cost tracks clock almost exactly, which independently
+confirms it is compute-bound, and means every run taken after a warm-up measures
+temperature rather than the change under test. The baseline ran cold and the
+8-thread runs ran hot, so the comparison is worthless in both directions.
+
+Reverted to 6. **Not because 8 was shown to be worse — it was not shown to be
+anything.**
+
+**The throttling matters more than the tweak did.** The cap outlives the load: after
+ten minutes fully idle the prime cores had recovered only to 2.25 GHz, in slow steps
+(1.69 -> 1.96 -> 2.25). So a long voice conversation gets ~2x slower as it goes and
+stays slow well after it ends, and no amount of thread tuning recovers a 2x clock
+cut. Reducing the *amount* of prefill work is the lever that survives throttling,
+which is what the restore fix did and what Step 3 still proposes.
+
+**How to measure this properly next time** — the method cost more than the result
+here, so it is worth writing down:
+
+- Read `scaling_max_freq` with every sample and discard capped ones. `Thermal
+  Status` alone is not enough: it had returned to 0 while the cap was still on.
+- Better, interleave configurations inside one session using
+  `llama_set_n_threads(ctx, n_threads, n_threads_batch)`, which llama.cpp exposes.
+  Alternating within a session cancels thermal drift; alternating between installs
+  does not.
+- A cold baseline that cannot be reproduced at the end of the session is not a
+  baseline. Re-run it last and check it still holds.
+
 ### Step 2 DONE, with a partly negative result — 2026-08-18
 
 Unblocked once `036` introduced `TurnOrigin.VOICE`. A spoken turn now plans with

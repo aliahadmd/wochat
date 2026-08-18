@@ -296,6 +296,21 @@ std::string load_model(const std::string & path, int backend, int requested_cont
         2,
         6
     );
+    // Prefill shares generation's thread count. Raising it was tried and the
+    // experiment could not be trusted -- see plan 037.
+    //
+    // Prefill is compute-bound where generation is bandwidth-bound: 39 prompt
+    // tokens took 2047 ms with *zero* page faults, so that time is arithmetic,
+    // not I/O. That argues for handing prefill the two prime cores this clamp
+    // excludes. Measuring it on this device is the hard part: sustained inference
+    // drives HyperOS to cap the prime cores at ~1.7-2.2 GHz against a 4.32 GHz
+    // maximum, and the cap outlives the load by more than ten minutes. Prefill
+    // cost tracks that cap almost exactly (55.7 ms/token cold, 143 ms/token
+    // capped -- a 2.57x change against a 2.56x clock change), so a run taken
+    // after a warm-up measures temperature rather than whatever was changed.
+    // Anyone retrying this must read scaling_max_freq alongside every sample and
+    // discard the capped ones, or interleave configurations via
+    // llama_set_n_threads inside one session.
     llama_context_params context_params = llama_context_default_params();
     context_params.n_ctx = context_size;
     context_params.n_batch = batch_capacity;
