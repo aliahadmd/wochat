@@ -219,7 +219,7 @@ class DeviceActions(private val context: Context) {
               },
               {
                 "name": "$SET_ALARM",
-                "description": "Set an alarm for a specific clock time. Use for a time of day such as 7 in the morning or half past three. For a countdown from now, use $SET_TIMER instead.",
+                "description": "Set an alarm for a specific clock time. Use for a time of day such as 7 in the morning or half past three. For a countdown from now, use $SET_TIMER instead. If the user gives an hour without making clear whether they mean morning or evening, such as just \"at 3\", ask which they mean instead of calling this — guessing wrong wakes them at the wrong end of the day.",
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -259,7 +259,7 @@ class DeviceActions(private val context: Context) {
               },
               {
                 "name": "$DIAL_NUMBER",
-                "description": "Open the phone dialer with a number ready to call. The user still presses the call button. Only use a number the user actually gave; never invent one.",
+                "description": "Open the phone dialer with a number ready to call. The user still presses the call button. Only use a number the user actually gave; never invent one, and if they named a person rather than a number, ask for the number.",
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -273,7 +273,7 @@ class DeviceActions(private val context: Context) {
               },
               {
                 "name": "$CREATE_EVENT",
-                "description": "Open the calendar to add an event at a given day and time. The user still saves it.",
+                "description": "Open the calendar to add an event at a given day and time. The user still saves it. If the day or whether the time is morning or afternoon is unclear, ask before calling this rather than guessing.",
                 "parameters": {
                   "type": "object",
                   "properties": {

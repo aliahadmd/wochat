@@ -157,6 +157,43 @@ and measure it before believing either way.
    `<queries>` for those intent actions. Both cost a build each and neither was
    guessable from reading.
 
+### Phrasing was never the problem; guessing was — 2026-08-18
+
+Raised as two concerns: that an action needs the same words each time, and that an
+ambiguous request is guessed at rather than questioned. The first turned out not to
+be true, the second was.
+
+**Nothing matches text.** There is no `contains`, `startsWith` or regex over
+anything the user says anywhere in the action path. The only `when` is on the tool
+*name the model chose*, so selection is semantic by construction. Measured, in a
+clean conversation:
+
+| said | called |
+|---|---|
+| "It is dark in here" | `toggle_flashlight({"on":true})` |
+| "kill the torch" | `toggle_flashlight({"on":false})` |
+| "Now turn it off please" | `toggle_flashlight({"on":false})` |
+
+None of those share a word with `toggle_flashlight`, and the first names no light
+at all. The inference is the model's.
+
+**Where it does stop** is unmeasured rather than known: "Thanks, I can see fine
+now" was tried and the app restarted under memory pressure mid-test, so that run
+proves nothing in either direction. Somewhere between "kill the torch" and pure
+implication there is a boundary, and finding it needs a quieter device. Arguably
+the boundary belongs there anyway — inferring *turn off my flashlight* from
+*thanks, I can see fine* is a leap that would eventually act when nobody asked.
+
+**Guessing was the real gap, and it is fixed in the schemas.** The tool
+descriptions now say to ask rather than assume: an hour with no morning or
+evening, an unclear day for an event, a person's name where a number belongs.
+Verified — "Please set an alarm at 3 o clock" now answers **"Which 3 o'clock would
+you like the alarm set for, 3 AM or 3 PM?"** and calls nothing.
+
+That this works at all is worth noting: `tool_choice` is AUTO, so the model is free
+to answer instead of calling, and a question is just an ordinary reply. Forcing a
+call with `REQUIRED` would have made clarification impossible.
+
 ### The model will claim it did things it cannot do — 2026-08-18
 
 Worth its own heading, because it wasted more time than either bug and is a
