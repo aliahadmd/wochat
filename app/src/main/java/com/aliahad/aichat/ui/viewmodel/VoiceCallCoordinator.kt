@@ -11,14 +11,16 @@ import com.aliahad.aichat.voice.VoiceCallState
 import com.aliahad.aichat.voice.VoiceListener
 import com.aliahad.aichat.voice.VoiceSpeaker
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.dropWhile
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.launch
 
 /**
@@ -136,27 +138,80 @@ class VoiceCallCoordinator(
      * speaker to the turn loop would mean two consumers of one stream. Completion
      * is the message leaving STREAMING, which also covers cancellation and errors —
      * so an interrupted turn ends the speaking phase instead of hanging the call.
+     *
+     * A turn can also die before its assistant row exists at all — no model
+     * selected, or a setup exception inside `send()` before `isSending` is set.
+     * Nothing re-emits in that case, which used to wedge the call on the thinking
+     * orb forever, so a watchdog bounds the wait for the turn to show up. It only
+     * covers that pre-start window: generation itself may legitimately run for
+     * tens of seconds (cold model load) with `isSending` already true and no row
+     * yet, and must never be cut off.
      */
     private fun answerProgress(): Flow<AnswerProgress> {
         val id = conversationId() ?: return flowOf(AnswerProgress(text = "", complete = true))
-        return combine(chatRepository.messages(id), runner.state) { messages, run ->
+        val watchdog = flow {
+            emit(false)
+            delay(START_WATCHDOG_MILLIS)
+            emit(true)
+        }
+        var turnStarted = false
+        return combine(chatRepository.messages(id), runner.state, watchdog) { messages, run, expired ->
             val assistant = messages.lastOrNull { it.role == MessageRole.ASSISTANT }
             StreamingAnswer(
                 text = assistant?.content.orEmpty(),
+                status = assistant?.status,
                 streaming = isStreaming(assistant?.status, run.isSending),
+                running = run.isSending,
+                watchdogExpired = expired,
             )
         }
-            // `launchTurn` is asynchronous, so at this moment the database still holds
-            // the *previous* turn's finished answer. Without this the speaking phase
-            // would see complete=true immediately and end before a word was said.
-            .dropWhile { !it.streaming }
-            .map { AnswerProgress(text = it.text, complete = !it.streaming) }
+            .transformWhile { answer ->
+                if (answer.running) turnStarted = true
+                val finished = (turnStarted || answer.watchdogExpired) && !answer.running && !answer.streaming
+                when {
+                    finished -> {
+                        emit(AnswerProgress(text = answer.text, complete = true, aborted = answer.aborted))
+                        false
+                    }
+                    answer.streaming -> {
+                        emit(AnswerProgress(text = answer.text, complete = false))
+                        true
+                    }
+                    // `launchTurn` is asynchronous, so at this moment the database
+                    // still holds the *previous* turn's finished answer. Skipping
+                    // it (rather than ending the speaking phase) is what stops the
+                    // call from completing before a word was said.
+                    else -> true
+                }
+            }
             .distinctUntilChanged()
     }
 
 
-    private data class StreamingAnswer(val text: String, val streaming: Boolean)
+    private data class StreamingAnswer(
+        val text: String,
+        val status: MessageStatus?,
+        val streaming: Boolean,
+        val running: Boolean,
+        val watchdogExpired: Boolean,
+    ) {
+        /**
+         * True when the turn ended without a complete answer — cancelled, failed,
+         * or no row ever appeared. The session must not speak the unflushed tail
+         * of such a turn: for a cancelled one that tail is exactly what the user
+         * just interrupted.
+         */
+        val aborted: Boolean
+            get() = status == null || status == MessageStatus.CANCELLED || status == MessageStatus.ERROR
+    }
 }
+
+/**
+ * Long past the point where `send()` sets `isSending` (a handful of local database
+ * reads), short enough that a silently dead turn is reported while the user still
+ * remembers starting it.
+ */
+private const val START_WATCHDOG_MILLIS = 15_000L
 
 /**
  * Whether the answer is still being written.

@@ -35,6 +35,17 @@ interface MemoryDao {
     )
     suspend fun getByHash(contentHash: String): MemoryItemEntity?
 
+    /**
+     * The unique index on contentHash spans DELETED and SUPERSEDED rows too, so
+     * conflict handling after an IGNOREd insert must be able to find them.
+     */
+    @Query("SELECT * FROM memory_items WHERE contentHash = :contentHash LIMIT 1")
+    suspend fun getByHashAnyStatus(contentHash: String): MemoryItemEntity?
+
+    /** Brings a forgotten or superseded row back to ACTIVE. */
+    @Query("UPDATE memory_items SET status = 'ACTIVE', updatedAt = :updatedAt WHERE id = :id")
+    suspend fun reactivate(id: String, updatedAt: Long)
+
     @Query(
         "SELECT * FROM memory_items WHERE status = 'ACTIVE' " +
             "AND (:includePrivate = 1 OR sensitivity = 'NORMAL') " +

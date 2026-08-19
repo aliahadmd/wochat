@@ -22,7 +22,10 @@ class SessionStateStoreTest {
         thinkingEnabled: Boolean = false,
         messages: List<SavedMessage> = this.messages,
         contextSize: Int = 4096,
-    ) = SavedSession(conversationId, modelPath, systemPrompt, thinkingEnabled, messages, contextSize)
+        toolsJson: String = "[]",
+    ) = SavedSession(
+        conversationId, modelPath, systemPrompt, thinkingEnabled, messages, contextSize, toolsJson,
+    )
 
     private fun prefixOf(
         saved: SavedSession?,
@@ -31,9 +34,10 @@ class SessionStateStoreTest {
         contextSize: Int = 4096,
         systemPrompt: String = "You are helpful.",
         thinkingEnabled: Boolean = false,
+        toolsJson: String = "[]",
         history: List<SavedMessage> = this.messages,
     ) = savedSessionPrefixLength(
-        saved, conversationId, modelPath, contextSize, systemPrompt, thinkingEnabled, history,
+        saved, conversationId, modelPath, contextSize, systemPrompt, thinkingEnabled, toolsJson, history,
     )
 
     @Test
@@ -99,6 +103,14 @@ class SessionStateStoreTest {
     @Test
     fun `a changed thinking mode invalidates the sequence`() {
         assertEquals(REBUILD_SESSION, prefixOf(saved(thinkingEnabled = true)))
+    }
+
+    @Test
+    fun `changed tools invalidate the sequence`() {
+        // Tools are rendered into the template prefix; a sequence built under other
+        // tools no longer matches what the next restore assumes it contains.
+        assertEquals(REBUILD_SESSION, prefixOf(saved(toolsJson = """[{"name":"lamp"}]""")))
+        assertEquals(REBUILD_SESSION, prefixOf(saved(), toolsJson = """[{"name":"lamp"}]"""))
     }
 
     @Test

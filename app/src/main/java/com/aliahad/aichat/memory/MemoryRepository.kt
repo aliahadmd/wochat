@@ -212,31 +212,55 @@ class RoomMemoryRepository(
             supersedesId = previous.id,
             now = now,
         )
-        database.withTransaction {
+        val stored = database.withTransaction {
             dao.markSuperseded(previous.id, now)
-            dao.insert(replacement)
-            dao.insertSource(
-                MemorySourceEntity(
-                    id = UUID.randomUUID().toString(),
-                    memoryId = replacement.id,
-                    kind = MemorySourceKind.MANUAL,
-                    sourceId = previous.id,
-                    label = "Manual correction",
-                    createdAt = now,
-                ),
-            )
-            dao.insertCorrection(
-                MemoryCorrectionEntity(
-                    id = UUID.randomUUID().toString(),
-                    memoryId = replacement.id,
-                    previousContent = previous.content,
-                    correctedContent = value,
-                    reason = reason,
-                    createdAt = now,
-                ),
-            )
+            var inserted = dao.insert(replacement) != -1L
+            if (!inserted) {
+                // A non-ACTIVE row already owns this content hash — including
+                // `previous` itself when a correction restores the earlier wording.
+                // Remove the stale copy so the replacement can take the hash, and
+                // never write child rows against an id that was never inserted.
+                dao.getByHashAnyStatus(replacement.contentHash)
+                    ?.takeIf { it.status != MemoryStatus.ACTIVE }
+                    ?.let { stale ->
+                        dao.deleteSourcesFor(listOf(stale.id))
+                        dao.deleteCorrectionsFor(listOf(stale.id))
+                        dao.deleteByIds(listOf(stale.id))
+                        inserted = dao.insert(replacement) != -1L
+                    }
+            }
+            if (inserted) {
+                dao.insertSource(
+                    MemorySourceEntity(
+                        id = UUID.randomUUID().toString(),
+                        memoryId = replacement.id,
+                        kind = MemorySourceKind.MANUAL,
+                        sourceId = previous.id,
+                        label = "Manual correction",
+                        createdAt = now,
+                    ),
+                )
+                dao.insertCorrection(
+                    MemoryCorrectionEntity(
+                        id = UUID.randomUUID().toString(),
+                        memoryId = replacement.id,
+                        previousContent = previous.content,
+                        correctedContent = value,
+                        reason = reason,
+                        createdAt = now,
+                    ),
+                )
+            }
+            inserted
         }
-        return replacement.toDomain().also {
+        // When another ACTIVE memory already carries this exact text, the correction
+        // is a no-op that leaves that row in place; surface it rather than a ghost.
+        val result = if (stored) {
+            replacement.toDomain()
+        } else {
+            dao.getByHash(replacement.contentHash)?.toDomain() ?: replacement.toDomain()
+        }
+        return result.also {
             runCatching { indexer.upsert(it) }
             runCatching { indexer.remove(previous.id) }
         }
@@ -343,20 +367,34 @@ class RoomMemoryRepository(
             now = now,
             embedding = embedding,
         )
-        database.withTransaction {
-            dao.insert(row)
-            dao.insertSource(
-                MemorySourceEntity(
-                    id = sha256("${row.id}:${sourceKind.name}:${sourceId.orEmpty()}").take(32),
-                    memoryId = row.id,
-                    kind = sourceKind,
-                    sourceId = sourceId,
-                    label = sourceLabel,
-                    createdAt = now,
-                ),
-            )
+        val stored = database.withTransaction {
+            val target = if (dao.insert(row) != -1L) {
+                row
+            } else {
+                // The unique contentHash index spans DELETED/SUPERSEDED rows, so a
+                // re-remembered forgotten fact (or a repeated stable id) conflicts
+                // silently. Revive the conflicting row instead of duplicating it —
+                // and never point a source at a row that was never inserted, which
+                // used to throw an FK violation that aborted the whole chat turn.
+                (dao.getByHashAnyStatus(row.contentHash) ?: dao.get(row.id))?.also {
+                    dao.reactivate(it.id, now)
+                }
+            }
+            target?.let { memory ->
+                dao.insertSource(
+                    MemorySourceEntity(
+                        id = sha256("${memory.id}:${sourceKind.name}:${sourceId.orEmpty()}").take(32),
+                        memoryId = memory.id,
+                        kind = sourceKind,
+                        sourceId = sourceId,
+                        label = sourceLabel,
+                        createdAt = now,
+                    ),
+                )
+            }
+            target
         }
-        return row.toDomain().also {
+        return (stored ?: row).toDomain().also {
             if (upsertIndex) runCatching { indexer.upsert(it) }
         }
     }

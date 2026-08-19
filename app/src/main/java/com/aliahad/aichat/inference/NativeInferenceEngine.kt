@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.time.TimeSource
@@ -37,7 +38,9 @@ import kotlin.time.TimeSource
  * would scatter a binding that has to stay in lockstep with `aichat_jni.cpp`, and
  * `System.loadLibrary` plus the native handles are process-global anyway.
  */
-@Suppress("TooManyFunctions")
+// LargeClass: the JNI bridge accumulates one wrapper per native capability, and
+// splitting it by theme would scatter the single-dispatcher invariants they share.
+@Suppress("TooManyFunctions", "LargeClass")
 class NativeInferenceEngine(
     context: Context,
     private val nativeBackend: BackendMode = BackendMode.CPU,
@@ -72,6 +75,9 @@ class NativeInferenceEngine(
     private var loadedBackend = BackendMode.CPU
     private var activeConversationId: String? = null
     private var activeRestoreFingerprint: String? = null
+    // The tools most recently handed to the native layer. They change the prompt
+    // the chat template builds, so any change must invalidate the KV session.
+    private var appliedToolsJson = "[]"
     private val sessionStates = SessionStateStore(File(context.cacheDir, "session-state"))
 
     init {
@@ -271,6 +277,7 @@ class NativeInferenceEngine(
             contextSize = activeContextSize,
             systemPrompt = prompt,
             thinkingEnabled = settings.thinkingEnabled,
+            toolsJson = appliedToolsJson,
             history = history.map { SavedMessage(it.message.role.nativeRole, it.withAttachmentText()) },
         )
         if (prefix == REBUILD_SESSION) {
@@ -340,14 +347,22 @@ class NativeInferenceEngine(
                 contextSize = activeContextSize,
                 systemPrompt = prompt,
                 thinkingEnabled = settings.thinkingEnabled,
+                toolsJson = appliedToolsJson,
                 messages = history.map { SavedMessage(it.message.role.nativeRole, it.withAttachmentText()) },
             ),
         )
     }
 
     override suspend fun setTools(toolsJson: String) = withContext(dispatcher) {
+        if (toolsJson == appliedToolsJson) return@withContext
         nativeSetTools(toolsJson)?.let { Log.w(TRACE_TAG, "Tools rejected: $it") }
-        Unit
+        appliedToolsJson = toolsJson
+        // The template now renders a different prefix for the same history, so the
+        // live cache — and the disk snapshot taken under the old tools — no longer
+        // line up with what restoreSession compares. Force a full rebuild.
+        activeConversationId = null
+        activeRestoreFingerprint = null
+        sessionStates.clear()
     }
 
     override suspend fun lastToolCalls(): String = withContext(dispatcher) { nativeLastToolCalls() }
@@ -649,7 +664,11 @@ class NativeInferenceEngine(
 
     override fun destroy() {
         cancelled = true
-        nativeShutdown()
+        // Shutdown must queue behind any in-flight native work like every other
+        // call: freeing the model from the caller thread while a decode runs on
+        // the dispatcher is a use-after-free. The cancelled flag makes the
+        // generate loop exit after its current token, so this cannot wait forever.
+        runBlocking(dispatcher) { nativeShutdown() }
     }
 
     private external fun nativeInit(nativeLibDir: String, backend: Int)

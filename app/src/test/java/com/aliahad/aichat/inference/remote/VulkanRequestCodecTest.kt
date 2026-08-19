@@ -161,6 +161,9 @@ class VulkanRequestCodecTest {
         val turn = UserTurn(
             conversationId = "conversation-4",
             text = "summarize these files",
+            // The preamble carries retrieved memories and the conversation summary;
+            // dropping it in the codec made the Vulkan backend prompt-blind to them.
+            preamble = "Conversation summary: earlier topics\n- remembered fact: likes green tea",
             attachments = listOf(
                 AttachmentContext(
                     attachmentId = "attachment-a",
@@ -186,6 +189,7 @@ class VulkanRequestCodecTest {
 
         assertEquals(turn, restored.turn)
         assertEquals("summarize these files", restored.turn.text)
+        assertEquals(turn.preamble, restored.turn.preamble)
         assertEquals(2, restored.turn.attachments.size)
         assertEquals(settings.normalized(), restored.settings)
     }

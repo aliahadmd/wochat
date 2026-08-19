@@ -11,7 +11,12 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 class TokenCipher(context: Context) {
-    private val preferences = context.getSharedPreferences("secure_settings", Context.MODE_PRIVATE)
+    // Lazy: getSharedPreferences stats the prefs directory, and this class is
+    // constructed inside AppContainer's settings lazy — which can resolve on the
+    // main thread when the first composition reads theme preferences before the
+    // warm-up coroutine wins the race. Deferring keeps construction disk-free;
+    // the first token access loads the prefs off the main thread instead.
+    private val preferences by lazy { context.getSharedPreferences("secure_settings", Context.MODE_PRIVATE) }
 
     fun saveToken(rawToken: String) {
         val token = rawToken.trim()

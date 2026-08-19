@@ -23,6 +23,7 @@ import com.aliahad.aichat.residency.ModelResidencyController
 import com.aliahad.aichat.settings.AppSettingsRepository
 import com.aliahad.aichat.skill.SkillRepository
 import com.aliahad.aichat.ui.navigation.AppRoute
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -91,9 +92,7 @@ class ModelSetupViewModel internal constructor(
     private val messages: UiMessageManager,
     private val voiceSpeaker: com.aliahad.aichat.voice.VoiceSpeaker,
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow(
-        ModelSetupUiState(tokenMasked = settings.maskedToken()),
-    )
+    private val _uiState = MutableStateFlow(ModelSetupUiState())
     val uiState: StateFlow<ModelSetupUiState> = _uiState.asStateFlow()
     private var configurationReloadJob: Job? = null
 
@@ -121,6 +120,12 @@ class ModelSetupViewModel internal constructor(
         collect(contextProfiles.profiles) { profiles -> copy(contextProfiles = profiles) }
         collect(chatRunner.state) { run -> copy(isSending = run.isSending) }
         collect(projectorPrompts.pendingProjectorId) { id -> copy(pendingProjectorId = id) }
+        // maskedToken() opens SharedPreferences and the Keystore; both must stay
+        // off the main thread, so the initial value arrives a beat after creation.
+        viewModelScope.launch(Dispatchers.IO) {
+            val masked = settings.maskedToken()
+            _uiState.update { it.copy(tokenMasked = masked) }
+        }
         viewModelScope.launch {
             runCatching { modelRepository.ensureOfficialRecords() }.onFailure(messages::report)
         }

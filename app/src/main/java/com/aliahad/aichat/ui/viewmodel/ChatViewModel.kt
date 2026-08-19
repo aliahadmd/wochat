@@ -153,7 +153,13 @@ class ChatViewModel internal constructor(
                     selectedId != null && conversations.any { it.id == selectedId } -> {
                         if (observedConversationId != selectedId) observeConversation(selectedId)
                     }
-                    conversations.isNotEmpty() -> selectConversation(conversations.first().id)
+                    conversations.isNotEmpty() -> {
+                        // Auto-selection on a fresh ViewModel is not an explicit
+                        // switch: a turn may still be running in that conversation
+                        // from before the Activity was recreated, and routing this
+                        // through the cancelling path would kill it on arrival.
+                        selectConversation(conversations.first().id, cancelRunningTurn = false)
+                    }
                     selectedId != null -> clearConversationSelection()
                 }
             }
@@ -255,12 +261,12 @@ class ChatViewModel internal constructor(
         _uiState.update { it.copy(input = value) }
     }
 
-    fun selectConversation(id: String) {
+    fun selectConversation(id: String, cancelRunningTurn: Boolean = true) {
         if (_uiState.value.selectedConversationId == id && observedConversationId == id) return
         val previous = _uiState.value.selectedConversationId
         // An explicit conversation switch ends the turn. Background continuation is
         // for leaving the app, not for abandoning the conversation it belongs to.
-        runner.cancelTurn()
+        if (cancelRunningTurn) runner.cancelTurn()
         // Moving to a different conversation starts a fresh draft. Without this
         // the text, staged attachments and selected skills follow the user into
         // the new conversation and can be sent there by mistake.

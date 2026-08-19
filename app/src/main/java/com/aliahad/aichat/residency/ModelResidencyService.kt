@@ -66,8 +66,13 @@ class ModelResidencyService : Service() {
             )
             return
         }
-        val runner = (application as AiChatApplication).container.chatTurnRunner
         scope.launch {
+            // Resolving the runner forces the container's lazy chain — the SQLCipher
+            // open plus the native library load. onCreate runs on the main thread,
+            // so a cold start of this service used to stall (in the worst case ANR)
+            // the process's first frame behind database key derivation; the work
+            // belongs here on IO.
+            val runner = (application as AiChatApplication).container.chatTurnRunner
             // A turn now outlives the Activity, so this notification is the only thing
             // telling the user it is still running — and the only way to stop it
             // without reopening the app.
@@ -93,7 +98,11 @@ class ModelResidencyService : Service() {
                 }
             }
             ACTION_STOP_GENERATION ->
-                (application as AiChatApplication).container.chatTurnRunner.cancelTurn()
+                // Same lazy-container cost as onCreate: even though this action is
+                // normally warm, never resolve the container on the main thread.
+                scope.launch {
+                    (application as AiChatApplication).container.chatTurnRunner.cancelTurn()
+                }
             ACTION_RETRY, ACTION_PRELOAD, null -> startPreload()
         }
         return START_STICKY

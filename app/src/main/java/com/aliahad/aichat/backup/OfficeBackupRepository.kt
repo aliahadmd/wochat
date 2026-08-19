@@ -40,6 +40,14 @@ interface OfficeBackupRepository {
     suspend fun prepareImport(uri: Uri, passphrase: CharArray): BackupPreview
     suspend fun commitImport(preview: BackupPreview)
     suspend fun discardImport(preview: BackupPreview)
+
+    /**
+     * Deletes leftover import/export working directories. Staging holds a
+     * plaintext copy of the database, and a process death with the preview
+     * dialog open used to leave it behind indefinitely — so this runs at
+     * startup, when no import or export can be in flight.
+     */
+    suspend fun sweepStaleImportStaging()
 }
 
 class EncryptedOfficeBackupRepository(
@@ -155,6 +163,9 @@ class EncryptedOfficeBackupRepository(
             }
         } finally {
             if (dataMerged) {
+                // The staging directory holds a plaintext copy of the database;
+                // shred it like export does rather than just unlinking.
+                shred(working)
                 working.deleteRecursively()
             } else {
                 createdAttachments.forEach(File::delete)
@@ -166,8 +177,20 @@ class EncryptedOfficeBackupRepository(
     override suspend fun discardImport(preview: BackupPreview) = withContext(Dispatchers.IO) {
         val working = File(preview.stagingPath)
         if (BackupPathSafety.isManagedStagingDirectory(context.noBackupFilesDir, working)) {
+            shred(working)
             working.deleteRecursively()
         }
+    }
+
+    override suspend fun sweepStaleImportStaging(): Unit = withContext(Dispatchers.IO) {
+        val root = File(context.noBackupFilesDir, "office-backup")
+        root.listFiles()?.forEach { child ->
+            if (BackupPathSafety.isManagedStagingDirectory(context.noBackupFilesDir, child)) {
+                shred(child)
+                child.deleteRecursively()
+            }
+        }
+        Unit
     }
 
     private fun exportPlaintextSnapshot(destination: File) {
@@ -377,21 +400,22 @@ class EncryptedOfficeBackupRepository(
                     true
                 }
                 copyTable(source, target, "memory_sources") { values ->
-                    values.put(
-                        "memoryId",
-                        memoryIds[values.getAsString("memoryId")] ?: values.getAsString("memoryId"),
-                    )
-                    true
+                    val mapped = memoryIds[values.getAsString("memoryId")]
+                        ?: values.getAsString("memoryId")
+                    values.put("memoryId", mapped)
+                    // Archives exported while FK enforcement was off (pre-v20) can
+                    // carry children of long-deleted memories; inserting them aborts
+                    // the whole merge on the FK constraint.
+                    memoryRowExists(target, mapped)
                 }
                 copyTable(source, target, "memory_corrections") { values ->
-                    values.put(
-                        "memoryId",
-                        memoryIds[values.getAsString("memoryId")] ?: values.getAsString("memoryId"),
-                    )
+                    val mapped = memoryIds[values.getAsString("memoryId")]
+                        ?: values.getAsString("memoryId")
+                    values.put("memoryId", mapped)
                     values.getAsString("replacementMemoryId")?.let { replacement ->
                         values.put("replacementMemoryId", memoryIds[replacement] ?: replacement)
                     }
-                    true
+                    memoryRowExists(target, mapped)
                 }
                 POST_MEMORY_TABLES.forEach { copyTable(source, target, it) }
                 target.setTransactionSuccessful()
@@ -402,6 +426,10 @@ class EncryptedOfficeBackupRepository(
             source.close()
         }
     }
+
+    private fun memoryRowExists(target: SQLiteDatabase, id: String): Boolean =
+        target.rawQuery("SELECT 1 FROM memory_items WHERE id = ? LIMIT 1", id)
+            .use { it.moveToFirst() }
 
     private fun buildMemoryIdMap(
         source: PlainSQLiteDatabase,

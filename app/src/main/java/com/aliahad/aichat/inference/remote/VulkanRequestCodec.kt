@@ -148,11 +148,15 @@ private fun JSONObject.toChatTurn(): ChatTurn {
 private fun UserTurn.toJson() = JSONObject()
     .put("conversationId", conversationId)
     .put("text", text)
+    // The preamble carries the memories and conversation summary — dropping it
+    // here meant the Vulkan backend never saw them while the CPU backend did.
+    .put("preamble", preamble)
     .put("attachments", JSONArray().apply { attachments.forEach { put(it.toJson()) } })
 
 private fun JSONObject.toUserTurn() = UserTurn(
     conversationId = getString("conversationId"),
     text = getString("text"),
+    preamble = optString("preamble", ""),
     attachments = getJSONArray("attachments").mapObjects { it.toAttachmentContext() },
 )
 

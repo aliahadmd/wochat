@@ -89,7 +89,11 @@ class DefaultModelRepository(
     override fun modelsDirectory(): File =
         File(context.noBackupFilesDir, "models").apply { mkdirs() }
 
-    override suspend fun ensureOfficialRecords() {
+    // Runs on Dispatchers.IO regardless of caller: startup reconciliation and the
+    // ViewModel refresh paths invoke this from the main thread, and the reconcile
+    // loop stats multi-GB files on disk. Room suspends hop dispatchers themselves;
+    // plain File calls do not.
+    override suspend fun ensureOfficialRecords() = withContext(Dispatchers.IO) {
         recoverInterruptedInstalls()
         retireUnsupportedArtifacts()
         // Embedding models get the same download/verify/resume machinery as the

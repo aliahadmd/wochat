@@ -202,6 +202,9 @@ class AiChatApplication : Application() {
             container.memoryIndexer.rebuild(container.memoryRepository.memories.first())
             container.memoryRepository.purgeStaleIndexDocs()
         }
+        reconcileStartupStep("backup staging") {
+            container.officeBackupRepository.sweepStaleImportStaging()
+        }
     }
 
     private companion object {
@@ -258,7 +261,15 @@ class AiChatApplication : Application() {
      */
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level < TRIM_MEMORY_RUNNING_LOW) return
+        // Since API 34 the RUNNING_* levels and the higher LRU levels are no
+        // longer delivered, so on this phone the only trim callbacks that can
+        // still arrive are UI_HIDDEN — which fires on every app switch and says
+        // nothing about memory pressure — and BACKGROUND, which does. Releasing
+        // on UI_HIDDEN made the next turn refault the whole 4.9 GB mapping from
+        // storage (33.4 s prefill) after nothing more than an app switch, so
+        // the release point is exactly BACKGROUND: the platform's own documented
+        // "give it back now" level, and the only real-pressure signal left.
+        if (level < TRIM_MEMORY_BACKGROUND) return
         if (!containerWarm.value) return
         runCatching { container.inferenceEngine.releaseResidentPages() }
             .onFailure { Log.w("AiChatApplication", "Could not release model pages", it) }

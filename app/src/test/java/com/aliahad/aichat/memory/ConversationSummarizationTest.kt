@@ -116,6 +116,56 @@ class ConversationSummarizationTest {
     }
 
     @Test
+    fun updateFromTrimmedNeverAppendsTheSameTurnTwice() = runTest {
+        val dao = InMemorySummaryDao()
+        val repository = ConversationSummaryRepository(SummaryTestDatabase(dao))
+        val older = listOf(
+            message("m1", MessageRole.USER, "first"),
+            message("m2", MessageRole.ASSISTANT, "second"),
+        )
+
+        repository.updateFromTrimmed("chat", older, tokenCount)
+        // The next turn's planner call trims the same messages again plus a newer
+        // one: only the newcomer may be appended.
+        val result = repository.updateFromTrimmed(
+            "chat",
+            older + message("m3", MessageRole.USER, "third"),
+            tokenCount,
+        )
+
+        assertEquals("User: first\nAssistant: second\nUser: third", result?.content)
+        assertEquals("m3", result?.throughMessageId)
+    }
+
+    @Test
+    fun updateFromTrimmedDropsAlreadyCoveredMessagesWhenTheMarkerMovedOn() = runTest {
+        val dao = InMemorySummaryDao()
+        val repository = ConversationSummaryRepository(SummaryTestDatabase(dao))
+        val covered = ChatMessage(
+            id = "m1",
+            conversationId = "chat",
+            role = MessageRole.USER,
+            content = "covered turn",
+            createdAt = 10L,
+            status = MessageStatus.COMPLETE,
+        )
+        repository.updateFromTrimmed("chat", listOf(covered), tokenCount)
+
+        // The marker message is no longer in the trimmed set (a larger context
+        // budget admitted it back into history): coverage falls back to createdAt.
+        val result = repository.updateFromTrimmed(
+            "chat",
+            listOf(
+                covered.copy(id = "older", content = "older covered turn", createdAt = 5L),
+                covered.copy(id = "m2", content = "new turn", createdAt = 20L),
+            ),
+            tokenCount,
+        )
+
+        assertEquals("User: covered turn\nUser: new turn", result?.content)
+    }
+
+    @Test
     fun summarizeFromStoresGeneratedProfile() = runTest {
         val dao = InMemorySummaryDao()
         val repository = ConversationSummaryRepository(SummaryTestDatabase(dao))

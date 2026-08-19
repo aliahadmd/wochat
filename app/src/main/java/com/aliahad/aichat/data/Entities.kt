@@ -281,6 +281,11 @@ data class MessageAttachmentEntity(
 data class ConversationSummaryEntity(
     @PrimaryKey val conversationId: String,
     val throughMessageId: String?,
+    /**
+     * Creation time of the through-message, so coverage can be computed even when
+     * that message is no longer in the trimmed set handed to the repository.
+     */
+    val throughCreatedAt: Long = 0,
     val content: String,
     val tokenCount: Int,
     val updatedAt: Long,

@@ -47,7 +47,13 @@ class DatabaseConverters {
     @TypeConverter fun fromMemoryStatus(value: MemoryStatus): String = value.name
     @TypeConverter fun toMemoryStatus(value: String): MemoryStatus = MemoryStatus.valueOf(value)
     @TypeConverter fun fromMemorySourceKind(value: MemorySourceKind): String = value.name
-    @TypeConverter fun toMemorySourceKind(value: String): MemorySourceKind = MemorySourceKind.valueOf(value)
+    /**
+     * Rows written by removed collectors (e.g. ACTIVITY) outlive their enum
+     * constants. Degrade unknown values instead of throwing — a stored enum must
+     * never crash a chat turn or the Memories screen on read.
+     */
+    @TypeConverter fun toMemorySourceKind(value: String): MemorySourceKind =
+        runCatching { MemorySourceKind.valueOf(value) }.getOrDefault(MemorySourceKind.MANUAL)
     @TypeConverter fun fromContextVerificationState(value: ContextVerificationState): String = value.name
     @TypeConverter fun toContextVerificationState(value: String): ContextVerificationState =
         ContextVerificationState.valueOf(value)
@@ -82,7 +88,7 @@ class DatabaseConverters {
         MemoryCorrectionEntity::class,
         ModelBenchmarkEntity::class,
     ],
-    version = 19,
+    version = 20,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -537,6 +543,42 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // MIGRATION_17_18 assumed memory_sources/-corrections would cascade
+                // with their memory_items, but foreign keys are only enabled after
+                // onUpgrade, so the children of the deleted ACTIVITY memories
+                // survived as orphans. They make every backup unimportable (FK is
+                // enforced during a merge), so they go now.
+                db.execSQL(
+                    "DELETE FROM memory_sources " +
+                        "WHERE memoryId NOT IN (SELECT id FROM memory_items)",
+                )
+                db.execSQL(
+                    "DELETE FROM memory_corrections " +
+                        "WHERE memoryId NOT IN (SELECT id FROM memory_items)",
+                )
+                // ACTIVITY source rows spared on mixed-source memories predate the
+                // enum constant's removal and crash MemorySourceKind.valueOf on read.
+                db.execSQL("DELETE FROM memory_sources WHERE kind = 'ACTIVITY'")
+                // Summary dedup coverage marker. Backfilled from the message the
+                // summary reached, so the first post-upgrade append does not
+                // re-add turns the summary already holds.
+                db.execSQL(
+                    "ALTER TABLE conversation_summaries " +
+                        "ADD COLUMN throughCreatedAt INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL(
+                    """
+                    UPDATE conversation_summaries SET throughCreatedAt = (
+                        SELECT createdAt FROM messages
+                        WHERE messages.id = conversation_summaries.throughMessageId
+                    ) WHERE throughMessageId IS NOT NULL
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun create(context: Context): AppDatabase {
             System.loadLibrary("sqlcipher")
             val passphrase = DatabaseKeyManager(context).passphrase()
@@ -567,6 +609,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_16_17,
                     MIGRATION_17_18,
                     MIGRATION_18_19,
+                    MIGRATION_19_20,
                 )
                 .build()
             migrator.sweepResidueFromFailedMigration()
@@ -577,6 +620,13 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         const val DATABASE_NAME = "aichat.db"
-        const val VERSION = 17
+
+        /**
+         * Stamps backup archives with the schema they contain and gates imports.
+         * Must track the @Database annotation above — it silently stayed at 17
+         * across two schema bumps, which labeled v19 backups as v17 and defeated
+         * the too-new-archive rejection.
+         */
+        const val VERSION = 20
     }
 }

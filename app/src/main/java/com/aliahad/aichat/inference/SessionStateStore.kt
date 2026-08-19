@@ -82,6 +82,12 @@ internal data class SavedSession(
      * being trusted.
      */
     val contextSize: Int = 0,
+    /**
+     * The tool definitions the template rendered this sequence with. Tools reshape
+     * the prompt exactly like a system-prompt change, so a mismatch must rebuild.
+     * Defaults to the no-tools value for descriptors written before this existed.
+     */
+    val toolsJson: String = "[]",
 )
 
 @Serializable
@@ -107,20 +113,27 @@ internal fun savedSessionPrefixLength(
     contextSize: Int,
     systemPrompt: String,
     thinkingEnabled: Boolean,
+    toolsJson: String,
     history: List<SavedMessage>,
 ): Int {
     if (saved == null || modelPath == null) return REBUILD_SESSION
-    if (saved.conversationId != conversationId) return REBUILD_SESSION
     // A different model has a different tokenizer and a different KV geometry, so
     // the bytes on disk are not merely stale, they are unreadable as this model.
-    if (saved.modelPath != modelPath) return REBUILD_SESSION
-    // The context size is not fixed: ModelResidencyController probes candidates and
-    // falls back to a smaller safe context under memory pressure, so the same model
-    // can be loaded into different geometry than the sequence was written for.
-    // Re-decoding is the cost of a mismatch; a mis-restored cache would be worse.
-    if (saved.contextSize <= 0 || saved.contextSize != contextSize) return REBUILD_SESSION
-    if (saved.systemPrompt != systemPrompt) return REBUILD_SESSION
-    if (saved.thinkingEnabled != thinkingEnabled) return REBUILD_SESSION
+    // The context size is not fixed either: ModelResidencyController probes
+    // candidates and falls back to a smaller safe context under memory pressure,
+    // so the same model can be loaded into different geometry than the sequence
+    // was written for. And a changed system prompt, thinking mode or tool set
+    // reshapes the very first tokens, making the file worthless — the same
+    // reason those changes invalidate the live cache. Re-decoding is the cost of
+    // a mismatch; a mis-restored cache would be worse.
+    val prefixMismatch = saved.conversationId != conversationId ||
+        saved.modelPath != modelPath ||
+        saved.contextSize <= 0 ||
+        saved.contextSize != contextSize ||
+        saved.systemPrompt != systemPrompt ||
+        saved.thinkingEnabled != thinkingEnabled ||
+        saved.toolsJson != toolsJson
+    if (prefixMismatch) return REBUILD_SESSION
     if (saved.messages.isEmpty()) return REBUILD_SESSION
     if (saved.messages.size > history.size) return REBUILD_SESSION
     saved.messages.forEachIndexed { index, message ->

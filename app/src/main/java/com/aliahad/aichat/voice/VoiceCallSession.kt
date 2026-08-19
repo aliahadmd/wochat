@@ -155,11 +155,31 @@ class VoiceCallSession(
         _state.update { it.copy(phase = VoiceCallPhase.THINKING) }
         val segmenter = SentenceSegmenter()
         var lastAnswer = ""
+        var spokeAnything = false
         answers().collectUntil { progress ->
+            // A backend swap restarts the answer from empty in the same row. The
+            // segmenter tracks what it has seen by length, so without a reset it
+            // would swallow the regenerated text until it outgrew the discarded
+            // one and resume mid-word — or never, for a shorter regeneration.
+            if (!progress.text.startsWith(lastAnswer)) segmenter.reset()
             lastAnswer = progress.text
-            segmenter.accept(progress.text).forEach { sentence -> say(sentence) }
+            segmenter.accept(progress.text).forEach { sentence ->
+                say(sentence)
+                spokeAnything = true
+            }
             if (progress.complete) {
-                segmenter.flush(lastAnswer)?.let { say(it) }
+                if (progress.aborted) {
+                    // Cancelled or failed: the unflushed tail is precisely what the
+                    // user interrupted, so it stays unspoken. And when nothing was
+                    // ever said, never fail silently — say why on the call screen.
+                    if (!spokeAnything) {
+                        _state.update {
+                            it.copy(error = "That answer did not come through — please try again.")
+                        }
+                    }
+                } else {
+                    segmenter.flush(lastAnswer)?.let { say(it) }
+                }
             }
             progress.complete
         }
@@ -209,8 +229,14 @@ class VoiceCallSession(
     }
 }
 
-/** A snapshot of the streaming answer: the text so far, and whether it is finished. */
-data class AnswerProgress(val text: String, val complete: Boolean)
+/**
+ * A snapshot of the streaming answer: the text so far, and whether it is finished.
+ *
+ * [aborted] distinguishes a turn that ended without a complete answer (cancelled,
+ * failed, or dead before its row existed) from a normal completion — the session
+ * must not speak the unflushed tail of an aborted answer.
+ */
+data class AnswerProgress(val text: String, val complete: Boolean, val aborted: Boolean = false)
 
 /**
  * Collects until [predicate] returns true, then stops.

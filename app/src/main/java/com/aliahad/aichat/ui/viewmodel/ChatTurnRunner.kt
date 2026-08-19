@@ -43,7 +43,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -77,6 +79,10 @@ data class ContinueTurnRequest(
  * Owns the complete persisted chat-turn transaction and inference lifecycle.
  * Route state stays in [ChatViewModel]; this runner exposes only operation state.
  */
+// LargeClass: 602/600 while DEBT-02 ("deduplicate send/continueResponse turn
+// lifecycle") tracks the planned split — visible and specific, like send()'s
+// CyclomaticComplexMethod suppression below.
+@Suppress("LargeClass")
 class ChatTurnRunner(
     private val chatRepository: ChatRepository,
     private val attachmentRepository: AttachmentRepository,
@@ -456,40 +462,48 @@ class ChatTurnRunner(
                 promptTokens = contextPlan.estimatedTokens,
                 generatedTokens = result.answerTokens,
             )?.let { completed ->
-                assistant = runDeviceActions(inferenceEngine, deviceActions, completed)
-                chatRepository.updateMessage(requireNotNull(assistant))
-                // Write the cache out now that it holds the finished exchange. The
-                // model is unloaded whenever HyperOS trims this app in the
-                // background, and rebuilding from nothing cost 72.6 s for 929
-                // history tokens. The list handed over is what the next turn's
-                // restore will pass, so the saved sequence lines up with it.
-                inferenceEngine.persistTurnQuietly(
-                    request.conversationId,
-                    plannedSettings,
-                    plannedTurns + ChatTurn(user, contexts) + ChatTurn(requireNotNull(assistant)),
-                )
+                // NonCancellable: a stop landing after Completed must not strand the
+                // row in STREAMING — Room's withTransaction rethrows cancellation first.
+                withContext(NonCancellable) {
+                    assistant = runDeviceActions(inferenceEngine, deviceActions, completed)
+                    chatRepository.updateMessage(requireNotNull(assistant))
+                    // Write the cache out now that it holds the finished exchange. The
+                    // model is unloaded whenever HyperOS trims this app in the
+                    // background, and rebuilding from nothing cost 72.6 s for 929
+                    // history tokens. The list handed over is what the next turn's
+                    // restore will pass, so the saved sequence lines up with it.
+                    inferenceEngine.persistTurnQuietly(
+                        request.conversationId,
+                        plannedSettings,
+                        plannedTurns + ChatTurn(user, contexts) + ChatTurn(requireNotNull(assistant)),
+                    )
+                }
             }
         } catch (cancelled: CancellationException) {
             assistant?.let {
-                chatRepository.updateMessage(
-                    it.copy(
-                        content = content.toString().ifEmpty { it.content },
-                        status = MessageStatus.CANCELLED,
-                        stopReason = GenerationStopReason.CANCELLED,
-                    ),
-                )
+                withContext(NonCancellable) {
+                    chatRepository.updateMessage(
+                        it.copy(
+                            content = content.toString().ifEmpty { it.content },
+                            status = MessageStatus.CANCELLED,
+                            stopReason = GenerationStopReason.CANCELLED,
+                        ),
+                    )
+                }
             }
             throw cancelled
         } catch (error: Throwable) {
             assistant?.let {
-                chatRepository.updateMessage(
-                    it.copy(
-                        content = content.toString().ifEmpty {
-                            it.content.ifEmpty { "Generation failed: ${error.message}" }
-                        },
-                        status = MessageStatus.ERROR,
-                    ),
-                )
+                withContext(NonCancellable) {
+                    chatRepository.updateMessage(
+                        it.copy(
+                            content = content.toString().ifEmpty {
+                                it.content.ifEmpty { "Generation failed: ${error.message}" }
+                            },
+                            status = MessageStatus.ERROR,
+                        ),
+                    )
+                }
             }
             messages.report(error)
         } finally {
@@ -670,24 +684,31 @@ class ChatTurnRunner(
                 continuationCount = target.continuationCount + result.continuationCount + 1,
                 generatedTokens = (target.generatedTokens ?: 0) + result.answerTokens,
             )
-            chatRepository.updateMessage(assistant)
+            // NonCancellable for the same reason as send(): a cancel must not strand the row.
+            withContext(NonCancellable) {
+                chatRepository.updateMessage(assistant)
+            }
         } catch (cancelled: CancellationException) {
-            chatRepository.updateMessage(
-                assistant.copy(
-                    content = mergeContinuation(target.content, continuation.toString()),
-                    status = MessageStatus.CONTINUABLE,
-                    stopReason = GenerationStopReason.CANCELLED,
-                ),
-            )
+            withContext(NonCancellable) {
+                chatRepository.updateMessage(
+                    assistant.copy(
+                        content = mergeContinuation(target.content, continuation.toString()),
+                        status = MessageStatus.CONTINUABLE,
+                        stopReason = GenerationStopReason.CANCELLED,
+                    ),
+                )
+            }
             throw cancelled
         } catch (error: Throwable) {
-            chatRepository.updateMessage(
-                assistant.copy(
-                    content = mergeContinuation(target.content, continuation.toString()),
-                    status = MessageStatus.CONTINUABLE,
-                    stopReason = GenerationStopReason.ERROR,
-                ),
-            )
+            withContext(NonCancellable) {
+                chatRepository.updateMessage(
+                    assistant.copy(
+                        content = mergeContinuation(target.content, continuation.toString()),
+                        status = MessageStatus.CONTINUABLE,
+                        stopReason = GenerationStopReason.ERROR,
+                    ),
+                )
+            }
             messages.report(error)
         } finally {
             flushThinking()

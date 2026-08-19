@@ -108,6 +108,15 @@ class ModelResidencyController(
     private var verificationJob: Job? = null
 
     /**
+     * Set by an explicit notification Unload, cleared by any path that explicitly
+     * asks for the model again (a chat turn, preload, retry). While set, context
+     * verification must neither start nor reload the model it was in the middle
+     * of verifying — otherwise the unload is silently undone seconds later and
+     * the notification lied.
+     */
+    @Volatile private var explicitUnload = false
+
+    /**
      * True while at least one interactive inference flow (chat turn) is active.
      * Background utility generation checks this barrier before and after touching
      * the engine, and the engine rejects UTILITY-profile operations while it is
@@ -147,6 +156,9 @@ class ModelResidencyController(
         requirement: MultimodalRequirement,
         imageTokenBudget: Int = 280,
     ): ModelLoadConfiguration = try {
+        // Anything that asks for the model — a chat turn, preload, retry — is
+        // explicit intent, so a previous notification Unload stops applying here.
+        explicitUnload = false
         val configuration = mutex.withLock {
             ensureLoadedLocked(requirement, imageTokenBudget)
         }
@@ -226,11 +238,25 @@ class ModelResidencyController(
         ensureLoaded()
     }
 
-    suspend fun unload() = mutex.withLock {
-        inferenceEngine.cancel()
-        if (inferenceEngine.loadedModelPath != null) inferenceEngine.unload()
-        loadedSignature = null
-        _state.value = ModelResidencyState.Idle
+    /**
+     * Explicit unload from the notification. Unlike the internal unloads inside
+     * load/verify flows, this one must stick: pending verification is cancelled
+     * and new verification is refused ([canStartVerification]) until something
+     * explicitly asks for the model again — otherwise a verification scheduled
+     * before the tap quietly re-loaded the model right after the user was told
+     * it was gone.
+     */
+    suspend fun unload() {
+        explicitUnload = true
+        // Cancel without joining: the job may be holding or waiting on the mutex,
+        // and joining it here would deadlock against the lock taken below.
+        verificationJob?.cancel()
+        mutex.withLock {
+            inferenceEngine.cancel()
+            if (inferenceEngine.loadedModelPath != null) inferenceEngine.unload()
+            loadedSignature = null
+            _state.value = ModelResidencyState.Idle
+        }
     }
 
     fun isPathInUse(path: String): Boolean =
@@ -468,7 +494,9 @@ class ModelResidencyController(
             }?.let { contextProfiles.markPaused(it) }
             throw cancelled
         } finally {
-            if (inferenceUseCounter.count == 0 && deviceUsable) {
+            // The reload restores the resident model after probing candidates —
+            // but never after an explicit Unload, which this job may have raced.
+            if (!explicitUnload && inferenceUseCounter.count == 0 && deviceUsable) {
                 runCatching {
                     mutex.withLock { ensureLoadedLocked(MultimodalRequirement.NONE, 280) }
                 }
@@ -553,7 +581,8 @@ class ModelResidencyController(
     }
 
     private fun canStartVerification(): Boolean =
-        uiForeground &&
+        !explicitUnload &&
+            uiForeground &&
             inferenceUseCounter.count == 0 &&
             deviceUsable
 

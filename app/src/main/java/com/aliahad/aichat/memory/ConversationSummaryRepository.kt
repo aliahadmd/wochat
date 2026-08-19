@@ -22,12 +22,25 @@ class ConversationSummaryRepository(
     ): ConversationSummary? {
         if (trimmedMessages.isEmpty()) return get(conversationId)
         val existing = dao.get(conversationId)
+        // The planner rebuilds history from the whole conversation every turn, so
+        // the same oldest turns are handed here repeatedly. Only append what the
+        // stored summary does not already cover, or the summary devolves into
+        // duplicates of the first few turns within a handful of sends.
+        val newMessages = existing?.throughMessageId?.let { marker ->
+            val markerIndex = trimmedMessages.indexOfFirst { it.id == marker }
+            if (markerIndex >= 0) {
+                trimmedMessages.drop(markerIndex + 1)
+            } else {
+                trimmedMessages.filter { it.createdAt > existing.throughCreatedAt }
+            }
+        } ?: trimmedMessages
+        if (newMessages.isEmpty()) return existing?.toDomain()
         val content = buildString {
             existing?.content?.takeIf(String::isNotBlank)?.let {
                 append(it)
                 append('\n')
             }
-            trimmedMessages.forEach { message ->
+            newMessages.forEach { message ->
                 append(if (message.role == MessageRole.USER) "User: " else "Assistant: ")
                 append(message.content.replace(Regex("\\s+"), " ").take(420))
                 append('\n')
@@ -35,7 +48,8 @@ class ConversationSummaryRepository(
         }.trim().takeLast(12_000)
         val row = ConversationSummaryEntity(
             conversationId = conversationId,
-            throughMessageId = trimmedMessages.last().id,
+            throughMessageId = newMessages.last().id,
+            throughCreatedAt = newMessages.last().createdAt,
             content = content,
             tokenCount = tokenCount(content),
             updatedAt = System.currentTimeMillis(),
@@ -94,6 +108,7 @@ class ConversationSummaryRepository(
         val row = ConversationSummaryEntity(
             conversationId = conversationId,
             throughMessageId = trimmedMessages.lastOrNull()?.id ?: existing?.throughMessageId,
+            throughCreatedAt = trimmedMessages.lastOrNull()?.createdAt ?: existing?.throughCreatedAt ?: 0,
             content = content,
             tokenCount = tokenCount(content),
             updatedAt = System.currentTimeMillis(),

@@ -87,9 +87,9 @@ Note: `device/`, `overlay/`, and `speech/` were removed features and no longer e
 ## Database
 
 - **Engine:** Room 2.8.4 with SQLCipher encryption (`sqlcipher-android-4.16.0.aar`)
-- **Current version:** 18
-- **Migrations:** 16 hand-written migrations (1→2 through 16→17) in `AppDatabase.kt`
-- **Schema exports:** `app/schemas/com.aliahad.aichat.data.AppDatabase/` (versions 1–9 and 11–18, note: version 10 schema file is absent)
+- **Current version:** 20
+- **Migrations:** 19 hand-written migrations (1→2 through 19→20) in `AppDatabase.kt`
+- **Schema exports:** `app/schemas/com.aliahad.aichat.data.AppDatabase/` (versions 1–9 and 11–20, note: version 10 schema file is absent)
 - **KSP schema location:** configured via `ksp { arg("room.schemaLocation", ...) }`
 
 ## Key Architecture Constraints

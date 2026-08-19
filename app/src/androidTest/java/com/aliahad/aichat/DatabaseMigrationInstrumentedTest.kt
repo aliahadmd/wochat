@@ -22,7 +22,7 @@ class DatabaseMigrationInstrumentedTest {
     )
 
     @Test
-    fun migrationOneToNineteenPreservesChatsAndRemovesRetiredTables() {
+    fun migrationOneToTwentyPreservesChatsAndRemovesRetiredTables() {
         helper.createDatabase(DATABASE_NAME, 1).apply {
             execSQL(
                 "INSERT INTO conversations(id, title, createdAt, updatedAt) " +
@@ -56,6 +56,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_16_17,
                 AppDatabase.MIGRATION_17_18,
                 AppDatabase.MIGRATION_18_19,
+                AppDatabase.MIGRATION_19_20,
             )
             .build()
         try {
@@ -153,7 +154,7 @@ class DatabaseMigrationInstrumentedTest {
     }
 
     @Test
-    fun migrationNineToNineteenPreservesAttachmentAndRemovesRetiredTables() {
+    fun migrationNineToTwentyPreservesAttachmentAndRemovesRetiredTables() {
         val name = "migration-9-16"
         helper.createDatabase(name, 9).apply {
             insertLegacyAttachment("existing-attachment", "keep.txt", "TEXT")
@@ -172,6 +173,7 @@ class DatabaseMigrationInstrumentedTest {
                 AppDatabase.MIGRATION_16_17,
                 AppDatabase.MIGRATION_17_18,
                 AppDatabase.MIGRATION_18_19,
+                AppDatabase.MIGRATION_19_20,
             )
             .build()
         try {
@@ -348,6 +350,82 @@ class DatabaseMigrationInstrumentedTest {
             it.moveToFirst()
             assertEquals(true, it.isNull(0))
         }
+        migrated.close()
+    }
+
+    /**
+     * 19 -> 20 repairs what 17 -> 18 could not cascade (foreign keys are off during
+     * a migration): orphaned memory_sources/-corrections left behind made every
+     * backup unimportable, and ACTIVITY source rows spared on mixed-source
+     * memories crashed the MemorySourceKind enum read. It also adds the summary
+     * coverage timestamp, backfilled from the message the summary reached.
+     */
+    @Test
+    fun migrationNineteenToTwentyRepairsOrphansActivitySourcesAndSummaryCoverage() {
+        helper.createDatabase(DATABASE_NAME, 19).apply {
+            execSQL(
+                "INSERT INTO memory_items(id, type, title, content, normalizedContent, " +
+                    "contentHash, confidence, importance, sensitivity, status, pinned, " +
+                    "validFrom, validTo, supersedesId, createdAt, updatedAt) VALUES" +
+                    "('kept', 'FACT', 'mine', 'user fact', 'user fact', " +
+                    "'h2', 0.9, 0.5, 'NORMAL', 'ACTIVE', 0, NULL, NULL, NULL, 1, 1)",
+            )
+            // Leftover children of an ACTIVITY memory 17 -> 18 deleted: the cascade
+            // never fired because foreign keys are off until after onUpgrade.
+            execSQL(
+                "INSERT INTO memory_sources(id, memoryId, kind, sourceId, label, createdAt) " +
+                    "VALUES('orphan-source', 'gone', 'ACTIVITY', 'sum1', 'CALENDAR', 1)",
+            )
+            execSQL(
+                "INSERT INTO memory_corrections(id, memoryId, previousContent, " +
+                    "correctedContent, reason, createdAt) " +
+                    "VALUES('orphan-correction', 'gone', 'a', 'b', NULL, 1)",
+            )
+            // An ACTIVITY source on a spared mixed-source memory.
+            execSQL(
+                "INSERT INTO memory_sources(id, memoryId, kind, sourceId, label, createdAt) " +
+                    "VALUES('activity-source', 'kept', 'ACTIVITY', 'sum2', 'CALENDAR', 1)",
+            )
+            execSQL(
+                "INSERT INTO memory_sources(id, memoryId, kind, sourceId, label, createdAt) " +
+                    "VALUES('chat-source', 'kept', 'CHAT_MESSAGE', 'msg1', 'Chat message', 1)",
+            )
+            execSQL(
+                "INSERT INTO conversations(id, title, createdAt, updatedAt, qualityMode, temporary) " +
+                    "VALUES('chat', 'Chat', 1, 1, 'FAST', 0)",
+            )
+            execSQL(
+                "INSERT INTO messages(id, conversationId, role, content, createdAt, status, " +
+                    "continuationCount) VALUES('msg1', 'chat', 'USER', 'hello', 42, 'COMPLETE', 0)",
+            )
+            execSQL(
+                "INSERT INTO conversation_summaries(conversationId, throughMessageId, content, " +
+                    "tokenCount, updatedAt) VALUES('chat', 'msg1', 'User said hello.', 5, 1)",
+            )
+            close()
+        }
+
+        val migrated = helper.runMigrationsAndValidate(
+            DATABASE_NAME,
+            20,
+            true,
+            AppDatabase.MIGRATION_19_20,
+        )
+        fun count(sql: String) = migrated.query(sql).use {
+            it.moveToFirst()
+            it.getInt(0)
+        }
+        assertEquals(1, count("SELECT count(*) FROM memory_items WHERE id = 'kept'"))
+        assertEquals(0, count("SELECT count(*) FROM memory_sources WHERE id = 'orphan-source'"))
+        assertEquals(0, count("SELECT count(*) FROM memory_corrections WHERE id = 'orphan-correction'"))
+        assertEquals(0, count("SELECT count(*) FROM memory_sources WHERE kind = 'ACTIVITY'"))
+        assertEquals(1, count("SELECT count(*) FROM memory_sources WHERE id = 'chat-source'"))
+        migrated.query("SELECT throughCreatedAt FROM conversation_summaries WHERE conversationId = 'chat'")
+            .use {
+                assertEquals(1, it.count)
+                it.moveToFirst()
+                assertEquals(42L, it.getLong(0))
+            }
         migrated.close()
     }
 
