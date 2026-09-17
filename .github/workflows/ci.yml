@@ -36,10 +36,14 @@ jobs:
       # The native build pulls NDK/CMake, and the runner's SDK licences are not
       # pre-accepted: every run on main since at least v1.0.3 failed here with
       # LicenceNotAcceptedException before this step existed.
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          accept-android-sdk-licenses: true
+      #
+      # This used to be android-actions/setup-android@v3, which started failing
+      # in Sept 2026 with "Failed to find package 'tools'" — that package no
+      # longer exists upstream, and the action refuses to proceed without it.
+      # The runner already ships a usable SDK, so accept the licences directly
+      # instead.
+      - name: Accept Android SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
 
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest
