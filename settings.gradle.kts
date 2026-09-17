@@ -22,7 +22,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Aichat"
+rootProject.name = "Offmind"
 include(":app")
 include(":baselineprofile")
 include(":benchmark")

@@ -32,13 +32,13 @@ internal fun userFacingMessage(error: Throwable): String = when (error) {
     is DatabaseLockedException ->
         "Unlock your phone to continue — your chats are encrypted with a key that stays locked with the device."
     is SecurityException ->
-        "wochat does not have permission to do that. You can grant it in Settings."
+        "Offmind does not have permission to do that. You can grant it in Settings."
     is FileNotFoundException ->
         "That file could not be found. It may have been moved or deleted."
     is IOException ->
         "Something went wrong reading or writing a file. Check your storage and try again."
     is SQLiteException ->
-        "Something went wrong with wochat's local storage. If this keeps happening, " +
+        "Something went wrong with Offmind's local storage. If this keeps happening, " +
             "export diagnostics from Settings."
     else -> error.message?.takeIf(String::isUserPresentable) ?: GENERIC_FAILURE_MESSAGE
 }

@@ -22,7 +22,7 @@ Not everything upstream applies here. Skipped, with reasons that should be
 re-checked if the app changes:
 
 - `play/*` — 1.3 MB of Play Store billing, Engage SDK and policy guidance.
-  wochat ships through GitHub releases and sells nothing.
+  Offmind ships through GitHub releases and sells nothing.
 - `camera/camerax` — no camera use.
 - `identity/verified-email` — no accounts; the app is deliberately offline.
 - `media/media3-cast-integration` — casting via Media3. Voice uses `AudioRecord`

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Aichat" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.Offmind" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/aichat_window_background</item>
         <item name="android:statusBarColor">@color/aichat_status_bar</item>
         <item name="android:navigationBarColor">@color/aichat_navigation_bar</item>
@@ -14,12 +14,12 @@
     <!--
       Launch theme. Covers the window between process start and the first
       Compose frame, which is spent warming the encrypted database and the
-      native inference runtime. MainActivity hands off to Theme.Aichat via
+      native inference runtime. MainActivity hands off to Theme.Offmind via
       postSplashScreenTheme as soon as the container is ready.
     -->
-    <style name="Theme.Aichat.Starting" parent="Theme.SplashScreen">
+    <style name="Theme.Offmind.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/aichat_window_background</item>
         <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
-        <item name="postSplashScreenTheme">@style/Theme.Aichat</item>
+        <item name="postSplashScreenTheme">@style/Theme.Offmind</item>
     </style>
 </resources>

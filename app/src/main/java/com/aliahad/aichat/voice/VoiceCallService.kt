@@ -71,9 +71,9 @@ class VoiceCallService : Service() {
             Intent(this, VoiceCallService::class.java).setAction(ACTION_HANG_UP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val caller = Person.Builder().setName("wochat").setImportant(true).build()
+        val caller = Person.Builder().setName("Offmind").setImportant(true).build()
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_aichat)
+            .setSmallIcon(R.drawable.ic_stat_offmind)
             .setStyle(NotificationCompat.CallStyle.forOngoingCall(caller, hangUp))
             .setOngoing(true)
             .setContentIntent(open)

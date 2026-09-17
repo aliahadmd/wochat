@@ -199,7 +199,7 @@ class ModelSetupViewModel internal constructor(
      * runtime, the extracted model and audio output all work.
      */
     fun testVoice() = launchCatching {
-        voiceSpeaker.speak("Hello. This is the voice wochat will use during a call.")
+        voiceSpeaker.speak("Hello. This is the voice Offmind will use during a call.")
             .onFailure { messages.report(it) }
     }
 

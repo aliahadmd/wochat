@@ -62,7 +62,7 @@ class ModelResidencyService : Service() {
         if (deviceLocked()) {
             notificationManager.notify(
                 NOTIFICATION_ID,
-                notification("Waiting to unlock", "wochat opens when you unlock the device"),
+                notification("Waiting to unlock", "Offmind opens when you unlock the device"),
             )
             return
         }
@@ -130,11 +130,11 @@ class ModelResidencyService : Service() {
 
     private fun notificationFor(state: ModelResidencyState): Notification = when (state) {
         ModelResidencyState.Idle ->
-            notification("Model unloaded", "Open wochat or tap Retry to load Gemma")
+            notification("Model unloaded", "Open Offmind or tap Retry to load Gemma")
         ModelResidencyState.WaitingForUnlock ->
             notification("Waiting for unlock", "Gemma will load after the phone is unlocked")
         ModelResidencyState.WaitingForModel ->
-            notification("No active model", "Download or select a GGUF model in wochat")
+            notification("No active model", "Download or select a GGUF model in Offmind")
         is ModelResidencyState.Loading ->
             notification("Loading ${state.modelName}", "Pure CPU model load is in progress")
         is ModelResidencyState.Ready ->
@@ -165,14 +165,14 @@ class ModelResidencyService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_aichat)
+            .setSmallIcon(R.drawable.ic_stat_offmind)
             .setContentTitle("Writing a reply")
-            .setContentText("wochat is still answering. Open it to read along.")
+            .setContentText("Offmind is still answering. Open it to read along.")
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(0, "Open wochat", openIntent)
+            .addAction(0, "Open Offmind", openIntent)
             .addAction(0, "Stop", stopIntent)
             .build()
     }
@@ -198,7 +198,7 @@ class ModelResidencyService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_aichat)
+            .setSmallIcon(R.drawable.ic_stat_offmind)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -206,7 +206,7 @@ class ModelResidencyService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(0, "Open wochat", openIntent)
+            .addAction(0, "Open Offmind", openIntent)
             .addAction(0, "Retry", retryIntent)
             .addAction(0, "Unload", unloadIntent)
             .build()

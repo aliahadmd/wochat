@@ -1,6 +1,6 @@
 # Benchmarks
 
-Macrobenchmarks for wochat: startup timing and scroll jank. These exist so
+Macrobenchmarks for Offmind: startup timing and scroll jank. These exist so
 performance claims stop being anecdotes — plans 024 and 025 are measured
 against these numbers, not against how the app feels.
 

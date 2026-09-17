@@ -56,7 +56,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Aichat"
+        android:theme="@style/Theme.Offmind"
         android:usesCleartextTraffic="false">
         <service
             android:name=".inference.remote.VulkanInferenceService"
@@ -102,7 +102,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.Aichat.Starting"
+            android:theme="@style/Theme.Offmind.Starting"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

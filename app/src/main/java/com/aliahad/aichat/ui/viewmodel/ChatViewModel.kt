@@ -592,7 +592,7 @@ internal fun formatConversationMarkdown(
 ): String = buildString {
     appendLine("# ${conversation.title}")
     appendLine()
-    appendLine("_Exported from wochat on ${Instant.now()}_")
+    appendLine("_Exported from Offmind on ${Instant.now()}_")
     messages.forEach { message ->
         appendLine()
         appendLine(

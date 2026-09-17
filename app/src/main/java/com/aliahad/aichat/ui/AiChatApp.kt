@@ -375,7 +375,7 @@ fun AiChatApp(
                     title = {
                         when (currentRoute) {
                             AppRoute.SETTINGS -> Text("Settings")
-                            AppRoute.CHAT -> Text("wochat")
+                            AppRoute.CHAT -> Text("Offmind")
                         }
                     },
                     actions = {
@@ -890,7 +890,7 @@ private fun ChatBrandState(
             }
             Spacer(Modifier.height(20.dp))
             Text(
-                "wochat",
+                "Offmind",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -2344,7 +2344,7 @@ private fun MemoryEditorDialog(
             OutlinedTextField(
                 value = value,
                 onValueChange = { value = it },
-                label = { Text("What should wochat remember?") },
+                label = { Text("What should Offmind remember?") },
                 minLines = 4,
                 maxLines = 10,
                 modifier = Modifier.fillMaxWidth(),
@@ -2861,7 +2861,7 @@ private fun SettingsScreen(
         }
         if (section == SettingsSection.RUNTIME) {
             item {
-                SectionTitle("Appearance", "How wochat looks on this device")
+                SectionTitle("Appearance", "How Offmind looks on this device")
             }
             item {
                 Card {
@@ -3000,7 +3000,7 @@ private fun SettingsScreen(
         // across a rebuild but the code never does.
         item {
             Text(
-                text = "wochat ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                text = "Offmind ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -3150,7 +3150,7 @@ private fun ContextProfileCard(
                     color = MaterialTheme.colorScheme.error,
                 )
                 ContextVerificationState.UNVERIFIED, null -> Text(
-                    "wochat starts at 4K and tests larger contexts after 15 seconds of idle time.",
+                    "Offmind starts at 4K and tests larger contexts after 15 seconds of idle time.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

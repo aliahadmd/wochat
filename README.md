@@ -1,6 +1,6 @@
-# wochat
+# Offmind
 
-wochat is a private, on-device Android assistant built around Gemma 4 E4B. Chats,
+Offmind is a private, on-device Android assistant built around Gemma 4 E4B. Chats,
 memory, attachments, skills, and model inference stay on the phone. The app does
 not send prompts to a hosted inference service.
 
@@ -15,11 +15,15 @@ not send prompts to a hosted inference service.
 - **Office Memory** for optional, private context drawn from your conversations.
 - **Prompt skills** that can be selected per message without running arbitrary
   code.
+- **Offline voice call mode** — talk to Offmind and hear it answer, with
+  on-device VAD, speech recognition, and speech synthesis.
+- **Opt-in device actions** — set alarms and timers, open the dialer or
+  calendar, and toggle the flashlight from a chat.
 - **Encrypted portable backups** for chats, memory, settings, and attachments.
 - **Encrypted local database** backed by SQLCipher.
 
-wochat intentionally has no speech-to-text, text-to-speech, floating overlay,
-screen-action automation, or Daily Brief feature.
+Offmind deliberately has no floating overlay, screen-action automation, or
+Daily Brief feature.
 
 ## Requirements
 
@@ -29,7 +33,7 @@ screen-action automation, or Daily Brief feature.
 - About 946 MB for the optional vision projector.
 - At least 2 GB of additional free space while downloading and installing an
   artifact. Around 8 GB free is recommended for a complete setup.
-- A modern device with ample RAM. wochat verifies a conservative context size
+- A modern device with ample RAM. Offmind verifies a conservative context size
   instead of assuming the model's maximum context will fit.
 
 ## Install
@@ -38,7 +42,7 @@ Download the APK from the repository's **Releases** page and install it on a
 compatible Android device. Android may ask you to allow installation from the
 app used to open the APK.
 
-wochat does not bundle model weights. On first launch:
+Offmind does not bundle model weights. On first launch:
 
 1. Open **Settings → Models**.
 2. Choose whether downloads may use mobile or metered networks.
@@ -140,7 +144,7 @@ database changes.
 
 ## Model artifacts
 
-wochat supports exactly these official artifacts:
+Offmind supports exactly these official artifacts:
 
 | Artifact | Purpose | Approximate size |
 | --- | --- | ---: |
@@ -161,7 +165,7 @@ is installed.
   byte range.
 - Keep at least the displayed required free space available.
 - A metadata-mismatch error means the installed app catalog is outdated. Update
-  wochat before retrying instead of repeatedly downloading an unverified file.
+  Offmind before retrying instead of repeatedly downloading an unverified file.
 
 ## Current release scope
 

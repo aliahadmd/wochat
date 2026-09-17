@@ -9,7 +9,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Generates the baseline profile for wochat.
+ * Generates the baseline profile for Offmind.
  *
  * The journey deliberately covers more than `startActivityAndWait()`: a profile
  * that only knows how to reach the first frame leaves the screens the user

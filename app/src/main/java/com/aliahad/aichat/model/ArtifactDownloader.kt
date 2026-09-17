@@ -150,7 +150,7 @@ class ArtifactDownloader(
                 return ArtifactDownloadOutcome.Fatal(
                     partial.length(),
                     "Artifact metadata mismatch: the server offered " +
-                        "${formatByteCount(contentLength)}, but wochat expected " +
+                        "${formatByteCount(contentLength)}, but Offmind expected " +
                         "${formatByteCount(expectedResponseBytes)}. Update the app before retrying.",
                 )
             }
@@ -186,7 +186,7 @@ class ArtifactDownloader(
                 ArtifactDownloadOutcome.Retryable(
                     partial.length(),
                     "Connection ended at ${formatByteCount(partial.length())} of " +
-                        "${formatByteCount(spec.expectedBytes)}. wochat will resume automatically.",
+                        "${formatByteCount(spec.expectedBytes)}. Offmind will resume automatically.",
                 )
             } else {
                 ArtifactDownloadOutcome.Complete(partial.length())
@@ -260,6 +260,6 @@ private fun Throwable.isRetryableTransportFailure(): Boolean =
     this is SocketTimeoutException || this is SocketException || this is IOException
 
 private fun Throwable.toActionableDownloadMessage(): String = when (this) {
-    is SocketTimeoutException -> "The download timed out. wochat will resume automatically."
-    else -> "The connection was interrupted. wochat will resume automatically."
+    is SocketTimeoutException -> "The download timed out. Offmind will resume automatically."
+    else -> "The connection was interrupted. Offmind will resume automatically."
 }

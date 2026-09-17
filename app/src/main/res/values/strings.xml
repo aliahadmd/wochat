@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">wochat</string>
+    <string name="app_name">Offmind</string>
     <string name="model_download_channel">Model downloads</string>
     <string name="model_download_channel_description">Progress for large local model downloads</string>
     <string name="accessibility_service_description">Stores redacted visible UI text locally and performs explicitly allowed device actions.</string>

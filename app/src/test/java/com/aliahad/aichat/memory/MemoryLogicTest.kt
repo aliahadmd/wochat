@@ -91,7 +91,7 @@ class MemoryLogicTest {
             "My name is Ali",
             "I prefer dark roast coffee",
             "Remember that the office wifi password rotates monthly",
-            "I am working on a local inference app called wochat",
+            "I am working on a local inference app called Offmind",
             "My goal is to ship the release this quarter",
         ).forEach { content ->
             assertTrue(

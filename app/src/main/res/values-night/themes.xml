@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Aichat" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.Offmind" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/aichat_window_background</item>
         <item name="android:statusBarColor">@color/aichat_status_bar</item>
         <item name="android:navigationBarColor">@color/aichat_navigation_bar</item>
@@ -11,9 +11,9 @@
         <item name="android:windowActionBar">false</item>
     </style>
 
-    <style name="Theme.Aichat.Starting" parent="Theme.SplashScreen">
+    <style name="Theme.Offmind.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/aichat_window_background</item>
         <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
-        <item name="postSplashScreenTheme">@style/Theme.Aichat</item>
+        <item name="postSplashScreenTheme">@style/Theme.Offmind</item>
     </style>
 </resources>

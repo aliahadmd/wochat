@@ -223,7 +223,7 @@ class MainActivity : ComponentActivity() {
                         onExportOffice = { passphrase ->
                             pendingExportPassphrase = passphrase
                             officeExportLauncher.launch(
-                                "wochat-office-${System.currentTimeMillis()}.aichatoffice",
+                                "offmind-office-${System.currentTimeMillis()}.aichatoffice",
                             )
                         },
                         onExportConversation = { conversationId ->
@@ -247,7 +247,7 @@ class MainActivity : ComponentActivity() {
                             )
                         },
                         onExportDiagnostics = {
-                            diagnosticsLauncher.launch("wochat-diagnostics-${System.currentTimeMillis()}.json")
+                            diagnosticsLauncher.launch("offmind-diagnostics-${System.currentTimeMillis()}.json")
                         },
                         )
                     }
@@ -291,14 +291,14 @@ private fun LockedStartupMessage() {
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                text = "Unlock your phone to open wochat",
+                text = "Unlock your phone to open Offmind",
                 style = MaterialTheme.typography.titleMedium,
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(8.dp))
             Text(
                 text = "Your chats are encrypted with a key that stays locked " +
-                    "with the device. wochat opens as soon as you unlock.",
+                    "with the device. Offmind opens as soon as you unlock.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,

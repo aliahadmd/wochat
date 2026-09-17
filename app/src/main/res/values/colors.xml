@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#353B41</color>
     <color name="aichat_window_background">#F7FAF8</color>
     <color name="aichat_status_bar">#F7FAF8</color>
     <color name="aichat_navigation_bar">#F7FAF8</color>

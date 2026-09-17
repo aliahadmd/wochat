@@ -1,8 +1,8 @@
-# wochat — Agent Guide
+# Offmind — Agent Guide
 
 ## Project Overview
 
-wochat is an on-device AI chat Android app. It runs Gemma 4 E4B locally via llama.cpp (GGUF) with CPU and Vulkan GPU backends. All inference, memory indexing, and conversation persistence happen on-device — there is no cloud LLM dependency.
+Offmind is an on-device AI chat Android app. It runs Gemma 4 E4B locally via llama.cpp (GGUF) with CPU and Vulkan GPU backends. All inference, memory indexing, and conversation persistence happen on-device — there is no cloud LLM dependency.
 
 - **Package:** `com.aliahad.aichat`
 - **Min SDK:** 33 · **Target SDK:** 36 · **Compile SDK:** 36
@@ -104,7 +104,7 @@ Note: `device/`, `overlay/`, and `speech/` were removed features and no longer e
 
 ## Test Layout
 
-- **Unit tests:** `app/src/test/java/com/aliahad/aichat/` (25 files — inference recovery and engine fallback, restore fingerprints, memory search and redaction, prompt planning, residency, attachment detection, artifact downloading and atomic install, backup sweep and path safety, health collection keys, conversation export/search helpers, routing)
+- **Unit tests:** `app/src/test/java/com/aliahad/aichat/` (33 files — inference recovery and engine fallback, restore fingerprints, memory search and redaction, prompt planning, residency, attachment detection, artifact downloading and atomic install, backup sweep and path safety, health collection keys, conversation export/search helpers, routing)
 - **Instrumented tests:** `app/src/androidTest/java/com/aliahad/aichat/` (9 files — Compose UI, ChatViewModel, Room migrations, persistence, AppSearch indexer, encrypted backup round-trip)
 
 ## Agent Skills
